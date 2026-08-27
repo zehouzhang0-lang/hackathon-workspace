@@ -1,0 +1,171 @@
+{
+  "schema_version": "0.1.0",
+  "case_id": "demo-underbed-001",
+  "display_name": "床底收纳箱：从适配疑问到下一步行动",
+  "provenance": {
+    "input_kind": "synthetic",
+    "analysis_kind": "authored_reference",
+    "label": "虚构演示案例｜预编写参考回答｜MoneyAI未验证",
+    "created_on": "2026-08-28",
+    "business_effect_verified": false,
+    "moneyai_verified": false,
+    "note": "商家、商品参数、咨询、指标、执行记录、后续反馈均为模拟；不是官方案例或真实成交证据。"
+  },
+  "sources": [
+    {"id": "S1", "kind": "synthetic_supplier_spec", "label": "模拟供应规格", "scope": "仅本款商品使用状态外尺寸、结构及件数"},
+    {"id": "S2", "kind": "synthetic_merchant_copy", "label": "模拟商家提供的商品文字", "scope": "仅标题及详情开头；没有读取完整页面、自动属性栏或视频"},
+    {"id": "S3", "kind": "synthetic_inquiries", "label": "模拟咨询摘录", "scope": "5条选取的摘录，不是全部咨询或随机抽样"},
+    {"id": "S4", "kind": "synthetic_merchant_statement", "label": "模拟商家自述", "scope": "价格、限制、目标用户、购买路径；不等于独立核实"},
+    {"id": "S5", "kind": "synthetic_metric_snapshot", "label": "模拟经营快照", "scope": "2026-08-18至2026-08-24，单商品数据，流量渠道未拆分"},
+    {"id": "S6", "kind": "synthetic_execution_feedback", "label": "模拟首轮执行反馈", "scope": "仅在首轮执行并保存后进入历史"},
+    {"id": "S7", "kind": "synthetic_followup", "label": "模拟第二轮新咨询", "scope": "不允许提前作为首轮证据"}
+  ],
+  "merchant": {"id": "demo-merchant-a", "display_name": "演示收纳店A（虚构）", "industry": "家居收纳"},
+  "product": {"id": "demo-product-box-a", "sku_id": "demo-sku-2pack", "display_name": "带盖床底收纳箱2只装（虚构商品）"},
+  "initial_snapshot": {
+    "id": "snapshot-1",
+    "version": 1,
+    "facts": [
+      {"id": "F1", "key": "price", "value": 69.9, "unit": "CNY/order", "source_ids": ["S4"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F2", "key": "units_per_order", "value": 2, "unit": "pieces/order", "source_ids": ["S1", "S4"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F3", "key": "external_length", "value": 60, "unit": "cm", "source_ids": ["S1"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F4", "key": "external_width", "value": 40, "unit": "cm", "source_ids": ["S1"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F5", "key": "external_height", "value": 16, "unit": "cm", "source_ids": ["S1"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F6", "key": "dimension_scope", "value": "单只使用状态外尺寸，含盖，无脚轮；不可折叠。不是内尺寸、包装尺寸或叠放尺寸。", "unit": null, "source_ids": ["S1"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F7", "key": "target_customer", "value": "有床底收纳需求的租房人群", "unit": null, "source_ids": ["S4"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F8", "key": "purchase_path", "value": "当前抖音商品页，核对2只装、价格与结算运费后下单", "unit": null, "source_ids": ["S4"], "confirmation": "confirmed_in_fixture"},
+      {"id": "F9", "key": "shipping_fee", "value": null, "unit": "CNY/order", "source_ids": [], "confirmation": "unknown"},
+      {"id": "F10", "key": "dispatch_time", "value": null, "unit": "hours", "source_ids": [], "confirmation": "unknown"},
+      {"id": "F11", "key": "dimension_tolerance", "value": null, "unit": "cm", "source_ids": [], "confirmation": "unknown"}
+    ],
+    "current_copy": {
+      "source_id": "S2",
+      "title": "家用床底收纳箱 换季衣物整理 带盖2只装",
+      "opening": "把换季衣服和杂物收起来，房间更整洁。2只装69.90元。",
+      "inspection_scope": "只分析这里提供的标题和详情开头；不声称整张商品页没有标尺寸。"
+    },
+    "constraints": [
+      {"id": "C1", "key": "time_budget_minutes", "value": 20, "scope": "merchant_current_session", "source_id": "S4"},
+      {"id": "C2", "key": "allow_discount", "value": false, "scope": "product", "source_id": "S4"},
+      {"id": "C3", "key": "allow_new_ad_spend", "value": false, "scope": "merchant", "source_id": "S4"},
+      {"id": "C4", "key": "can_edit_listing_text", "value": true, "scope": "merchant_current_session", "source_id": "S4"},
+      {"id": "C5", "key": "can_reply_to_inquiries", "value": true, "scope": "merchant_current_session", "source_id": "S4"},
+      {"id": "C6", "key": "allow_new_photography", "value": false, "scope": "merchant_current_session", "source_id": "S4"}
+    ],
+    "metrics": [
+      {"id": "M1", "key": "product_detail_visitors", "value": 186, "unit": "people", "object_id": "demo-product-box-a", "period_start": "2026-08-18", "period_end": "2026-08-24", "channel": "not_segmented", "source_id": "S5"},
+      {"id": "M2", "key": "paid_orders", "value": 0, "unit": "orders", "object_id": "demo-product-box-a", "period_start": "2026-08-18", "period_end": "2026-08-24", "channel": "not_segmented", "source_id": "S5"},
+      {"id": "M3", "key": "published_videos", "value": 3, "unit": "videos", "object_id": "demo-product-box-a", "period_start": "2026-08-18", "period_end": "2026-08-24", "channel": "merchant_statement", "source_id": "S5"}
+    ],
+    "inquiries": [
+      {"id": "Q1", "text": "我家床底大概17厘米高，能放吗？", "source_id": "S3"},
+      {"id": "Q2", "text": "60×40是里面能装东西的尺寸，还是外面尺寸？", "source_id": "S3"},
+      {"id": "Q3", "text": "床下面有横梁，只量高度够不够？", "source_id": "S3"},
+      {"id": "Q4", "text": "69.9是一只还是两只？", "source_id": "S3"},
+      {"id": "Q5", "text": "运费怎么算？", "source_id": "S3"}
+    ]
+  },
+  "round_1_reference": {
+    "id": "round-1",
+    "input_snapshot_id": "snapshot-1",
+    "status": "authored_reference_not_model_output",
+    "priority_issues": [{
+      "id": "I1",
+      "summary": "先帮助买家判断床底适配，不只展示一个尺寸数字。",
+      "observations": [
+        {"text": "已提供文字没有说明如何量入口、内部空间和抽出路径。", "source_ids": ["S2"]},
+        {"text": "提供的咨询涉及高度、内外尺寸和横梁；这些摘录不代表所有访客。", "source_ids": ["S3"], "inquiry_ids": ["Q1", "Q2", "Q3"]},
+        {"text": "模拟快照有访客但0笔支付，无法据此确定唯一原因。", "source_ids": ["S5"]}
+      ],
+      "hypothesis": "买家可能因无法判断是否适配而犹豫，先验证这一信息缺口。",
+      "not_proven": "不是已证实的零成交主因，也没有排除价格、流量质量或信任问题。",
+      "evidence_gaps": ["未检查完整商品页及自动属性栏", "没有渠道拆分及可关联的全量咨询", "没有买家实际测量和放置验证"]
+    }],
+    "plans": [
+      {
+        "id": "PLAN-A", "title": "先改商品说明", "recommended": true,
+        "action_kind": "listing_text_edit", "issue_id": "I1",
+        "action": "把外尺寸和测量提醒写进标题、详情开头，给出购买指引。",
+        "estimated_minutes": 10, "estimated_extra_cost_cny": 0,
+        "estimate_status": "demo_planning_estimate_not_measured",
+        "requires_discount": false, "requires_new_ad_spend": false, "requires_photography": false,
+        "required_capabilities": ["can_edit_listing_text"],
+        "risk": "文字可能被跳过；本次修改不保证订单变化。",
+        "observe": "保留发布版本，记录后续适配疑问，而非马上用0订单判定失败。",
+        "rationale": "已有相关咨询且可直接改文字，先做一次覆盖后续访客的低成本澄清。"
+      },
+      {
+        "id": "PLAN-B", "title": "先用咨询验证", "recommended": false,
+        "action_kind": "inquiry_validation", "issue_id": "I1",
+        "action": "暂不改商品页，向选定的咨询者发送测量提问，记录实际卡在哪里。",
+        "estimated_minutes": 15, "estimated_extra_cost_cny": 0,
+        "estimate_status": "demo_planning_estimate_not_measured",
+        "requires_discount": false, "requires_new_ad_spend": false, "requires_photography": false,
+        "required_capabilities": ["can_reply_to_inquiries"],
+        "risk": "只覆盖来咨询的人，需要人工时间；小样本不能代表全部流量。",
+        "observe": "记下对方缺哪项测量、是否明确不适配，不以询问次数等同成交。",
+        "rationale": "在改变商品信息前补充用户证据，代价是覆盖面较窄且需持续回复。"
+      }
+    ],
+    "selection": {"plan_id": "PLAN-A", "adoption_status": "undecided", "execution_status": "not_started"},
+    "artifacts": [
+      {"id": "ART-1", "kind": "product_title", "plan_id": "PLAN-A", "text": "床底收纳箱2只装 单只外尺寸60×40×16cm", "fact_ids": ["F2", "F3", "F4", "F5", "F6"]},
+      {"id": "ART-2", "kind": "opening_copy", "plan_id": "PLAN-A", "text": "一单2只，69.90元。每只使用状态外尺寸60×40×16cm，含盖、无脚轮、不可折叠。买前先核对三处：床底入口最窄/最低处、内部可用长宽与最低处、箱体抽出与开盖的操作空间。只知道床底高度，不能确认一定适配。刚好卡尺寸、有床脚或横梁挡住时，请先补充测量信息，不要直接下单。", "fact_ids": ["F1", "F2", "F3", "F4", "F5", "F6"]},
+      {"id": "ART-3", "kind": "purchase_guide", "plan_id": "PLAN-A", "text": "确认空间和取用路径后，在当前商品页核对“2只装”、价格及结算页运费再下单。运费和发货时效尚未提供，本稿不承诺包邮、当天发货或所有床型通用。", "fact_ids": ["F2", "F8", "F9", "F10"]}
+    ],
+    "alternative_artifacts": [
+      {"id": "ART-B1", "kind": "measurement_question", "plan_id": "PLAN-B", "text": "请分别量一下床底入口最窄/最低处、内部可用长宽和最低处，并确认抽出箱子和开盖的空间。箱体每只外尺寸60×40×16cm，含盖。仅知道床高不能保证能放。", "fact_ids": ["F3", "F4", "F5", "F6"]},
+      {"id": "ART-B2", "kind": "observation_checklist", "plan_id": "PLAN-B", "text": "只记录是否缺测量、是否有横梁/床脚遮挡、是否明确不适配及剩余疑问；不要收集客户姓名、手机号或地址。", "fact_ids": []}
+    ]
+  },
+  "feedback_event": {
+    "id": "feedback-1",
+    "idempotency_key": "demo-feedback-1",
+    "merchant_id": "demo-merchant-a", "product_id": "demo-product-box-a", "round_id": "round-1",
+    "source_id": "S6", "kind": "synthetic_execution_feedback",
+    "selected_plan_id": "PLAN-A", "adoption_status": "adopted", "execution_status": "completed",
+    "executed_artifact_ids": ["ART-1", "ART-2", "ART-3"],
+    "executed_at": "2026-08-25T19:00:00+08:00",
+    "execution_note": "模拟商家确认已发布上述三个文字片段；真实使用时以商家确认/自愿提供的版本记录为准。",
+    "decision_reason": "先完成一次文字修改，不做持续人工接待。",
+    "new_constraints": [
+      {"id": "C7", "key": "time_budget_minutes", "value": 5, "scope": "merchant_current_session", "source_id": "S6", "supersedes": "C1"},
+      {"id": "C8", "key": "can_edit_listing_text", "value": false, "scope": "merchant_current_session", "source_id": "S6", "supersedes": "C4"}
+    ],
+      "new_constraint_note": "今天只剩5分钟，不继续改标题或商品文字；价格不变、不投流、不重拍。临时限制在复诊时需要重新确认。",
+    "persistence": {"status": "not_run", "provider": "none", "note": "文件含有这条预编写反馈不等于已经保存到MoneyAI或浏览器。"}
+  },
+  "round_2_request": {
+    "case_id": "demo-underbed-001", "merchant_id": "demo-merchant-a", "product_id": "demo-product-box-a",
+    "new_observation": {
+      "source_id": "S7",
+      "new_inquiry": {"id": "Q6", "text": "床底入口只有15cm，里面20cm高，能放吗？"},
+      "merchant_statement": "仍没出单。请告诉我这条咨询怎么回，以及下一步还要不要继续改。",
+      "paid_orders": 0, "product_detail_visitors": null, "observation_window": null, "ad_spend_change": null,
+      "comparison_ready": false,
+      "current_constraints_confirmation": "本次仍沿用反馈记录里的时间与编辑限制；这是模拟的本次确认。"
+    },
+    "history_reference": {"round_id": "round-1", "feedback_event_id": "feedback-1"},
+    "must_load_history": true,
+    "note": "真实记忆验收时不在这个请求中再次粘贴首轮商品事实或反馈正文。"
+  },
+  "round_2_reference": {
+    "id": "round-2", "status": "authored_reference_not_model_output",
+    "history_used": {"fact_ids": ["F1", "F2", "F3", "F4", "F5", "F6"], "feedback_event_id": "feedback-1", "constraint_ids": ["C2", "C3", "C5", "C6", "C7", "C8"], "completed_artifact_ids": ["ART-1", "ART-2", "ART-3"]},
+    "priority_issues": [{"id": "I2", "summary": "先澄清这位买家的入口限制，保留已完成的商品说明。", "source_ids": ["S1", "S6", "S7"]}],
+    "comparison": {"previous_action": "已完成商品标题、详情开头与购买指引修改。", "new_observation": "本条咨询的入口15cm小于箱体外高16cm；其他长宽及路径仍未提供。", "outcome": "没有可比访客分母和观察窗口，不能判断成交效果，也不能因0订单判定已完成动作失败。"},
+    "plans": [
+      {"id": "PLAN-C", "title": "回复本条适配疑问", "recommended": true, "action_kind": "single_inquiry_reply", "estimated_minutes": 3, "estimated_extra_cost_cny": 0, "requires_discount": false, "requires_new_ad_spend": false, "requires_photography": false, "required_capabilities": ["can_reply_to_inquiries"], "risk": "只能处理当前疑问，不证明其他访客都遇到同一个问题。", "action": "使用下方回复，不重新改商品页，不承诺不适配的买家可以使用。"},
+      {"id": "PLAN-D", "title": "保留现稿，先记录观察", "recommended": false, "action_kind": "observe_only", "estimated_minutes": 1, "estimated_extra_cost_cny": 0, "requires_discount": false, "requires_new_ad_spend": false, "requires_photography": false, "required_capabilities": [], "risk": "暂不处理本条咨询可能失去沟通机会；不能宣称本轮已解决问题。", "action": "仅记录入口过低的疑问，积累更多可比信息后再决定是否进一步调整。"}
+    ],
+    "artifact": {"id": "ART-4", "kind": "single_inquiry_reply", "plan_id": "PLAN-C", "text": "这款每只含盖外尺寸60×40×16cm，无脚轮、不可折叠。您提供的入口最低15cm小于箱体外高16cm，现有信息不支持正常推入使用，不能只看内部20cm就判断可放。请勿按可以挤压或拆盖后使用来下单；如可重新测量，仍需一起核对入口、内部长宽及抽出空间。", "fact_ids": ["F3", "F4", "F5", "F6"], "source_ids": ["S7"]},
+    "why_changed": "首轮修改已经完成；新问题是具体空间条件，且不支持正常推入。结合今天5分钟且不再改商品文字的限制，改为3分钟的单条回复，不重复首轮任务。",
+    "unchanged_facts": {"price_cny": 69.9, "units_per_order": 2, "external_dimensions_cm": [60, 40, 16]},
+    "do_not_claim": ["A方案已证实有效或无效", "MoneyAI已经读取历史", "商品保证适配", "可以拆盖/改装后保证放入", "需要降价或增加投流"]
+  },
+  "memory_counterfactuals": [
+    {"id": "CF1", "same_request": "round_2_request", "history_change": "feedback_event.execution_status = not_started; executed_artifact_ids = []; executed_at = null; execution_note = 选择没有实际发布", "expected_difference": "不能说上次已完成，也不能评价未实施的改稿效果；先区分尚未执行与本条适配疑问。"},
+    {"id": "CF2", "same_request": "round_2_request", "history_change": "feedback_event不存在或读取失败", "expected_difference": "显示历史不可用；重试或明确仅依据当前资料，不伪造69.90元、2只装、16cm或已执行动作。"},
+    {"id": "CF3", "same_request": "round_2_request", "history_change": "用户明确把can_edit_listing_text改回true、时间恢复20分钟", "expected_difference": "可以重新考虑页面动作，但保留已发布版本，不因恢复编辑能力就强制重写，也不能永久锁定旧限制。"}
+  ]
+}

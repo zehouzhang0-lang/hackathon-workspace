@@ -4,22 +4,33 @@
 
 ## 当前状态
 
-当前研究题目：**抖音做了出不了单，怎么办？**
+当前执行题目：**抖音做了不出单，怎么办？**
 
-今天（2026-08-27）以讨论需求、研究现有解决办法和筛选 skills 为主。明天才知道具体商家，当前没有商家访谈或后台数据。
+2026-08-28：进入三页最小Demo的功能、案例和测试准备。张泽厚负责前端启动；实际模型接口与后端实现仍待验证。
 
-产品形态尚未确定。早期“成交诊断 Agent”的六模块方案仅作为候选，技术实现后置；目前没有应用代码。
+本轮选用**虚构的床底收纳箱案例**：一款商品、一处买前适配问题、两种行动和两轮反馈。三页为“说清商品 → 选一件先改 → 拿去用，再复盘”。
+
+已有页面规格、可加载的模拟数据、预编写参考成品和15个验收场景。尚未实现网页、运行真实模型或验证MoneyAI记忆；模拟素材不代表商家需求或成交效果已验证。原始团队聊天和录音材料仅作本地上下文，不随仓库发布。
 
 ## 从这里开始
 
 - [项目进度](PROGRESS.md)：记录当前阶段、已完成事项、待办和重要决定。
-- [需求讨论与技能候选](docs/research/DISCOVERY_NOTES.md)：当前假设、值得讨论的问题和技能筛选。
+- [三页功能与案例](docs/MVP_SPEC.md)：当前开发基线、字段、交互、成品与两轮流程。
+- [Demo验收](docs/DEMO_ACCEPTANCE.md)：15个用例及静态/前端/真实模型的验证边界。
+- [模拟案例数据](fixtures/underbed-storage.demo.json)与[测试场景](fixtures/acceptance.scenarios.json)：供前端和后续模型测试复用。
+- [需求讨论与技能候选](docs/research/DISCOVERY_NOTES.md)：前期假设、问题和技能筛选记录。
 - [公开证据](docs/research/MERCHANT_EVIDENCE.md)与[现有替代方案](docs/research/ALTERNATIVES.md)：来源、已知内容与证据不足之处。
 - [明日访谈提纲](docs/research/INTERVIEW_GUIDE.md)：待拿到具体商家后核验，不代表已完成访谈。
-- [早期候选方案](docs/PRODUCT_BRIEF.md)与[候选 Demo 验收](docs/DEMO_ACCEPTANCE.md)：保留备查，未定案。
+- [早期六模块候选方案](docs/PRODUCT_BRIEF.md)：历史备查，不作为当前范围。
 - [多设备同步指南](docs/SYNC.md)：首次下载项目，以及切换设备时如何拉取与推送。
 
 ## 工作约定
+
+素材一致性检查（Python标准库，无需安装依赖）：
+
+    python scripts/verify_demo_content.py
+
+该脚本不运行界面或MoneyAI；验收用例仍需在真实实现中检查。
 
 - 每次开工先拉取最新内容，结束时更新进度、提交并推送。
 - 重要决定和后续任务写入 `PROGRESS.md`，避免只保留在聊天里。

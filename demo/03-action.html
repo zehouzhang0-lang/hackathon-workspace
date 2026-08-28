@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>执行并记录 · 路芽</title>
+    <title>执行与复盘 · 路芽</title>
     <link rel="stylesheet" href="shared/tokens.css">
     <link rel="stylesheet" href="shared/base.css">
     <link rel="stylesheet" href="shared/title-motion.css">
@@ -16,30 +16,42 @@
     <div id="shared-shell"></div>
 
     <main id="action-main" tabindex="-1">
-      <nav class="action-local-nav" aria-label="当前项目与复盘">
-        <button id="open-project" class="button button--quiet" type="button" aria-haspopup="dialog">当前项目</button>
-        <button id="open-review" class="button button--quiet" type="button" disabled>反馈后改判</button>
-      </nav>
+      <header class="action-page-heading">
+        <div>
+          <h1>把方案，变成下一步行动。</h1>
+          <p>先取用内容，再记录实际发生的事。让下一次判断，有迹可循。</p>
+        </div>
+        <nav class="action-local-nav" aria-label="当前项目与复盘">
+          <button id="open-project" class="button button--secondary" type="button" aria-haspopup="dialog">活动档案</button>
+          <button id="open-review" class="button button--quiet" type="button" disabled>查看已存复盘</button>
+        </nav>
+      </header>
+      <div data-workflow-steps></div>
+      <div id="action-view-tabs" class="action-view-tabs" role="tablist" aria-label="执行与复盘" hidden>
+        <button id="action-work-tab" type="button" role="tab" aria-controls="work-panel" aria-selected="true">操作与成品</button>
+        <button id="action-feedback-tab" type="button" role="tab" aria-controls="feedback-panel" aria-selected="false" tabindex="-1">反馈与复盘</button>
+        <span>本机记录 · 实际执行由你确认</span>
+      </div>
 
       <section id="load-state" class="action-state" aria-labelledby="load-title">
-        <h1 id="load-title">读取当前行动</h1>
+        <h2 id="load-title">读取当前行动</h2>
         <p id="load-message" role="status" aria-live="polite">正在读取本机浏览器中的选择与记录。</p>
         <button id="retry-load" class="button button--secondary" type="button" hidden>重试读取</button>
       </section>
 
       <section id="empty-state" class="action-state" aria-labelledby="empty-title" hidden>
-        <h1 id="empty-title">先选一件要做的事</h1>
+        <h2 id="empty-title">先选一件要做的事</h2>
         <p id="empty-description">这里暂时没有可取用的当前行动。到第二页选定路径后，再来查看内容和步骤。</p>
         <button id="go-decisions-empty" class="button" type="button">去第二页看选择</button>
       </section>
 
       <div id="action-content" hidden>
+        <section id="work-panel" role="tabpanel" aria-labelledby="action-work-tab" tabindex="0">
         <header class="action-heading">
           <p id="selected-plan-label" class="selected-plan-label">已选方案</p>
           <div class="action-heading-copy">
-            <p class="action-task-intro">今天只做这一件事</p>
             <div class="action-heading-line">
-              <h1 id="action-title" tabindex="-1">当前行动</h1>
+              <h2 id="action-title" tabindex="-1">当前行动</h2>
               <p id="round-label" class="action-round-label"></p>
             </div>
             <div id="context-meta" class="action-context"></div>
@@ -49,11 +61,7 @@
               <p id="problem-summary" class="action-problem"></p>
             </details>
           </div>
-          <div class="action-fixed-context">
-            <h2>本轮保持不变</h2>
-            <ul id="keep-fixed-list"><li>以当前已选计划为准，未明确项保持未知。</li></ul>
-            <button class="button button--quiet action-change-path" type="button" data-nav="decisions">回去换一条路径</button>
-          </div>
+          <button class="button button--secondary action-change-path" type="button" data-nav="decisions">返回比较方案</button>
         </header>
 
         <div class="action-layout">
@@ -61,7 +69,7 @@
             <div class="action-workspace">
               <div class="artifact-navigation">
                 <header class="artifact-list-heading">
-                  <h2 id="delivery-title" data-fold-title>可以直接使用的修改稿</h2>
+                  <h2 id="delivery-title" data-fold-title>本轮操作与成品</h2>
                   <span id="artifact-count" class="artifact-count"></span>
                 </header>
                 <div id="artifact-list" role="tablist" aria-orientation="horizontal" aria-label="选择行动内容"></div>
@@ -101,7 +109,7 @@
                 <footer class="preview-export">
                   <div class="action-export-row">
                     <button id="copy-all" class="button" type="button" aria-describedby="artifact-status" disabled>复制全部文案</button>
-                    <button id="export-pack" class="button button--secondary" type="button">下载执行清单 TXT</button>
+                    <button id="export-pack" class="button button--secondary" type="button">下载执行包 TXT</button>
                     <button id="select-all" class="button button--quiet" type="button" disabled>手动选全文</button>
                   </div>
                   <p class="preview-export-scope">复制全部仅含文案；TXT 是当前行动整包，另含已有核对清单、步骤、实验计划、必要风险、来源与稿件版本。</p>
@@ -132,6 +140,12 @@
           </section>
 
           <aside class="action-guidance" aria-labelledby="experiment-title">
+            <section class="action-guidance-section action-fixed-context">
+              <h2>这一次，按计划去做</h2>
+              <p class="action-field-note">保持单一变量，把实际改动留在反馈里。</p>
+              <h3>本轮保持不变</h3>
+              <ul id="keep-fixed-list"><li>以当前已选计划为准，未明确项保持未知。</li></ul>
+            </section>
             <section class="action-guidance-section action-experiment-section">
               <h2 id="experiment-title">本轮单变量实验</h2>
               <div id="experiment-content"></div>
@@ -148,14 +162,19 @@
               <h3>必要风险</h3>
               <ul id="risk-list" class="action-risk-list"></ul>
             </section>
+            <div class="action-guidance-footer">
+              <button id="go-feedback" class="button" type="button">记录实际执行与反馈 →</button>
+              <p class="action-field-note">可以记录未执行或只做了一部分，不必把计划填写成完成。</p>
+            </div>
           </aside>
         </div>
+        </section>
 
-        <details id="feedback-panel" class="action-feedback action-disclosure" open>
-          <summary>
-            <span class="action-feedback-title">准备好以后，记录采用与执行</span>
+        <section id="feedback-panel" class="action-feedback" role="tabpanel" aria-labelledby="action-feedback-tab" tabindex="0" hidden>
+          <header class="action-feedback-heading">
+            <h2 class="action-feedback-title">把真实反馈，带回下一轮</h2>
             <span class="action-feedback-hint">选填，不影响取用</span>
-          </summary>
+          </header>
 
           <div class="action-feedback-body">
             <form id="feedback-form">
@@ -228,8 +247,8 @@
                   </div>
                 </div>
 
-                <details id="feedback-more" class="action-disclosure action-feedback-more">
-                  <summary>补充样本、变化与新限制（选填）</summary>
+                <details id="feedback-more" class="action-disclosure action-feedback-more" open>
+                  <summary>观察数据与新限制（选填）</summary>
                   <div class="feedback-metric-row">
                     <div class="action-form-field">
                       <label for="feedback-sample-size">新增商品点击（次）</label>
@@ -310,6 +329,11 @@
             </form>
 
             <div class="action-feedback-followup">
+              <h2>看结果，也看它的来处</h2>
+              <p class="action-field-note">是否采用、实际做了多少、观察到什么，分别留下记录。</p>
+              <div class="feedback-principle"><h3>允许“还不知道”</h3><p>空白保持未知，不把缺失值填成零，也不把感受当成测量结果。</p></div>
+              <div class="feedback-principle"><h3>回到当时的版本</h3><p>每条反馈关联原方案与稿件版本。保存后重新读回，再查看本机规则复盘。</p></div>
+              <div class="feedback-principle"><h3>下一步，由你决定</h3><p>只有共享规则返回候选、你明确接受且保存成功后，才建立下一轮。</p></div>
               <section id="saved-feedback" aria-labelledby="saved-feedback-title" hidden>
                 <h3 id="saved-feedback-title">已保存的记录</h3>
                 <div id="saved-feedback-content"></div>
@@ -318,12 +342,12 @@
               <p id="round-status" class="status" role="status" aria-live="polite"></p>
             </div>
           </div>
-        </details>
+        </section>
       </div>
 
-      <section id="review-content" class="action-review" aria-labelledby="review-title" hidden>
+      <section id="review-content" class="action-review" role="tabpanel" aria-labelledby="action-feedback-tab" hidden>
         <header class="review-heading">
-          <h1 id="review-title" tabindex="-1">反馈后改判</h1>
+          <h2 id="review-title" tabindex="-1">把这一次，看清楚。</h2>
           <button id="return-action" class="button button--secondary" type="button">返回当前行动</button>
         </header>
 
@@ -380,15 +404,15 @@
               <p>尚无候选执行稿。共享层需先返回适用方案；预览不会覆盖当前稿件。</p>
             </div>
             <div class="action-form-actions">
-              <button id="generate-candidate" class="button" type="button" aria-describedby="candidate-dependency" disabled>生成完整执行稿</button>
+              <button id="generate-candidate" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>重新核对候选</button>
               <button id="show-change-list" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>查看修改清单</button>
             </div>
             <p id="candidate-dependency" class="action-dependency-note">候选再判断待接通（C7），不会按 A→B 固定切换；未确认的产品事实不能写成承诺。</p>
           </section>
 
           <section class="review-section" aria-labelledby="review-rules-title">
-            <h2 id="review-rules-title">第二轮实验规则</h2>
-            <div id="review-rules">
+            <h2 id="review-rules-title">下一轮实验要点</h2>
+            <div id="review-rules" tabindex="-1">
               <dl class="experiment-facts">
                 <dt>本轮只改什么</dt><dd>等待候选计划</dd>
                 <dt>继续保持不变</dt><dd>等待候选计划</dd>
@@ -398,10 +422,11 @@
               </dl>
             </div>
             <div class="action-form-actions">
-              <button id="start-candidate" class="button" type="button" aria-describedby="candidate-start-dependency" disabled>开始第二轮</button>
+              <button id="start-candidate" class="button" type="button" aria-describedby="candidate-start-dependency" disabled>明确接受，开始下一轮</button>
               <button id="pause-review" class="button button--secondary" type="button">暂时不继续</button>
             </div>
             <p id="candidate-start-dependency" class="action-dependency-note">下一轮创建待接通（C8）。只有明确接受候选并成功建轮，才会形成正式记录；缺少退款等数据不能视为风险未触发。</p>
+            <p id="candidate-status" class="status" role="status" aria-live="polite" hidden></p>
           </section>
         </div>
 

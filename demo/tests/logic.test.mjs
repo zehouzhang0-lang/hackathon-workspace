@@ -2325,3 +2325,192 @@ test('C8 saved review matches recomputed business content while view-event revis
 });
 
 }
+
+// P3 presentation and exact acceptance payload regressions; existing business assertions stay unchanged.
+import { actionAcceptancePayload, actionReviewPresentation } from '../pages/action.js';
+import { workspaceFeedbackSource, workspaceRounds, workspaceMemory } from '../shared/workspace-view.js';
+
+{
+function p3Review(draft = {}) {
+  const h = harness('juicer_cup_v1');
+  analyze(h);
+  selectAndSave(h, h.state.analysis.paths.findIndex((path) => path.optionLabel === 'A'));
+  const artifact = currentArtifacts(h.state).find((item) => item.kind === 'copy');
+  const plan = activeSelection(h.state).path.experiment;
+  const payload = makeFeedbackPayload(artifact, {
+    adoption: 'adopted', execution: 'done', scope: '只替换详情页首屏文字层', executedAt: '2026-08-28',
+    observation: 'unchanged', rawText: '首屏已调整，自述没有明显变化，商品标题不能修改。',
+    sampleSize: String(plan.minSample), guardrailStatus: 'clear', constraintsText: '商品标题不能修改', ...draft,
+  }, { detailsVersion: FEEDBACK_DETAILS_VERSION });
+  h.send('FEEDBACK_SAVE', payload);
+  const feedbackId = h.state.feedbackRecords.at(-1).id;
+  const result = buildExperimentReviewForC8(h.state, feedbackId);
+  assert.equal(result.ok, true, result.message);
+  return { h, artifact, review: result.review, feedbackPayload: payload };
+}
+
+test('P3 projects exactly four acceptance references without copying a candidate plan or mutating review', () => {
+  const { review } = p3Review();
+  const before = structuredClone(review);
+  const payload = actionAcceptancePayload(Object.freeze(review));
+  assert.deepEqual(payload, { feedbackId: review.sourceFeedbackId, reviewFingerprint: review.fingerprint,
+    roundId: review.roundId, inputVersion: review.inputVersion });
+  assert.deepEqual(Object.keys(payload).sort(), ['feedbackId', 'inputVersion', 'reviewFingerprint', 'roundId']);
+  payload.roundId = 'changed_only_in_projection';
+  assert.deepEqual(review, before);
+});
+
+test('P3 never enables acceptance for missing, paused, incomplete or non-shared candidates', () => {
+  const { review } = p3Review();
+  for (const value of [null, {}, { ...review, decision: 'pause' }, { ...review, decision: 'needs_information' },
+    { ...review, nextAction: null }, { ...review, source: 'remote_guess' }, { ...review, moneyaiCalled: true },
+    { ...review, fingerprint: 'not-a-saved-fingerprint' }, { ...review, inputVersion: 0 }]) {
+    assert.equal(actionAcceptancePayload(value), null);
+  }
+});
+
+test('P3 conclusion presentation preserves shared reasons and does not infer success from missing data', () => {
+  const { review } = p3Review({ execution: 'unknown', sampleSize: '', guardrailStatus: 'unknown' });
+  assert.equal(review.decision, 'needs_information');
+  assert.equal(review.observation.sampleSize, null);
+  assert.equal(review.observation.guardrailStatus, 'unknown');
+  assert.equal(actionAcceptancePayload(review), null);
+  const presentation = actionReviewPresentation(review);
+  assert.equal(presentation.reason, review.reason);
+  assert.equal(presentation.title, '先补齐执行与观察');
+  assert.match(actionReviewPresentation(null).reason, /未补造结论/);
+});
+
+test('P3 exact projected payload accepts once, reads a complete round and is safe to retry', () => {
+  const { h, review } = p3Review();
+  const payload = actionAcceptancePayload(review);
+  const before = structuredClone(h.state);
+  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
+  const receipt = getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint);
+  assert.equal(receipt.ok, true, receipt.message);
+  assert.equal(receipt.source.sourceRoundId, payload.roundId);
+  assert.equal(receipt.source.sourceInputVersion, payload.inputVersion);
+  assert.equal(h.state.round.index, 2);
+  assert.deepEqual(h.state.executionRecords, before.executionRecords);
+  assert.deepEqual(h.state.feedbackRecords, before.feedbackRecords);
+  const accepted = structuredClone(h.state);
+  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, false);
+  assert.deepEqual(h.state, accepted);
+  assert.equal(h.state.history.filter((entry) => entry.type === 'experiment_acceptance').length, 1);
+});
+
+test('P3 previously displayed payload cannot accept after a newer related feedback record exists', () => {
+  const { h, review, feedbackPayload } = p3Review();
+  const payload = actionAcceptancePayload(review);
+  h.send('FEEDBACK_SAVE', { ...feedbackPayload, feedbackRecord: {
+    ...feedbackPayload.feedbackRecord, observation: 'worse', rawText: '后来发现观察变差，先核对。',
+  } });
+  const before = structuredClone(h.state);
+  assert.throws(() => h.send('EXPERIMENT_ACCEPT', payload), /已有相关反馈|执行自述已更新/);
+  assert.deepEqual(h.state, before);
+  assert.equal(h.state.round.index, 1);
+  assert.equal(getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint).ok, false);
+});
+
+test('workspace empty session has no invented archive, merchant, materials or business memory', () => {
+  const h = harness();
+  const before = structuredClone(h.state);
+  assert.deepEqual(workspaceRounds(h.state), []);
+  const memory = workspaceMemory(h.state);
+  assert.equal(memory.merchant, null);
+  assert.equal(memory.product, null);
+  assert.equal(memory.problem, null);
+  assert.equal(memory.materialCount, 0);
+  assert.equal(memory.knownFactCount, 0);
+  assert.equal(memory.archivedRoundCount, 0);
+  assert.equal(memory.synthetic, false);
+  assert.deepEqual(h.state, before);
+});
+
+test('workspace corrected unknown product does not restore old intake draft or hide synthetic provenance', () => {
+  const h = harness('juicer_cup_v1');
+  analyze(h);
+  const product = findIntakeFieldFact(h.state, 'productName');
+  assert.ok(product);
+  const oldName = h.state.input.intake.draft.productName;
+  assert.equal(workspaceMemory(h.state).product, oldName);
+  h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion,
+    fact: { ...product, value: null, availability: 'unknown' }, reason: '商品身份需重新核对，明确改为未知' });
+  assert.equal(h.state.fixtureId, null);
+  assert.equal(h.state.input.intake.draft.productName, oldName, 'old draft stays as history, not current fact');
+  const before = structuredClone(h.state);
+  const memory = workspaceMemory(h.state);
+  assert.equal(memory.product, null);
+  assert.equal(memory.stale, true);
+  assert.equal(memory.synthetic, true);
+  assert.equal(workspaceRounds(h.state)[0].status, '资料已更新，待重新分析');
+  assert.deepEqual(h.state, before);
+});
+
+test('workspace feedback on A never labels a later B selection as already having feedback', () => {
+  const { h, review } = p3Review();
+  assert.equal(workspaceRounds(h.state)[0].status, '反馈已保存');
+  const pathB = h.state.analysis.paths.find((path) => path.optionLabel === 'B');
+  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: pathB.id, inputVersion: h.state.round.inputVersion });
+  const before = structuredClone(h.state);
+  const current = workspaceRounds(h.state).find((entry) => !entry.archived);
+  assert.equal(current.path.id, pathB.id);
+  assert.equal(current.status, '已选择方案');
+  assert.ok(current.feedbacks.some((record) => record.pathId === review.pathId));
+  assert.equal(current.feedbacks.some((record) => record.pathId === pathB.id), false);
+  assert.equal(current.executions.some((record) => record.pathId === pathB.id), false);
+  const feedback = current.feedbacks.find((record) => record.pathId === review.pathId);
+  const source = workspaceFeedbackSource(h.state, feedback);
+  assert.equal(source.path.id, review.pathId, 'archive labels the original A, never the current B');
+  assert.equal(source.artifact.id, feedback.artifactId);
+  assert.equal(source.artifact.version, feedback.artifactVersion);
+  assert.equal(source.execution.pathId, review.pathId);
+  const missingVersion = workspaceFeedbackSource(h.state, { ...feedback, artifactVersion: feedback.artifactVersion + 1 });
+  assert.equal(missingVersion.artifact, null, 'never borrow a different saved version');
+  assert.equal(missingVersion.execution, null);
+  assert.deepEqual(h.state, before);
+});
+
+test('workspace real acceptance groups original materials, selection and feedback by their saved round', () => {
+  const { h, review } = p3Review();
+  const original = structuredClone(h.state);
+  const payload = actionAcceptancePayload(review);
+  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
+  assert.equal(getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint).ok, true);
+  const beforeProjection = structuredClone(h.state);
+  const rounds = workspaceRounds(h.state);
+  assert.deepEqual(rounds.map((entry) => entry.round.index), [2, 1]);
+  const [current, archived] = rounds;
+  assert.equal(archived.archived, true);
+  assert.equal(archived.status, '已归档');
+  assert.equal(archived.round.id, original.round.id);
+  assert.deepEqual(archived.selection, original.selection);
+  assert.deepEqual(archived.input.materials, original.input.materials);
+  assert.deepEqual(archived.feedbacks, original.feedbackRecords);
+  assert.deepEqual(archived.executions, original.executionRecords);
+  assert.equal(archived.path.id, review.pathId);
+  assert.equal(workspaceFeedbackSource(h.state, archived.feedbacks[0]).path.id, review.pathId);
+  assert.equal(current.archived, false);
+  assert.equal(current.path.actionKey, 'juicer_faq');
+  assert.notEqual(current.path.id, archived.path.id);
+  assert.deepEqual(current.feedbacks, []);
+  assert.deepEqual(current.executions, []);
+  assert.deepEqual(current.artifacts, []);
+  assert.equal(current.status, '已选择方案');
+  assert.equal(workspaceMemory(h.state).archivedRoundCount, 1);
+  assert.equal(workspaceMemory(h.state).synthetic, true);
+  assert.deepEqual(h.state, beforeProjection);
+
+  // Add a real reducer material in R2: it must not appear retroactively in R1's input snapshot.
+  h.send('MATERIAL_ADD', {}, { preparedMaterial: {
+    name: '第二轮待核对问题.txt', mime: 'text/plain', size: 16, sha256: 'workspace-r2-material', file: null,
+  } });
+  const updated = workspaceRounds(h.state);
+  assert.equal(updated[0].input.materials.length, 1);
+  assert.deepEqual(updated[1].input.materials, original.input.materials);
+  assert.deepEqual(updated[1].selection, original.selection);
+  assert.deepEqual(updated[1].feedbacks, original.feedbackRecords);
+  assert.deepEqual(updated[0].feedbacks, []);
+  assert.equal(updated[0].path, null, 'new input invalidates selection instead of borrowing the old round path');
+});
+}

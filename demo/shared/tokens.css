@@ -1,20 +1,21 @@
 :root {
   color-scheme: light;
-  --color-bg: #faf9f6;
+  --color-bg: #f6f7f4;
   --color-surface: #ffffff;
-  --color-text: #262621;
-  --color-muted: #6a6a60;
-  --color-accent: #ce431c;
-  --color-line: #dad8cf;
-  --color-danger: #aa2f2f;
-  --color-success: #32624b;
-  --radius-control: 14px;
+  --color-text: #202923;
+  --color-muted: #68736b;
+  --color-accent: #245b45;
+  --color-accent-soft: #edf3ed;
+  --color-line: #e0e5dc;
+  --color-danger: #a43d38;
+  --color-success: #245b45;
+  --radius-control: 12px;
   --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   --space-1: 8px;
   --space-2: 16px;
   --space-3: 24px;
   --space-4: 32px;
   --space-5: 48px;
-  /* The shell includes 24px padding per side; PC content aligns to 90% / 1728px. */
-  --content-width: min(calc(90% + 48px), 1776px);
+  --sidebar-width: 244px;
+  --content-width: 1440px;
 }

@@ -20,6 +20,8 @@ git config user.name "zehouzhang0-lang"
 git config user.email "277669114+zehouzhang0-lang@users.noreply.github.com"
 ```
 
+队友设备也可以用自己的 GitHub 账号登录（例如已获写权限的 `zhiyukouchi-del`），克隆后把提交身份换成自己的用户名和对应 no-reply 邮箱。一台机器登多个账号时，用 `gh auth switch -h github.com -u 用户名` 切换当前生效账号。注意：协作者邀请必须先在网页上接受，否则 `push` 会返回 403 拒绝。
+
 ## 每次开工前
 
 确认上次工作已提交，并拉取其他设备推送的更新：

@@ -4,6 +4,12 @@
 
 ## 当前状态
 
+2026-08-29：按用户选择的商业第二大脑 Demo 替换本项目界面。现在使用固定侧栏、资料/商业记忆双栏、并排方案卡，以及操作/复盘页签。原生 HTML/CSS/JS 页面直接接回原项目控制器、IndexedDB 和 Python API，无需另启一套前端工程。运行与演示步骤见 [Demo 说明](demo/README.md)。
+
+路芽品牌与原业务规则保留。当前分析仍为明确标注的本地规则演示；MoneyAI 项目分析与历史通路、OCR 和 Excel 内容解析尚未接通。本次没有发布上线或自动推送代码。
+
+## 2026-08-28 开发记录
+
 当前执行题目：**抖音做了不出单，怎么办？**
 
 2026-08-28 晚：REQ-30首批已落地榨汁杯首次资料、四种子完整草稿与原样确认不丢演示身份（66项Node与P3限定10组通过，详见[项目进度](PROGRESS.md)）；第二台开发设备（账号`zhiyukouchi-del`）已获仓库写权限并通过推送实测。深夜追加：第一页XLSX解析（作品导出/榜单快照/metric约定表，区间估值不折算、全0判采集缺失）已落地，解析产出的事实与CSV/JSON同构、直接进入已发布的PRD V1分析链（P1→P2承接）；另附独立分析引擎`shared/analysis.js`（未接线，避免覆盖PRD V1语义）。全量Node回归通过后推送；浏览器与真实UI验收待完成。真实浏览器、MoneyAI业务与最终视觉仍未验收。
@@ -30,7 +36,7 @@
 python -X utf8 server/app.py --port 4188
 ```
 
-访问`http://127.0.0.1:4188/01-intake.html`；当前统筹已有4188服务，勿重复抢端口。运行步骤与真实能力边界见[Demo说明](demo/README.md)，MoneyAI接入见[工作流记录](docs/development/demo/MONEYAI_INTEGRATION.md)。服务只提供demo目录与窄项目API，不暴露仓库私密原件。
+访问 [本机工作台](http://127.0.0.1:4188/01-intake.html)。若 4188 已被本项目占用，复用现有服务，不清理未知进程。运行步骤与真实能力边界见[Demo说明](demo/README.md)，MoneyAI接入见[工作流记录](docs/development/demo/MONEYAI_INTEGRATION.md)。服务只提供 demo 目录与窄项目 API，不暴露仓库私密原件。
 
 ## 从这里开始
 

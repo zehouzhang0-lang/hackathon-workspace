@@ -937,7 +937,8 @@ function startIntakePage() {
     questionBack: byId("clarification-back"), questionHistory: byId("question-history"),
     returnReview: byId("return-to-review"), reviewCautions: byId("review-cautions"),
     reviewCautionsList: byId("review-cautions-list"), reviewTranscript: byId("review-transcript"),
-    reviewDescription: byId("review-description")
+    reviewDescription: byId("review-description"),
+    memoryFacts: byId("memory-facts"), memorySource: byId("memory-source")
   };
   let api = null, state = null, busy = false, composing = false, lastCompositionAt = -Infinity;
   let descriptionDirty = false, focusDirty = false, organizedVersion = null, organizationVisible = false;
@@ -1039,7 +1040,8 @@ function startIntakePage() {
     ui.questionBack.disabled = busy || !!pending;
     ui.questionDiscard.disabled = blocked;
     ui.questionDiscard.hidden = !questionDirty || contextMatches(questionContext);
-    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" : "确认，开始分析";
+    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" :
+      readyToAnalyze ? "确认，开始分析" : "确认理解，继续";
     for (const list of [ui.materials, ui.imageMaterials]) {
       for (const node of list.querySelectorAll("[data-mutates]")) node.disabled = blocked;
     }
@@ -1119,7 +1121,12 @@ function startIntakePage() {
   function setIntakeStage(stage, message) {
     intakeStage = stage;
     document.body.dataset.intakeStage = stage;
-    if (message && ui.voiceStage.textContent !== message) ui.voiceStage.textContent = message;
+    const stageMessage = message || {
+      confirming: "当前为理解核对阶段；可以纠错或补充资料。",
+      questioning: "正在补充本轮信息；可以回答、跳过或保留未知。",
+      ready: "核对与补充已保留，确认后开始本轮分析。"
+    }[stage];
+    if (stageMessage && ui.voiceStage.textContent !== stageMessage) ui.voiceStage.textContent = stageMessage;
     ui.questionSection.hidden = stage !== "questioning";
   }
 
@@ -1456,7 +1463,8 @@ function startIntakePage() {
       "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
     if (skipped.length) reviewMessage += " 部分材料未进入提取请求，原件与已有解析仍保留。";
     organizationVisible = true; readyToAnalyze = false;
-    setIntakeStage("confirming");
+    setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
+      "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");
     render();
     status(result.ok ? "请先核对经营情况，再继续。" : result.message);
   }
@@ -1758,6 +1766,7 @@ function startIntakePage() {
 
   function render() {
     if (!state) { updateControls(); return; }
+    renderBusinessMemory();
     ui.materials.replaceChildren();
     ui.imageMaterials.replaceChildren();
     purgeThumbnails();
@@ -1823,6 +1832,83 @@ function startIntakePage() {
     ui.returnReview.hidden = !intakeApi || !contextDraft;
     renderQuestions();
     updateControls();
+  }
+
+  // A read-only view of the shared session, not another memory store or analysis.
+  // Unsaved text and local correction drafts must never appear as saved evidence.
+  function renderBusinessMemory() {
+    if (!ui.memoryFacts || !ui.memorySource) return;
+    ui.memoryFacts.replaceChildren();
+    const savedIntake = state.input.intake;
+    const addGroup = (label, items, empty, qualifier = "") => {
+      const row = element("div");
+      const value = element("dd");
+      row.append(element("dt", label), value);
+      if (!items.length) value.append(element("p", empty));
+      else for (const item of items.slice(0, 3)) value.append(element("p", item));
+      if (items.length > 3) {
+        const more = element("details", undefined, "summary-overflow");
+        more.append(element("summary", "查看其余 " + (items.length - 3) + " 项"));
+        for (const item of items.slice(3)) more.append(element("p", item));
+        value.append(more);
+      }
+      if (qualifier) value.append(element("p", qualifier, "memory-qualifier"));
+      ui.memoryFacts.append(row);
+    };
+    const background = [["merchantName", "商家"], ["productName", "商品"], ["platform", "平台"]]
+      .map(([field, label]) => {
+        const fact = findIntakeFieldFact(state, field, savedIntake?.sourceBindings || []);
+        if (!fact) return savedIntake?.draft?.[field] ? label + "：待核对（尚无唯一来源）" : null;
+        const prefix = label + "：";
+        if (fact.verification === "conflicting") return prefix + "未知（来源有冲突）";
+        if (fact.availability === "not_applicable") return prefix + "本轮不适用";
+        if (fact.availability !== "known" || fact.value === null) return prefix + "未知";
+        if (fact.evidenceStatus === "owner_hypothesis") return prefix + String(fact.value) + "（商家假设，待验证）";
+        return prefix + String(fact.value);
+      }).filter(Boolean);
+    addGroup("经营背景", background, "尚未提供经营背景",
+      background.length ? "按当前已保存信息展示；商家填写与材料提取不等于外部核验。" : "");
+    // Current constraints already reflect shared invalidation and corrections.
+    // An older intake draft is a source record, never a fallback that restores them.
+    const constraints = state.input.constraints.map((item) => item.description +
+      (item.value === null || item.value === undefined ? "" : "：" + item.value + (item.unit || "")));
+    addGroup("当前约束", [...new Set(constraints)], "尚未提供，不默认预算或时间");
+
+    const previousRound = state.history.filter((entry) => entry.type === "round").at(-1);
+    if (previousRound) {
+      const selectionMatches = previousRound.selection?.analysisId === previousRound.analysis?.id &&
+        previousRound.selection?.inputVersion === previousRound.round.inputVersion;
+      const selected = selectionMatches ? previousRound.analysis?.paths?.find((path) => path.id === previousRound.selection?.pathId) : null;
+      const matchesSavedChoice = (entry) => entry.roundId === previousRound.round.id &&
+        selectionMatches && entry.inputVersion === previousRound.selection.inputVersion &&
+        entry.pathId === previousRound.selection.pathId && entry.analysisId === previousRound.selection.analysisId;
+      const feedback = state.feedbackRecords.filter(matchesSavedChoice).at(-1);
+      const execution = feedback ? state.executionRecords.find((entry) =>
+        entry.id === feedback.executionRecordId && matchesSavedChoice(entry) &&
+        entry.artifactId === feedback.artifactId && entry.artifactVersion === feedback.artifactVersion) :
+        state.executionRecords.filter(matchesSavedChoice).at(-1);
+      const executionLabels = { unknown: "执行情况未知", not_started: "自述未执行", partial: "自述部分执行", done: "自述已执行" };
+      const observationLabels = { unknown: "观察结果未知", better: "自述有所改善", unchanged: "自述无明显变化", worse: "自述有所变差" };
+      addGroup("上一轮记录", ["第 " + previousRound.round.index + " 轮 · " + (selected?.title || "未保存有效选路"),
+        (executionLabels[execution?.execution] || "执行情况未知") + "；" +
+        (observationLabels[feedback?.observation] || "观察结果未知")], "", "来源：本机历史活动；自述观察不等于因果结论。");
+    } else {
+      const pending = state.input.unknowns.filter((item) => item.description).map((item) => item.description);
+      const summary = [];
+      if (state.input.materials.length) summary.push("已接收 " + state.input.materials.length + " 份资料；接收不等于已理解。");
+      if (pending.length) summary.push("待核对：" + pending[0]);
+      addGroup("已记录线索", summary, "还没有历史活动。整理资料后，已保存的线索会出现在这里。",
+        pending.length > 1 ? "另有 " + (pending.length - 1) + " 项未知，完整内容见理解核对。" : "");
+    }
+    const syntheticAnalysis = (analysis) => analysis?.mode === "demo_fixture" ||
+      !!analysis?.sourceFixtureId || !!analysis?.experimentReview?.sourceFixtureId;
+    const includesDemo = !!state.fixtureId || syntheticAnalysis(state.analysis) || syntheticAnalysis(previousRound?.analysis) ||
+      [...state.input.facts, ...(previousRound?.input?.facts || [])].some((fact) =>
+        /合成演示|虚构/.test([fact.source?.note, fact.source?.locator?.quote, fact.subject].filter(Boolean).join(" ")));
+    ui.memorySource.textContent = (includesDemo ? "来源含显式载入的合成演示资料。" :
+      state.savedAt ? "来源：当前本机项目已保存资料。" : "尚未保存经营资料。") +
+      (savedIntake?.status === "stale" ? "关联输入已变化，需要重新核对。" : "") +
+      "本机展示不代表 MoneyAI 已写入或读回。";
   }
 
   function renderFacts() {

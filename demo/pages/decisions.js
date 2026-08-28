@@ -162,7 +162,7 @@ export function createDecisionReviewRunner(adapter) {
 // B-DECISION-DISPLAY-START
 // Display existing shared paths only; never synthesize a missing A or B.
 export function visibleDecisionPaths(paths) {
-  return Array.isArray(paths) ? paths.slice(0, 2) : [];
+  return Array.isArray(paths) ? paths.slice() : [];
 }
 
 export function decisionMetricText(path) {
@@ -1198,9 +1198,8 @@ function viewPath(pathId, openDetails = false) {
 }
 
 function renderPathList(paths) {
-  const total = list(paths).length;
   paths = visibleDecisionPaths(paths);
-  byId('paths-availability-note').textContent = paths.length < 2 ? '当前仅有' + paths.length + '条有依据的方案，不补造第二条。' : total > 2 ? '本轮只显示当前保存的前两条方案；其他旧方案未自动采用。' : '两条方案均需由你明确选择；按钮不会自动执行平台操作。';
+  byId('paths-availability-note').textContent = paths.length < 2 ? '当前仅有' + paths.length + '条有依据的方案，不补造第二条。' : '当前' + paths.length + '条方案均需由你明确选择；按钮不会自动执行平台操作。';
   const container = byId('path-list');
   container.replaceChildren();
   container.dataset.count = String(paths.length);
@@ -1217,14 +1216,41 @@ function renderPathList(paths) {
     if (path.actionKey) card.dataset.actionKey = path.actionKey;
     card.dataset.viewed = String(isViewed);
     card.dataset.selected = String(isSelected);
+    // The existing A/B contract determines emphasis; unlabeled paths get no invented recommendation.
+    card.dataset.recommended = String(path.optionLabel === 'A');
+    const topline = element('div', 'path-card-topline');
+    topline.append(element('span', 'path-option-label', path.optionLabel ? '方案 ' + path.optionLabel : '可选方案'));
+    if (path.optionLabel === 'A' || path.optionLabel === 'B') {
+      topline.append(element('span', path.optionLabel === 'A' ? 'path-recommend-label' : 'path-alternative-label',
+        path.optionLabel === 'A' ? '主推荐' : '备选路径'));
+    }
+    card.append(topline);
     const heading = element('header', 'path-card-heading');
-    if (text(path.optionLabel, '')) heading.append(element('span', 'path-option-label', path.optionLabel));
     const title = element('h3', '', text(path.title, '未命名行动'));
     title.id = 'path-card-' + path.id;
     card.setAttribute('aria-labelledby', title.id);
     heading.append(title);
     card.append(heading);
     card.append(element('p', 'path-card-status', [isViewed ? '当前查看' : '', isSelected ? '本轮已选' : '尚未选择'].filter(Boolean).join(' · ')));
+    const resources = element('div', 'path-card-resources');
+    for (const [label, value] of [['资金投入', costText(path.cost?.money, '元')], ['准备时间', costText(path.cost?.time, '分钟')]]) {
+      const resource = element('div');
+      resource.append(element('span', '', label), element('strong', '', value));
+      resources.append(resource);
+    }
+    card.append(resources);
+    const costNotes = [path.cost?.time?.note, path.cost?.money?.note].filter((value) => typeof value === 'string' && value.trim());
+    if (costNotes.length) card.append(element('p', 'path-card-cost-note', costNotes.join('；')));
+
+    const actionSection = element('section', 'path-card-section');
+    actionSection.append(element('h4', '', '具体会做什么'));
+    const steps = element('ol', 'path-card-steps');
+    // Split only existing clauses for readability; do not invent tasks or execution records.
+    text(path.action, '具体动作尚未提供').split('；').filter((value) => value.trim())
+      .forEach((value) => steps.append(element('li', '', value.trim())));
+    actionSection.append(steps);
+    card.append(actionSection);
+
     const content = element('dl', 'path-card-content');
     const addRow = (label, value) => {
       const group = element('div');
@@ -1237,30 +1263,48 @@ function renderPathList(paths) {
       content.append(group);
       return dd;
     };
-    addRow('具体做什么', text(path.action, '具体动作尚未提供'));
-    const cost = addRow('成本', costText(path.cost?.money, '元') + '；' + costText(path.cost?.time, '分钟'));
-    const costNotes = [path.cost?.time?.note, path.cost?.money?.note].filter((value) => typeof value === 'string' && value.trim());
-    if (costNotes.length) cost.append(element('span', 'path-card-cost-note', costNotes.join('；')));
-    addRow('风险', list(path.risk).map((entry) => text(entry.description, '风险待核对')));
     addRow('验证指标', decisionMetricText(path));
-    addRow('本轮保持不变', list(path.experiment?.keepFixed).join('；') || '尚未提供，执行前需核对');
+    const risk = addRow('选择前先看风险', list(path.risk).map((entry) => text(entry.description, '风险待核对')));
+    risk.parentElement.classList.add('path-card-risk');
     card.append(content);
+
+    const more = element('details', 'path-card-more');
+    more.append(element('summary', '', '查看依据、前提与观察计划'));
+    const moreContent = element('div', 'path-card-more-content');
+    if (text(path.experiment?.hypothesis, '')) {
+      moreContent.append(element('h4', '', '待验证假设'));
+      appendParagraph(moreContent, path.experiment.hypothesis);
+    }
+    moreContent.append(element('h4', '', '来自现有资料'));
+    appendList(moreContent, list(path.evidenceRefs).map((entry) => text(entry.summary)), '尚未提供依据，不能当作已经验证。');
+    moreContent.append(element('h4', '', '行动前先核对'));
+    appendList(moreContent, list(path.prerequisites).map((entry) =>
+      (({ met: '条件具备', unmet: '尚不具备', unknown: '待核对' })[entry.status] || '待核对') + '：' + text(entry.text)), '执行条件尚未提供。');
+    moreContent.append(element('h4', '', '本轮保持不变'));
+    appendList(moreContent, path.experiment?.keepFixed, '尚未提供，执行前需核对。');
+    moreContent.append(element('h4', '', '观察计划'));
+    appendParagraph(moreContent, text(path.experiment?.window?.description, '观察期尚未提供，不能编造固定门槛。'));
+    moreContent.append(element('h4', '', '何时先停下来'));
+    appendList(moreContent, list(path.experiment?.stopConditions).map((entry) => text(entry.text)), '停止条件尚待核对。');
+    more.append(moreContent);
+    card.append(more);
+
     const actions = element('div', 'path-card-actions');
-    const view = element('button', 'button button--quiet path-choice', '查看完整依据');
+    const view = element('button', 'button button--quiet path-choice', '完整依据与报告');
     view.type = 'button';
     view.dataset.pathId = path.id;
     view.setAttribute('aria-pressed', String(isViewed));
     view.setAttribute('aria-controls', 'path-detail-disclosure');
     view.setAttribute('aria-label', '查看' + optionText(path) + '：' + text(path.title));
     view.addEventListener('click', () => viewPath(path.id, true));
-    const select = element('button', 'button path-select', decisionSelectionLabel(path, isSelected));
+    const select = element('button', 'button' + (path.optionLabel === 'B' && !isSelected ? ' button--secondary' : '') + ' path-select', decisionSelectionLabel(path, isSelected));
     select.type = 'button';
     select.dataset.pathId = path.id;
     select.disabled = busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed;
     select.addEventListener('click', () => {
       if (viewPath(path.id)) void choosePath();
     });
-    actions.append(view, select);
+    actions.append(select, view);
     card.append(actions);
     container.append(card);
   });

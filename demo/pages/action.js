@@ -1,9 +1,18 @@
 import { enhanceFoldTitle } from '../shared/title-motion.js';
+import { buildExperimentReview } from '../shared/experiment-memory.js';
 
 const CONTRACT_VERSION = 'demo.v1';
 const EXECUTION_LABELS = { unknown: '执行情况未知', not_started: '还没执行', partial: '做了一部分', done: '自述已完成' };
 const ADOPTION_LABELS = { unknown: '采用情况未知', intended: '有意采用，尚未确认采用', adopted: '已采用', partial: '采用了一部分', declined: '没有采用' };
 const GUARDRAIL_LABELS = { unknown: '异常情况未知', clear: '暂未见明显异常（商家自述）', triggered: '自述发现异常，需核对' };
+const REVIEW_LABELS = { pause: '先暂停并核对', needs_information: '还需要补充信息',
+  continue_observation: '继续观察当前变量', change_variable: '可以评估下一变量' };
+const REVIEW_TREATMENTS = {
+  pause: '保留原稿，先核对异常与原计划停止条件；页面没有自动暂停或回滚。',
+  needs_information: '保留本轮记录，先补清实际改动、执行或同口径数据，不记为实验失败。',
+  continue_observation: '保留当前行动与观察，不自动更换变量或宣称建议有效。',
+  change_variable: '保留这轮原稿和反馈，评估共享返回的候选；是否已经接受，以单独核对的接受记录为准。',
+};
 const OBSERVATION_LABELS = { unknown: '观察结果未知', better: '感觉好一些', unchanged: '感觉没变化', worse: '感觉变差' };
 const SOURCE_LABELS = { merchant_statement: '商家自述', file_extract: '文件提取，待核对', derived: '派生计算', public_reference: '公共参考', scenario_assumption: '情景假设' };
 const INTAKE_SOURCE_LABELS = { voice: '语音转写', paste: '粘贴文字', manual: '手动填写', txt: 'TXT 材料', csv: 'CSV 材料', json: 'JSON 材料' };
@@ -253,6 +262,8 @@ export function describeActionPath(path, historical = false) {
     ? prefix + '只调整详情页首屏；文案与核对清单分开，未确认的商品信息不能直接发布。'
     : path?.actionKey === 'juicer_question_video'
     ? prefix + '提供真实问题验证内容的脚本与拍摄安排；还需实际验证和拍摄，不是视频文件，也不表示已执行。'
+    : path?.actionKey === 'juicer_faq' && path.experiment?.sourceFeedbackId
+    ? prefix + '来自明确接受后的购买问答区候选；只改问答区，保留未知说明，不修改已改首屏或商品标题。复制不记录采用或执行。'
     : path?.actionKey === 'juicer_faq'
     ? prefix + '提供购买问答参考稿；待核对的性能和售后另列清单，不进入“复制全部文案”。'
     : path?.actionKey === 'juicer_video_intro'
@@ -341,6 +352,73 @@ export function resolveFeedbackRecord(snapshot, feedbackId) {
   return { feedback, execution: execution ?? null, artifact, analysis, path, roundIndex: round?.index ?? null };
 }
 
+export function describeExperimentReview(review) {
+  if (review?.version !== 1 || !Object.hasOwn(REVIEW_LABELS, review.decision) ||
+      review.source !== 'local_fallback' || review.moneyaiCalled !== false) {
+    throw new Error('判断来源或版本无法核对，未展示为 MoneyAI 结果。');
+  }
+  return { title: REVIEW_LABELS[review.decision], treatment: REVIEW_TREATMENTS[review.decision],
+    source: '本机回退规则 · 未调用 MoneyAI · 商家自述尚未独立核验' };
+}
+
+export function candidatePlanRows(candidate) {
+  if (candidate?.status !== 'candidate') return [];
+  const sample = candidate.minSample === null || candidate.minSample === undefined ? '未知'
+    : textValue(candidate.minSample) + ' ' + textValue(candidate.minSampleUnit, '计数单位未知') + '（候选计划，不保证统计充分）';
+  return [
+    ['候选实验编号', textValue(candidate.experimentId)],
+    ['本轮只改什么', textValue(candidate.singleVariable)],
+    ['继续保持不变', candidate.keepFixed?.join('；') || '候选尚未提供'],
+    ['主要观察', FIELD_LABELS[candidate.target?.metric] ?? textValue(candidate.target?.metric)],
+    ['候选样本计划', sample],
+    ['观察时间', 'C7候选尚未提供完整窗口，不用原轮次代填'],
+    ['停止条件', 'C7候选尚未提供；新轮完整计划生成后，执行前仍须核对'],
+    ['回滚方式', 'C7候选尚未提供，不声称已经回滚'],
+  ];
+}
+
+export function reviewSnapshotMatches(snapshot, review) {
+  if (!review) return false;
+  const checked = buildExperimentReview(snapshot, review.sourceFeedbackId);
+  return checked.ok && checked.review.sessionId === review.sessionId &&
+    checked.review.fingerprint === review.fingerprint;
+}
+
+export function canAcceptExperimentReview(snapshot, review) {
+  const current = activeSelection(snapshot);
+  return Boolean(current && review?.decision === 'change_variable' && review.nextAction?.status === 'candidate' &&
+    snapshot.sessionId === review.sessionId && current.roundId === review.roundId &&
+    current.inputVersion === review.inputVersion && current.analysisId === review.analysisId &&
+    current.pathId === review.pathId && reviewSnapshotMatches(snapshot, review));
+}
+
+export function makeExperimentAcceptanceCommand(snapshot, review, commandId) {
+  if (!canAcceptExperimentReview(snapshot, review) || !/^[A-Za-z0-9_-]{1,80}$/.test(commandId ?? '') ||
+      !Number.isSafeInteger(snapshot.revision)) throw new Error('当前会话、原轮次、分析、选择或候选已变化，请重新读取后明确接受。');
+  return { type: 'EXPERIMENT_ACCEPT', commandId, expectedRevision: snapshot.revision,
+    payload: { feedbackId: review.sourceFeedbackId, reviewFingerprint: review.fingerprint,
+      roundId: review.roundId, inputVersion: review.inputVersion } };
+}
+
+export function acceptanceReceiptMatches(receipt, review) {
+  return Boolean(receipt?.ok && receipt.accepted === true && receipt.sourceFeedbackId === review?.sourceFeedbackId &&
+    receipt.reviewFingerprint === review.fingerprint && receipt.source?.sourceRoundId === review.roundId &&
+    receipt.source.sourceInputVersion === review.inputVersion && receipt.source.sourceAnalysisId === review.analysisId &&
+    receipt.source.sourcePathId === review.pathId && receipt.source.sourceArtifactId === review.artifactId &&
+    receipt.source.sourceArtifactVersion === review.artifactVersion);
+}
+
+export function experimentOriginLines(analysis) {
+  if (analysis?.funnelSource?.kind !== 'accepted_prior_snapshot') return [];
+  const source = analysis.funnelSource;
+  return [
+    '本轮来自明确接受的反馈候选；采用、执行和结果仍分别记录。',
+    '漏斗依据为原轮快照：分析 ' + textValue(source.analysisId) + '／轮次 ' + textValue(source.roundId) +
+      '／输入 v' + textValue(source.inputVersion) + '。不是本轮新增样本，不把新反馈点击拼进旧时间窗。',
+    '来源反馈：' + textValue(analysis.sourceFeedbackId) + '；原合成来源保留在原分析与接受记录中，不代表 MoneyAI 记忆。',
+  ];
+}
+
 export function buildActionPack(state, { exportId, generatedAt, allowSummaries = false }) {
   const context = activeSelection(state);
   const artifacts = currentArtifacts(state, context);
@@ -381,7 +459,7 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
     ? context.path.risk.flatMap((risk) => [`- ${risk.description}`, `触发条件：${textValue(risk.trigger?.text)}`,
       `暂停条件：${textValue(risk.stop?.text)}`, `恢复条件：${textValue(risk.restore?.text)}`]) : ['尚无完整风险资料。']));
   const plan = context.path.experiment;
-  lines.push('', '本轮实验卡', ...[...experimentIdentityRows(context.path), ...experimentCardRows(context.path, context.mode)].map(([label, value]) => label + '：' + value));
+  lines.push('', ...experimentOriginLines(referenceAnalysis(state, context)), '本轮实验卡', ...[...experimentIdentityRows(context.path), ...experimentCardRows(context.path, context.mode)].map(([label, value]) => label + '：' + value));
   if (plan) {
     lines.push('', '观察依据与口径',
       `观察对象：${textValue(plan.target?.subject)}`, `渠道：${textValue(plan.target?.channel)}；口径：${textValue(plan.target?.cohort)}`,
@@ -399,6 +477,13 @@ let shared;
 let state;
 let pageMode = 'action';
 let reviewFeedbackId = null;
+let activeReview = null;
+let accepting = false;
+let acceptanceBusyOwner = null;
+let pendingAcceptance = null;
+let acceptanceRecheckId = null;
+let acceptedReceipt = null;
+let acceptanceToken = 0;
 let viewReadToken = 0;
 const dialogOpeners = new Map();
 let shownContext;
@@ -419,6 +504,7 @@ let consentSignature = null;
 let dirty = false;
 let booting = false;
 let generating = false;
+let generationToken = 0;
 let saving = false;
 let exporting = false;
 let readingReview = false;
@@ -469,17 +555,46 @@ function acceptState(next) {
   if (!next || next.contractVersion !== CONTRACT_VERSION) throw new Error('共享状态版本不兼容，本页没有改写记录。');
   if (state && state.sessionId !== next.sessionId) {
     readFeedbackIds.clear();
+    acceptanceToken += 1;
     invalidateViewRead();
     reviewFeedbackId = null;
+    activeReview = null;
     pageMode = 'action';
     readEventLogged = false;
+  }
+  if (activeReview && !reviewSnapshotMatches(next, activeReview.review)) {
+    readFeedbackIds.delete(activeReview.review.sourceFeedbackId);
+    activeReview = null;
+  }
+  if (acceptedReceipt && (next.sessionId !== acceptedReceipt.sessionId ||
+      !shared?.getAcceptedExperimentRound?.(next, acceptedReceipt.sourceFeedbackId, acceptedReceipt.reviewFingerprint)?.ok)) {
+    acceptedReceipt = null;
   }
   state = next;
 }
 
-function commit(command) {
+function checkedAcceptedIdentity(snapshot, expected = null) {
+  const source = expected ?? snapshot.analysis?.experimentReview;
+  if (!source) return null; // Ordinary first-round and legacy artifacts have no acceptance dependency.
+  const receipt = typeof shared?.getAcceptedExperimentRound === 'function'
+    ? shared.getAcceptedExperimentRound(snapshot, source.sourceFeedbackId, source.reviewFingerprint) : null;
+  const identity = receipt?.ok ? Object.freeze({
+    sessionId: snapshot.sessionId, sourceFeedbackId: receipt.sourceFeedbackId, reviewFingerprint: receipt.reviewFingerprint,
+    acceptanceId: receipt.acceptanceId, acceptedAt: receipt.acceptedAt, roundId: receipt.roundId,
+    inputVersion: receipt.inputVersion, analysisId: receipt.analysisId, pathId: receipt.pathId, experimentId: receipt.experimentId,
+  }) : null;
+  if (!identity || (expected && Object.keys(identity).some((key) => identity[key] !== expected[key]))) {
+    throw Object.assign(new Error('接受来源已变化或未能完整核对，已停止准备和打开本轮稿件。' +
+      (receipt?.message || '请重新读取原反馈与接受记录。')), { code: receipt?.code || 'stale_input' });
+  }
+  return identity;
+}
+
+function commit(command, beforeDispatch = null) {
   const work = commandQueue.then(async () => {
-    const result = await shared.dispatch({ ...command, expectedRevision: state.revision });
+    // Synchronous guard and revision capture run together after earlier queued work, immediately before dispatch.
+    beforeDispatch?.(state);
+    const result = await shared.dispatch({ ...command, expectedRevision: command.expectedRevision ?? state.revision });
     if (result.ok) acceptState(result.state);
     else if (result.state) acceptState(result.state);
     return result;
@@ -492,10 +607,18 @@ function command(type, payload) {
   return { type, payload, commandId: id() };
 }
 
+function rememberAcceptedRead(snapshot) {
+  const feedbackId = snapshot.analysis?.sourceFeedbackId;
+  const receipt = feedbackId && typeof shared?.getAcceptedExperimentRound === 'function'
+    ? shared.getAcceptedExperimentRound(snapshot, feedbackId) : null;
+  acceptedReceipt = receipt?.ok ? { ...receipt, sessionId: snapshot.sessionId } : null;
+}
+
 async function readState(markRead = false) {
   const result = await shared.loadSession();
   if (result.ok) {
     acceptState(result.state);
+    rememberAcceptedRead(result.state);
     if (markRead && state.savedAt && state.revision > 0) {
       for (const record of state.feedbackRecords ?? []) readFeedbackIds.add(record.id);
     }
@@ -553,6 +676,9 @@ function renderExperiment(path) {
   const facts = node('dl', undefined, 'experiment-facts');
   for (const [label, value] of [...experimentIdentityRows(path), ...experimentCardRows(path, shownContext?.mode)]) facts.append(node('dt', label), node('dd', value));
   container.replaceChildren(facts);
+  for (const line of experimentOriginLines(referenceAnalysis(state, shownContext))) {
+    container.append(node('p', line, 'action-field-note'));
+  }
   container.append(node('p', '样本与观察时间只是计划条件，不代表统计充分或效果保证；缺失字段按原记录保留未知，不视为风险未触发。', 'action-warning'));
   const basis = $('experiment-basis');
   basis.replaceChildren(node('p', '沿用当前已选路径的观察计划，没有在本页重新诊断或调用专家。'));
@@ -806,8 +932,9 @@ function renderHistory() {
 
 function render() {
   if (!state) return;
-  $('open-project').disabled = false;
-  $('open-review').disabled = saving || readingReview || !(state.feedbackRecords ?? []).some((record) => resolveFeedbackRecord(state, record.id));
+  renderAcceptanceControls();
+  $('open-project').disabled = accepting;
+  $('open-review').disabled = accepting || saving || readingReview || !(state.feedbackRecords ?? []).some((record) => resolveFeedbackRecord(state, record.id));
   const current = activeSelection(state);
   const keepOldDraft = dirty && shownContext && !sameReference(current, shownContext);
   const context = keepOldDraft ? shownContext : current;
@@ -875,7 +1002,7 @@ function render() {
     consentSignature = null;
   }
   $('export-pack').disabled = exporting || generating || generationFailures.length > 0 || !artifacts.length || keepOldDraft;
-  $('feedback-fields').disabled = saving || !artifacts.length;
+  $('feedback-fields').disabled = saving || accepting || Boolean(pendingAcceptance) || !artifacts.length;
   const select = $('feedback-artifact');
   const optionsKey = artifacts.map((artifact) => `${artifact.id}:${artifact.version}`).join('|');
   if (!dirty && select.dataset.optionsKey !== optionsKey) {
@@ -901,14 +1028,25 @@ function matchesDraft(artifact, draft) {
 }
 
 async function ensureArtifacts() {
-  if (generating || dirty) return;
+  if (generating || dirty || accepting || pendingAcceptance) return;
   const context = activeSelection(state);
   if (!context) return;
+  const token = ++generationToken;
+  const acceptanceRequest = acceptanceToken;
   generating = true;
   generationFailures = [];
   let drafts = [];
+  let acceptedIdentity = null;
+  const checkBeforeSave = (snapshot) => {
+    if (token !== generationToken || (acceptedIdentity && acceptanceRequest !== acceptanceToken)) {
+      throw Object.assign(new Error('本次稿件准备已被后续操作取代，没有继续保存。'), { code: 'request_cancelled' });
+    }
+    if (acceptedIdentity) checkedAcceptedIdentity(snapshot, acceptedIdentity);
+  };
   $('artifact-retry').hidden = true;
   try {
+    // Freeze the original acceptance identity; a later cleared UI receipt must not downgrade this run to first-round behavior.
+    acceptedIdentity = checkedAcceptedIdentity(state);
     const result = shared.buildDemoArtifact(state);
     if (!result.ok) { status('artifact-status', errorText(result), true); $('artifact-retry').hidden = false; return; }
     drafts = result.artifacts;
@@ -918,7 +1056,7 @@ async function ensureArtifacts() {
       if (currentArtifacts(state, context).some((artifact) => matchesDraft(artifact, draft))) continue;
       const key = JSON.stringify(draft);
       if (!artifactCommands.has(key)) artifactCommands.set(key, command('ARTIFACT_SAVE', { artifact: draft }));
-      const saved = await commit(artifactCommands.get(key));
+      const saved = await commit(artifactCommands.get(key), checkBeforeSave);
       if (!saved.ok) {
         generationFailures = result.artifacts;
         $('artifact-retry').hidden = false;
@@ -927,19 +1065,26 @@ async function ensureArtifacts() {
       }
       artifactCommands.delete(key);
     }
+    checkBeforeSave(state);
     if (!generationFailures.length) status('artifact-status', '');
   } catch (error) {
+    if (token !== generationToken || (acceptedIdentity && acceptanceRequest !== acceptanceToken)) return false;
     generationFailures = drafts;
     status('artifact-status', error.message || '行动内容准备失败。', true);
     $('artifact-retry').hidden = false;
+    return false;
   } finally {
-    generating = false;
-    render();
+    if (token === generationToken) {
+      generating = false;
+      render();
+    }
   }
+  if (token !== generationToken || (acceptedIdentity && acceptanceRequest !== acceptanceToken)) return false;
   if (!sameReference(context, activeSelection(state))) {
     if (activeSelection(state) && !dirty) void ensureArtifacts();
-    return;
+    return false;
   }
+  return generationFailures.length === 0;
 }
 
 function renderCopyAllControls() {
@@ -1095,7 +1240,7 @@ export function findSavedFeedback(pending, next) {
 
 async function saveFeedback(event) {
   event?.preventDefault();
-  if (saving) return false;
+  if (saving || accepting || pendingAcceptance) return false;
   const signature = formSignature();
   if (signature === lastSavedDraft && !dirty) return true;
   try {
@@ -1170,12 +1315,13 @@ async function readReviewRecord(feedbackId, token, sessionId) {
   const bundle = resolveFeedbackRecord(result.state, feedbackId);
   if (!bundle) throw new Error('该记录或原稿引用不完整，未使用其他版本代替。');
   acceptState(result.state);
+  rememberAcceptedRead(result.state);
   readFeedbackIds.add(feedbackId);
-  return bundle;
+  return { ...bundle, snapshot: result.state };
 }
 
 async function openReview(feedbackId) {
-  if (readingReview || saving) return;
+  if (readingReview || saving || accepting) return;
   if (dirty) { status('round-status', '当前还有未保存的填写，请先保存或明确放弃，再查看已存记录的复盘。', true); return; }
   if (!feedbackId) { openProject(); return; }
   readingReview = true;
@@ -1184,7 +1330,14 @@ async function openReview(feedbackId) {
   $('next-round').disabled = true;
   try {
     status('round-status', '正在重新读取这条本机记录；不会创建下一轮。');
-    if (!await readReviewRecord(feedbackId, token, sessionId)) return;
+    const bundle = await readReviewRecord(feedbackId, token, sessionId);
+    if (!bundle) return;
+    const result = buildExperimentReview(bundle.snapshot, feedbackId);
+    if (!result.ok) throw new Error(result.message || '原记录来源核对失败，没有生成判断或候选。');
+    describeExperimentReview(result.review);
+    if (!reviewSnapshotMatches(state, result.review)) throw new Error('读取后来源已变化，请重新读取这条记录。');
+    activeReview = { bundle, review: result.review };
+    acceptanceRecheckId = null;
     reviewFeedbackId = feedbackId;
     pageMode = 'review';
     render();
@@ -1202,6 +1355,7 @@ async function openReview(feedbackId) {
 }
 
 function returnToAction() {
+  if (accepting) { status('acceptance-status', '正在核对接受操作，请稍候。'); return; }
   const wasReading = readingReview;
   invalidateViewRead();
   if (wasReading) status('round-status', '已取消查看；记录保持不变。');
@@ -1242,65 +1396,322 @@ function sourceViewEvents() {
     context.roundId, 'source:' + context.inputVersion + ':' + factId);
 }
 
+function renderAcceptanceControls() {
+  const button = $('acceptance-retry');
+  button.hidden = !pendingAcceptance && !acceptanceRecheckId;
+  button.disabled = accepting || readingReview || saving;
+  button.textContent = pendingAcceptance
+    ? pendingAcceptance.phase === 'readback' ? '重试读取建轮记录' : '核对结果并重试原接受操作'
+    : '重新读取候选，核对后再接受';
+}
+
+function discardAcceptanceReminder() {
+  if (accepting) return false;
+  if (!window.confirm('只放弃本页的重试提示，不会撤销可能已保存的接受操作。离开后仍需从本机记录核对结果，确定继续？')) return false;
+  pendingAcceptance = null;
+  acceptanceRecheckId = null;
+  status('acceptance-status', '本页重试提示已放弃，没有撤销本机记录；操作结果仍须按实际记录核对。');
+  renderAcceptanceControls();
+  return true;
+}
+
+async function completeAcceptedExperiment(snapshot, review, receipt, token) {
+  if (token !== acceptanceToken || !acceptanceReceiptMatches(receipt, review)) return false;
+  let identity;
+  try {
+    identity = checkedAcceptedIdentity(snapshot, { ...receipt, sessionId: snapshot.sessionId });
+    checkedAcceptedIdentity(state, identity);
+  } catch (error) {
+    status('acceptance-status', error.message, true);
+    return false;
+  }
+  if (snapshot.revision >= state.revision) acceptState(snapshot);
+  acceptedReceipt = { ...receipt, sessionId: snapshot.sessionId };
+  pendingAcceptance = null;
+  acceptanceRecheckId = null;
+  pageMode = 'action';
+  if (acceptanceBusyOwner === token) accepting = false;
+  render();
+  status('acceptance-status', '已接受并重新读取完整建轮记录：' + receipt.experimentId +
+    '。接受操作不会自动记录采用或执行，正在准备所选稿件。');
+  await ensureArtifacts();
+  if (token !== acceptanceToken) return false;
+  try { checkedAcceptedIdentity(state, identity); }
+  catch (error) {
+    acceptedReceipt = null;
+    status('acceptance-status', error.message, true);
+    return false;
+  }
+  const current = activeSelection(state);
+  if (current?.roundId === receipt.roundId && current.pathId === receipt.pathId) {
+    const count = currentArtifacts(state).length;
+    status('acceptance-status', '已接受并重新读回本轮实验 ' + receipt.experimentId + '；当前已保存 ' + count +
+      ' 份稿件。' + (generationFailures.length ? '部分稿件尚未准备好，请使用“重试准备内容”。' : '') +
+      '接受、稿件保存与实际执行分开；实际状态以本轮已保存记录为准。');
+    $('action-title').focus();
+  }
+  return true;
+}
+
+async function acceptCandidate(retry = false, readOnly = false) {
+  if (accepting || saving || readingReview || dirty) return false;
+  if (typeof shared?.getAcceptedExperimentRound !== 'function') {
+    status('acceptance-status', '当前页面尚未载入已发布的接受接口，请重新加载页面；没有发送接受命令。', true);
+    return false;
+  }
+  if (pendingAcceptance && !retry) {
+    status('acceptance-status', '上一接受操作的结果仍待核对，请使用下方的原操作重试入口。', true);
+    return false;
+  }
+  let attempt = pendingAcceptance;
+  const review = attempt?.review ?? activeReview?.review;
+  if (!review || (!attempt && (!readFeedbackIds.has(review.sourceFeedbackId) || acceptanceRecheckId))) {
+    status('acceptance-status', '请先重新读取并核对这条反馈的候选，再明确接受。', true);
+    return false;
+  }
+  const token = ++acceptanceToken;
+  const stillCurrent = () => token === acceptanceToken && pendingAcceptance === attempt;
+  const readFresh = async () => {
+    const loaded = await shared.loadSession();
+    if (!stillCurrent()) return null;
+    if (!loaded.ok) throw Object.assign(new Error('当前无法读回接受记录，接受结果尚未确认，不能据此认定未保存。请重试读取。'), { code: loaded.code });
+    if (loaded.state.sessionId !== review.sessionId || state?.sessionId !== review.sessionId) {
+      throw Object.assign(new Error('当前项目已变化，未向新项目重放旧接受操作；原操作结果需回原项目核对。'), { code: 'source_changed' });
+    }
+    if (loaded.state.revision < state.revision) throw Object.assign(new Error('读回版本落后于已知记录，请重新读取；没有继续发送或生成稿件。'), { code: 'read_failed' });
+    acceptState(loaded.state);
+    return loaded.state;
+  };
+  const rejectOldIntent = (message) => {
+    pendingAcceptance = null;
+    attempt = null;
+    acceptanceRecheckId = review.sourceFeedbackId;
+    status('acceptance-status', message + ' 请重新读取候选，核对后再次明确接受；不会自动换命令重提。', true);
+  };
+  acceptanceBusyOwner = token;
+  accepting = true;
+  render();
+  status('acceptance-status', '正在重新读取并核对候选及接受记录…');
+  try {
+    await commandQueue;
+    if (!stillCurrent()) return false;
+    const fresh = await readFresh();
+    if (!fresh || !stillCurrent()) return false;
+    const existing = shared.getAcceptedExperimentRound(fresh, review.sourceFeedbackId, review.fingerprint);
+    if (acceptanceReceiptMatches(existing, review)) return await completeAcceptedExperiment(fresh, review, existing, token);
+    if (readOnly) {
+      status('acceptance-status', '尚未完整读回已建立的新轮；此入口只读取，不会替你接受候选或创建轮次。', true);
+      return false;
+    }
+    if (attempt?.phase === 'readback' || existing.code !== 'not_found') {
+      status('acceptance-status', '接受结果尚未完整读回：' + (existing.message || '来源或当前轮次需要核对') +
+        '。没有将它当成未保存，也没有再次提交或生成稿件。', true);
+      return false;
+    }
+    if (!canAcceptExperimentReview(fresh, review)) {
+      rejectOldIntent('当前会话、原轮次、分析、选择或候选依据已变化。');
+      return false;
+    }
+    if (!attempt) {
+      attempt = { sessionId: review.sessionId, review, phase: 'uncertain',
+        command: makeExperimentAcceptanceCommand(fresh, review, id()) };
+      pendingAcceptance = attempt;
+    }
+    status('acceptance-status', '正在保存本次明确接受；尚未确认新轮建立…');
+    const result = await commit(attempt.command);
+    if (!stillCurrent()) return false;
+    if (!result.ok && ['conflict', 'stale_input', 'invalid_transition', 'invalid_payload', 'invalid_structure',
+      'source_mismatch', 'missing_source', 'ambiguous_source', 'invalid_feedback', 'invalid_state',
+      'unsupported_feedback_version', 'incompatible_version'].includes(result.code)) {
+      rejectOldIntent(errorText(result));
+      return false;
+    }
+    if (result.ok) attempt.phase = 'readback';
+    // Even a lost write response may be confirmed by this fresh, complete read.
+    const reread = await readFresh();
+    if (!reread || !stillCurrent()) return false;
+    const receipt = shared.getAcceptedExperimentRound(reread, review.sourceFeedbackId, review.fingerprint);
+    if (acceptanceReceiptMatches(receipt, review)) return await completeAcceptedExperiment(reread, review, receipt, token);
+    status('acceptance-status', '接受操作结果尚未完整确认：' + (receipt.message || '请重试读取') +
+      '。保留原命令与候选；不把提交回执当作建轮成功，不生成下一轮稿件。', true);
+    return false;
+  } catch (error) {
+    if (token !== acceptanceToken) return false;
+    if (error.code === 'source_changed') {
+      pendingAcceptance = null;
+      acceptanceRecheckId = null;
+    }
+    status('acceptance-status', acceptedReceipt?.sourceFeedbackId === review.sourceFeedbackId
+      ? '新轮已完整读回，但稿件准备尚未完成；请在当前行动重试准备内容。'
+      : (error.message || '接受结果尚未确认，请重试核对。') + (pendingAcceptance ? ' 原命令仍保留，重试不改载荷或版本。' : ''), true);
+    return false;
+  } finally {
+    // A cancelled request may release its own busy flag, but never a newer request's flag.
+    if (acceptanceBusyOwner === token) {
+      acceptanceBusyOwner = null;
+      accepting = false;
+      render();
+    }
+  }
+}
+
+async function openAcceptedContent(kind) {
+  const view = activeReview;
+  if (!view) return;
+  try {
+    const identity = checkedAcceptedIdentity(view.bundle.snapshot);
+    if (!identity) throw new Error('尚未核对已建立轮次的接受记录，没有打开稿件。');
+    if (!await acceptCandidate(false, true)) return;
+    checkedAcceptedIdentity(state, identity);
+    const artifact = currentArtifacts(state).find((item) => item.kind === kind);
+    if (!artifact) {
+      status('artifact-status', '本轮已建立，但这份稿件尚未保存，请重试准备内容。', true);
+      return;
+    }
+    choosePreview(previewArtifactKey(artifact));
+    $('artifact-preview').scrollIntoView?.({ block: 'start' });
+  } catch (error) {
+    status('artifact-status', error.message || '尚未完整核对本轮来源，没有打开稿件。', true);
+  }
+}
+
 function renderReview() {
-  const bundle = resolveFeedbackRecord(state, reviewFeedbackId);
-  const visible = pageMode === 'review' && Boolean(bundle);
+  const view = activeReview?.review.sourceFeedbackId === reviewFeedbackId &&
+    activeReview.review.sessionId === state?.sessionId ? activeReview : null;
+  const visible = pageMode === 'review' && Boolean(view);
   $('review-content').hidden = !visible;
   if (!visible) {
     if (pageMode === 'review') {
       pageMode = 'action';
-      status('operation-status', '原复盘记录已更新或引用不完整，请从当前项目重新核对。', true);
+      status('operation-status', '原复盘记录或来源已变化，请重新读取对应记录后再判断。', true);
     }
     return;
   }
   $('action-content').hidden = true;
   $('empty-state').hidden = true;
   $('history-panel').hidden = true;
-  const { feedback, execution, artifact, path, roundIndex } = bundle;
+  const { feedback, artifact, roundIndex } = view.bundle;
+  const review = view.review;
+  const presentation = describeExperimentReview(review);
   const hasRead = readFeedbackIds.has(feedback.id);
   $('review-receipt').textContent = (hasRead ? '已保存并重新读取本机记录' : '本机已保存，读回尚未确认') +
     ' · ' + (roundIndex ? '第 ' + roundIndex + ' 轮' : '原轮次') + ' · 稿件 v' + artifact.version +
     ' · 保存于 ' + readableTime(feedback.savedAt);
-  $('review-capability').textContent = '当前仅有本机保存／读回回执；MoneyAI 写入与读回未接通。共享再判断 C7 尚未返回，不称“AI 已记住”。';
   $('open-record').disabled = !hasRead;
-  $('review-last-action').replaceChildren(node('p', path?.title || '原路径快照不完整，不能用当前行动代替'),
-    node('p', artifact.title + ' · 输入 v' + feedback.inputVersion + ' · 稿件 v' + artifact.version, 'muted'));
-  $('review-last-execution').replaceChildren(node('p', ADOPTION_LABELS[execution?.adoption ?? 'unknown']),
-    node('p', EXECUTION_LABELS[execution?.execution ?? 'unknown']),
-    node('p', '实际改动：' + textValue(execution?.scope)),
-    node('p', '商家自述，未由平台核验；实际执行日期：' + (execution?.executedAt || '未知'), 'muted'));
-  $('review-last-observation').replaceChildren(node('p', OBSERVATION_LABELS[feedback.observation] || '观察结果未知'),
-    node('p', feedback.rawText || '未填写观察原话。'),
-    node('p', feedback.metrics?.length ? '另存有 ' + feedback.metrics.length + ' 项指标，请在完整实验记录中核对数值与口径。' : '没有额外保存带对象和观察口径的指标条目；补充反馈按原值展示，感受不等于测量结果。', 'muted'));
-  if (feedback.detailsVersion === 1) {
-    const details = node('details', undefined, 'action-disclosure saved-feedback-details');
-    details.append(node('summary', '已保存的补充反馈'));
-    const values = node('dl', undefined, 'experiment-facts');
-    for (const [label, value] of feedbackDetailRows(feedback)) values.append(node('dt', label), node('dd', value));
-    details.append(values);
-    $('review-last-observation').append(details);
+
+  $('review-last-action').replaceChildren(node('p', review.priorAction.title),
+    node('p', '实验：' + textValue(review.priorAction.experimentId), 'muted'),
+    node('p', '本轮变量：' + textValue(review.priorAction.singleVariable)),
+    node('p', artifact.title + ' · 输入 v' + review.inputVersion + ' · 稿件 v' + review.artifactVersion, 'muted'));
+  $('review-last-execution').replaceChildren(node('p', ADOPTION_LABELS[review.execution.adoption] ?? ADOPTION_LABELS.unknown),
+    node('p', EXECUTION_LABELS[review.execution.execution] ?? EXECUTION_LABELS.unknown),
+    node('p', '实际改动：' + textValue(review.execution.scope)),
+    node('p', '实际执行日期：' + textValue(review.execution.executedAt) + '；商家自述，未由平台核验。', 'muted'));
+  $('review-last-observation').replaceChildren(node('p', OBSERVATION_LABELS[review.observation.status] ?? OBSERVATION_LABELS.unknown),
+    node('p', review.observation.rawText || '未填写观察原话。'),
+    node('p', '新增商品点击：' + textValue(review.observation.sampleSize) +
+      (review.observation.sampleUnit === 'product_clicks' ? ' 次' : '（单位未知）')),
+    node('p', '前后加购率：' + feedbackRatioLabel(review.observation.metricBefore) + ' → ' +
+      feedbackRatioLabel(review.observation.metricAfter), 'muted'));
+  $('review-last-conclusion').replaceChildren(node('p', presentation.title, 'review-decision'),
+    node('p', '本机规则建议，不是统计充分、因果证明或经营效果承诺。', 'muted'));
+  $('review-old-treatment').replaceChildren(node('p', presentation.treatment));
+  const candidate = review.nextAction?.status === 'candidate' ? review.nextAction : null;
+  $('review-next-suggestion').replaceChildren(node('p', candidate?.title || '本次没有返回下一轮候选'),
+    node('p', candidate?.action || '先按本次结论核对或继续观察；页面不会默认切换另一条路径。', 'muted'));
+
+  const reason = $('review-reason');
+  reason.replaceChildren(node('p', review.reason, 'review-reason-text'),
+    node('p', '风险护栏：' + (GUARDRAIL_LABELS[review.observation.guardrailStatus] ?? GUARDRAIL_LABELS.unknown) +
+      '。缺少退款、投诉等数据不能视为风险未触发。', 'action-warning'));
+  const evidence = node('details', undefined, 'action-disclosure review-evidence-details');
+  evidence.open = true;
+  evidence.append(node('summary', '核对判断依据、重要未知与新限制'));
+  const evidenceGrid = node('div', undefined, 'review-evidence-grid');
+  const basis = node('section');
+  basis.append(node('h3', '本次依据'));
+  const values = node('dl', undefined, 'experiment-facts');
+  for (const [label, value] of [
+    ['本机判断来源', review.source + '；MoneyAI 未调用'],
+    ['原分析来源', originLabel(review.evidence.analysisMode)],
+    ['原计划样本', textValue(review.evidence.minimumSample) + ' ' + textValue(review.evidence.minimumSampleUnit)],
+    ['样本对照', review.evidence.sampleMeetsPlan ? '达到原计划门槛，不代表统计充分'
+      : '未满足或尚无法核对原计划门槛，详见未知项'],
+    ['反馈与分析', review.sourceFeedbackId + ' / ' + review.analysisId],
+    ['原稿版本', review.artifactId + ' / v' + review.artifactVersion],
+  ]) values.append(node('dt', label), node('dd', value));
+  basis.append(values, node('p', review.evidence.thresholdMeaning, 'muted'),
+    node('p', review.evidence.observationMeaning, 'muted'));
+  const limits = node('section');
+  limits.append(node('h3', '重要未知'));
+  const unknowns = node('ul', undefined, 'review-evidence-list');
+  appendList(unknowns, review.unknowns, '没有额外未知记录，不代表没有风险。');
+  limits.append(unknowns, node('h3', '这次反馈带来的新限制'));
+  const constraints = node('ul', undefined, 'review-evidence-list');
+  for (const text of review.constraintsLearned ?? []) {
+    const sources = (review.evidence.constraintSources ?? []).filter((entry) => entry.text === text);
+    const label = sources.some((entry) => entry.source === 'feedback.constraintsLearned')
+      ? '商家在补充反馈中明确填写'
+      : sources.some((entry) => entry.source === 'feedback.rawText') ? '本机从反馈原话提取，待核对' : '来源未明，待核对';
+    constraints.append(node('li', text + '（' + label + '，不是平台核验）'));
   }
-  $('review-last-conclusion').replaceChildren(node('p', '等待共享再判断'),
-    node('p', '现有自述不能自动证明有效、失败或根因；本页没有生成结论。', 'muted'));
-  $('review-old-treatment').replaceChildren(node('p', '旧行动如何处理：尚未判断'),
-    node('p', '保留原稿与记录。是否继续观察、补数据、暂停或换实验，待共享结果。', 'muted'));
-  $('review-next-suggestion').replaceChildren(node('p', '下一步候选：尚未返回'),
-    node('p', '不会因为“没变化”或当前方案名称而自动切换另一条路径。', 'muted'));
-  $('review-reason').textContent = '等待关联反馈 ' + feedback.id + '、分析 ' + feedback.analysisId +
-    '、输入 v' + feedback.inputVersion + ' 的再判断依据（C7）。';
-  $('review-candidate-preview').replaceChildren(node('p', '尚未生成候选执行稿'),
-    node('p', '候选再判断 C7 待接通，不按 A→B 固定切换，也不覆盖当前已选稿。', 'muted'));
-  const rules = node('dl', undefined, 'experiment-facts');
-  for (const label of ['本轮只改', '继续保持不变', '主要观察', '停止条件', '回滚方式']) {
-    rules.append(node('dt', label), node('dd', '待共享候选计划返回，尚未开始'));
+  if (!constraints.childElementCount) constraints.append(node('li', '未填写新的限制，没有代填或改写原输入。'));
+  limits.append(constraints);
+  evidenceGrid.append(basis, limits);
+  evidence.append(evidenceGrid);
+  reason.append(evidence);
+
+  $('review-candidate-region').hidden = !candidate;
+  if (candidate) {
+    $('review-candidate-preview').replaceChildren(node('h3', candidate.title),
+      node('p', '待接受候选 · ' + textValue(candidate.optionLabel, '未标方案') + ' · ' + textValue(candidate.experimentId), 'muted'),
+      node('p', candidate.action));
+    const candidateLimits = node('ul', undefined, 'review-evidence-list');
+    appendList(candidateLimits, candidate.limitations, '候选限制尚未提供，请先核对。');
+    $('review-candidate-preview').append(candidateLimits);
+    const rules = node('dl', undefined, 'experiment-facts');
+    for (const [label, value] of candidatePlanRows(candidate)) rules.append(node('dt', label), node('dd', value));
+    $('review-rules').replaceChildren(rules,
+      node('p', '这里只展示共享返回的候选字段；缺失的窗口、停止与回滚条件没有用当前行动代填。', 'action-warning'));
+  } else {
+    $('review-candidate-preview').replaceChildren();
+    $('review-rules').replaceChildren();
   }
-  $('review-rules').replaceChildren(rules, node('p', '未提供的投诉／退款等数据仍为未知，不能判定未触发护栏。', 'action-warning'));
-  for (const control of ['generate-candidate', 'show-change-list', 'start-candidate']) $(control).disabled = true;
+  const capable = typeof shared?.getAcceptedExperimentRound === 'function';
+  const readAcceptance = capable ? shared.getAcceptedExperimentRound(view.bundle.snapshot, review.sourceFeedbackId, review.fingerprint) : null;
+  const alreadyRead = acceptanceReceiptMatches(readAcceptance, review);
+  $('review-capability').textContent = presentation.source + '。结论绑定本次读回的原版本；' +
+    (alreadyRead ? '另已完整读回接受记录。候选接受与实际执行分别记录。'
+      : '本次没有确认完整接受记录；候选预览不代表下一轮已开始。');
+  const canStart = hasRead && candidate && canAcceptExperimentReview(state, review) && readAcceptance?.code === 'not_found';
+  const blocked = accepting || readingReview || Boolean(pendingAcceptance) || Boolean(acceptanceRecheckId);
+  $('start-candidate').hidden = !candidate;
+  $('start-candidate').disabled = blocked || !capable || (!alreadyRead && !canStart);
+  $('start-candidate').textContent = alreadyRead ? '读取已建立的本轮行动' : '接受候选并开始下一轮';
+  $('candidate-dependency').textContent = alreadyRead
+    ? '本机接受记录已随本次复盘读回。完整稿与修改清单仍由当前唯一所选方案生成，不覆盖原稿。'
+    : '当前只是候选预览。明确接受并完整读回新轮后，才生成完整稿与修改清单；不把当前稿冒充候选稿。';
+  $('candidate-start-dependency').textContent = !capable ? '当前页面未载入接受接口，请重新加载后核对。'
+    : alreadyRead ? '已找到完整接受记录；点击只重新读回并打开该轮行动，不创建重复轮次或记录执行。'
+    : canStart ? '接受前会再次核对原轮次和候选指纹；只有接受保存及完整读回都成功，才建立可取用的新轮稿件。'
+    : '这份候选与当前有效轮次/选择或接受记录不一致，请重新读取核对；不会直接接受历史候选。';
+  $('generate-candidate').disabled = blocked || !alreadyRead;
+  $('show-change-list').disabled = blocked || !alreadyRead;
   renderMemoryList($('review-memory-list'));
 }
 
 function renderMemoryList(container) {
   container.replaceChildren();
+  if (acceptedReceipt && acceptedReceipt.sessionId === state.sessionId && acceptedReceipt.roundId === state.round.id) {
+    const accepted = node('div', undefined, 'history-item');
+    const execution = (state.executionRecords ?? []).filter((item) => item.roundId === acceptedReceipt.roundId).at(-1);
+    accepted.append(node('p', '已接受并读回 · 第 ' + state.round.index + ' 轮 · ' + acceptedReceipt.experimentId),
+      node('p', '接受记录 ' + acceptedReceipt.acceptanceId + ' · ' + readableTime(acceptedReceipt.acceptedAt) +
+        '；来源反馈 ' + acceptedReceipt.sourceFeedbackId, 'muted'),
+      node('p', execution ? ADOPTION_LABELS[execution.adoption] + ' · ' + EXECUTION_LABELS[execution.execution] + '（本轮自述）'
+        : '尚无本轮采用或执行自述，保持未知；接受记录不等于已执行。', 'muted'));
+    container.append(accepted);
+  }
   for (const feedback of state.feedbackRecords ?? []) {
     const bundle = resolveFeedbackRecord(state, feedback.id);
     const item = node('div', undefined, 'history-item');
@@ -1315,10 +1726,11 @@ function renderMemoryList(container) {
     container.append(item);
   }
   if (!state.feedbackRecords?.length) container.append(node('p', '当前项目还没有保存过实验反馈。'));
-  container.append(node('p', '尚无共享候选；未明确接受并开始前，不创建下一轮正式记录。MoneyAI 历史未接通。', 'muted'));
+  container.append(node('p', '本机判断中的候选不属于正式新轮；未明确接受并成功开始前，不追加下一轮记录。MoneyAI 历史未接通。', 'muted'));
 }
 
 async function openRecord(feedbackId) {
+  if (accepting) return;
   invalidateViewRead();
   const token = viewReadToken;
   const sessionId = state?.sessionId;
@@ -1356,6 +1768,7 @@ async function openRecord(feedbackId) {
     appendList(steps, artifact.usage?.steps, '当时未保存使用步骤。');
     const risks = node('ul');
     appendList(risks, artifact.usage?.risks, '当时没有完整风险资料，不表示没有风险。');
+    for (const line of experimentOriginLines(analysis)) container.append(node('p', line, 'action-field-note'));
     container.append(steps, node('h3', '原稿必要风险'), risks, node('h3', '当时的实验计划'));
     if (path) {
       const plan = node('dl', undefined, 'experiment-facts');
@@ -1439,7 +1852,7 @@ function postponeFeedback() {
 
 async function navigate(pageId, options) {
   if (!shared) return;
-  if (saving || readingReview) { status('operation-status', '当前记录正在保存，请完成后再离开。'); return; }
+  if (saving || readingReview || accepting) { status('operation-status', '当前记录或接受操作正在核对，请完成后再离开。'); return; }
   try { await shared.navigateTo(pageId, options); }
   catch (error) { status('operation-status', error.message || '暂时无法跳转，当前内容已保留。', true); }
 }
@@ -1473,13 +1886,14 @@ async function boot() {
       ]);
       shared = { ...store, ...generator, ...navigation };
       shell.mountShell('action');
-      unregisterGuard = shared.registerNavigationGuard({ isDirty: () => dirty || saving,
-        onSave: () => saveFeedback(), onDiscard: () => discardFeedback() });
+      unregisterGuard = shared.registerNavigationGuard({ isDirty: () => dirty || saving || accepting || Boolean(pendingAcceptance),
+        onSave: () => pendingAcceptance ? acceptCandidate(true) : accepting ? false : saveFeedback(),
+        onDiscard: () => pendingAcceptance ? discardAcceptanceReminder() : accepting ? false : discardFeedback() });
       unsubscribe = shared.subscribeSession((result) => {
         if (!result.ok) { status('operation-status', errorText(result), true); return; }
         const previous = activeSelection(state);
         acceptState(result.state);
-        if (!generating && !saving && !readingReview) {
+        if (!generating && !saving && !readingReview && !accepting) {
           render();
           if (!dirty && !sameReference(previous, activeSelection(state))) void ensureArtifacts();
         }
@@ -1548,9 +1962,17 @@ function connectPage() {
   });
   $('return-action').addEventListener('click', returnToAction);
   $('pause-review').addEventListener('click', () => {
+    if (accepting) return;
     returnToAction();
-    status('operation-status', '当前记录保持不变，没有开始新一轮，也没有把已发生的行动记为取消。');
+    status('operation-status', '仅返回当前行动；这次点击没有创建轮次、撤销接受或改变执行状态。');
   });
+  $('start-candidate').addEventListener('click', () => { void acceptCandidate(false); });
+  $('acceptance-retry').addEventListener('click', () => {
+    if (pendingAcceptance) void acceptCandidate(true);
+    else if (acceptanceRecheckId) void openReview(acceptanceRecheckId);
+  });
+  $('generate-candidate').addEventListener('click', () => { void openAcceptedContent('copy'); });
+  $('show-change-list').addEventListener('click', () => { void openAcceptedContent('checklist'); });
   $('open-record').addEventListener('click', () => { void openRecord(reviewFeedbackId); });
   $('feedback-later').addEventListener('click', postponeFeedback);
   document.querySelectorAll('[data-execution]').forEach((button) => button.addEventListener('click', () => {
@@ -1585,6 +2007,7 @@ function connectPage() {
   });
   window.addEventListener('pageshow', (event) => { if (event.persisted && shared) void refresh(); });
   window.addEventListener('pagehide', (event) => {
+    acceptanceToken += 1;
     invalidateViewRead();
     titleMotion?.destroy();
     if (!event.persisted) { unsubscribe?.(); unregisterGuard?.(); }

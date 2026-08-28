@@ -1,8 +1,672 @@
 # Agent 3｜第三页实现与验收记录
 
-更新：2026-08-28。**本批按最新 PRD V1.0 完成 P3 可独立的实验身份展示、采用/执行分离及精简反馈承载。新共享首轮策略与 `FEEDBACK_DETAILS_VERSION=1` 尚未发布到 C，新增明细仍受明确门禁；C6—C8、真实 UI 与本机持久保存/读回仍未验，不称整页完成。先交原四文件与最终hash，待共享实际发布后按统筹通知继续接线，无需重新开工批准。**
+更新：2026-08-29。**本次仅修复C7/C8接受来源在排队保存期间失效的发布阻塞，写入action.js与本QA；HTML/CSS保持原hash。C78原10组与新增3组已分别通过，最终正式文件的组合复跑及四hash随交接回传。真实UI/IDB/C6/MoneyAI未验项不变。**
 
-## 新 PRD V1.0：P3 独立实现批次
+
+
+## 定点修补：接受来源在产物排队期间失效
+
+统筹给出的D盘复现脚本已读取并核对SHA256 e0388921261c2e055aee6438d902b6db94299540d3d1816656eedeff6073711f，我也在旧正式JS上实际复跑。旧结果确认为：R1追加worse/guardrail triggered后getAccepted返回stale_input、UI接受回执已清空，但仍保存3份R2稿且返回成功。该证据为原函数与真实reducer的内存队列交错，不是IDB或浏览器。
+
+### 本次修复与边界
+
+- 开始准备R2时，经完整getAccepted捕获并冻结原接受身份：会话、来源反馈、候选fingerprint、acceptanceId/acceptedAt、目标round/inputVersion/analysis/path/experiment。不能用后来清空的acceptedReceipt决定是否跳过校验。
+- commit增加一个可选同步执行前守卫。每条R2的ARTIFACT_SAVE在commandQueue真正执行时、紧邻dispatch与revision捕获前，用冻结身份再次调用完整getAccepted。若原反馈/接受记录失效，即刻停止，不借新的revision继续保存。普通首轮和旧稿没有C8依赖，原调用方式不变。
+- ensureArtifacts在最后一次await commit后、清除错误之前再次核对；completeAcceptedExperiment在准备前后、openAcceptedContent在其await后打开稿件前也独立核对。失效返回false或停止打开，并显示来源需重新核对；已发生的保存不被删除或伪装回滚。
+- 接受命令的四字段、原commandId/载荷/expectedRevision重试不变。接受busy改由独立acceptanceBusyOwner持有；旧finally只释放自己的owner，取消但无新请求接管也能释放。产物准备使用独立generationToken，旧run不能释放新run的generating状态或继续其写入。
+- 不修改共享校验、不扩C6、不新增状态库或测试文件、不改Git/浏览器权限。HTML和CSS完全不变。本次没有扩大复制、TXT、普通首轮或旧历史功能的审计范围。
+
+代码位置：`action.js:576`（checkedAcceptedIdentity）；`action.js:593`（commit）；`action.js:1030`（ensureArtifacts）；`action.js:1418`（completeAcceptedExperiment）；`action.js:1456`（acceptCandidate）；`action.js:1558`（openAcceptedContent）
+
+### 新增回归（并入下面原C78脚本第11—13组）
+
+| 交错位置 | 实际期待与已检查结果 |
+| --- | --- |
+| 首份稿件排队、尚未dispatch时，原R1新增更差/异常反馈 | getAccepted已stale，R2选择字段仍相同；待执行命令不进入dispatch，新增R2稿为0，complete返回false，原命令身份保留。 |
+| 第一份已保存、第二份在队列等待时，原R1新增反馈 | 仅保留先前真实保存的1份稿；后续命令不dispatch，complete返回false，不补存剩余两份。 |
+| 最后一次保存后／生成函数返回后，来源失效 | 已发生的3份保存保留；generator或completion返回false，不清除来源错误或继续报“已接受并重新读回”。 |
+| 读取控制器返回之后、实际打开稿件之前，来源失效 | 不调用choosePreview打开稿件；已存内容不被当作当前已核对来源。 |
+| 旧请求排队后新请求接管／取消后无人接管 | 旧finally不清新请求busy；没有新owner时取消请求能释放自身busy，不陷入永久忙碌。 |
+
+新增3组使用原C78合成夹具、真实model/reducer/C7/C8，并从当前action.js内存提取完整原函数与新增helper；仅控制Promise调度、持久I/O和UI提示，不用缺helper的ReferenceError当成功证据。它们不是真实同源多标签或IDB事务验收。原10组同样已在暂存JS上通过，包含原接受命令/幂等、首轮取用、旧key与历史参数；正式组合复跑结果随交接。
+
+本次安全备份：D:/CodexBackups/luya/c78-guard-agent3/20260828T161605989986Z。写前C空闲6991507456字节，JS/QA旧hash与D备份逐一核对；同目录暂存、检查、flush/fsync后原子替换，任何替换失败立即停写不重试。最终四hash及atomic-receipt另报；不把QA自身hash写入QA。
+
+
+## 上批完整接线：C7原记录复盘与C8显式接受（本次补丁见上）
+
+发布冻结期间没有把内存草稿半落盘；统筹发布完成并解除冻结后，先实际核对了正式四文件及合并后的共享版本。共享model：a9a6418a4cac519774a6253556f3e2f246cc46b0b534a54d98059570fe1a85f2；state：11db658caf072d2f389cef45ec13ab8036bc1681e8563ab9766dd4e17aa6715a；experiment-memory：8148e6cdf51b4f8b05eefe050751b6b734b391a68092c807eb29e775fcde0f97；experiment-round：3a09acf7893488c1c565b117fb22ce171e3fbd14ffa6439da1de1c34a3c13913。没有改共享、tests、后端或Git，也没有碰独立D盘新项目。
+
+### 本批实现
+
+- 新版反馈已用真实FEEDBACK_DETAILS_VERSION=1接测。采用与执行独立，默认未知；0与null不混淆、百分比只转一次比例，原文/metrics/observedWindow不丢，记录须完整匹配才确认保存。
+- 查看复盘先loadSession并核对原反馈、执行、稿件版本与原分析快照，再调用共享C7。四块、reason、原样本门槛、风险、重要未知、新限制与来源均取返回值；本页没有判断引擎。四种decision明确区分，不以有样本但未说明执行判失败。
+- 只展示C7返回的候选。候选保留ID、变量、保持项、限制；缺窗口/停止/回滚明确写未提供，不拿当前A代替。候选完整文案未由C7提供；接受之前不伪造全文或修改清单。
+- 只有已读回来源的change_variable + candidate才可明确接受。点击后再次loadSession，核对会话、原轮、输入、分析、显式选择与已展示fingerprint；发送EXPERIMENT_ACCEPT的payload只有feedbackId/reviewFingerprint/roundId/inputVersion。
+- 未确定回执保留原commandId、payload和expectedRevision；重试先读回，已接受则不重复创建。共享明确版本/来源拒绝后要求重新读取、再次明确接受，不自动换命令或卡在旧revision循环。
+- 提交成功还要再次loadSession，再用getAcceptedExperimentRound完整核对当前新轮和原记录链。没有只看round.index，也不把dispatch回执当已读回。只有确认后才运行现有buildDemoArtifact并逐项ARTIFACT_SAVE。R2唯一FAQ方案A、fixtureId=null；漏斗明确标原轮快照，不当新增样本。
+- “打开本轮完整稿／修改清单”走只读接受核对，不隐式建轮。原稿/反馈不覆盖，采用/执行不自动新增；已建立轮次后来有执行自述时，重开不会一律说执行未知。本机接受记录与实际反馈可在当前项目/复盘记录区查看，不称MoneyAI记忆。
+- 所有现有复制、TXT逐次授权、无反馈取用、反馈原稿绑定、取消读取令牌与单标题动效保留。C6文件入口仍禁用，不用MATERIAL_ADD或普通ROUND_START绕过。
+
+### 检查与证据范围
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 本节C78脚本 | 暂存实现10/10通过：实际新版A/B→产物→v1反馈→C7→C8→R2产物组合，旧快照兼容、样本/执行分离、精确载荷、幂等与失效、完整链拒绝及源码门控。 |
+| 原PRD脚本 | 暂存实现8/8通过；版本门禁、解析、独立采用/执行、完整回执与取用边界保留。 |
+| 原REQ30脚本 | 暂存实现10/10通过；仅沿既有脚本，不新增测试文件或状态库。 |
+| 旧C5脚本 | 作为历史旧生成器断言原样归档为text；不再作为现版入口。新首轮和旧actionKey兼容由C78第1/4/6/9组覆盖，不删除事件守卫。 |
+| HTML/CSS静态 | 147个唯一ID、110个JS字面挂载点；label/ARIA/锚点、六按钮默认未知、取用/关键风险不被反馈包住、同页两状态、单标题、CSS作用域/变量/括号通过。不是渲染检查。 |
+| 语法 | 同目录暂存action.js的node --check退出0。 |
+| 正式内容/HTTP/哈希 | 正式替换后复跑既有内容检查与本QA脚本并回传实际结果；HTTP读取只核对文件版本，不算页面运行。未跑Git。 |
+
+首次组合脚本误把findSavedFeedback的pending参数写成state，后又误把null假设值要求为字面“null”；已按真实接口修复测试接线，并保留null应展示未知的断言，没有为测试改变业务输出。源码复核另修正：读回存储不可用不称未保存；重开已建立轮次不无条件称执行未知。
+
+### 运行复现入口（以下浏览器步骤仍待统筹执行）
+
+1. 用juicer_cup_v1确认问题，在第二页明确选首轮A或B后打开第三页。先取用，不填反馈也可复制文案；每次TXT均重新确认摘要授权。实验卡核对保存的ID/变量/假设/计划参数。
+2. 在A只填已采用、执行未知且新增点击100，保存后查看复盘，应要求补执行信息，不给失败或候选。另用明确自述已完成+未变化+100次新增商品点击，按共享规则可返回候选；护栏/时间/统计限制继续展示。
+3. 复盘四块与依据先从原记录读回。候选预览不建轮，接受前完整稿按钮不启用；点击“接受候选并开始下一轮”才发送精确四字段命令，完整读回后展示R2并另存稿件。回查原记录仍是R1原稿与原参数。
+4. 本轮输入或来源变化后旧候选应拒绝；不确定回执使用原操作重试，确定版本拒绝要求重读并再次明确接受。真实事务故障/跨标签/响应迟到需要统筹已许可窗口，本页未自行注入或操作浏览器。
+5. 新轮复制/TXT仍独立于采用/执行。重开原反馈复盘可读取已建立轮次；“打开本轮完整稿／修改清单”不应创建第三轮。“暂时不继续”只返回，不撤销已有接受。
+
+真实PC1920×1080首屏、点击/折叠/焦点、剪贴板、TXT落盘、IDB事务与读回、刷新/多标签、动画、截图/录像均未验。没有可称为实截的本批图像；没有重试Browser、Playwright或切换备用工具。MoneyAI仅公共真实服务状态，个人实验历史/记忆仍未接通。C6附件与接受前候选全文也没有伪造。
+
+### 写入安全
+
+写前C剩余6981025792字节，大于1GiB。原正式四文件先备份到D:/CodexBackups/luya/c7-c8-agent3/20260828T154741745879Z，manifest记录原hash并逐项读回一致。同目录临时文件不提交；正式替换前再核对原文件未变、D备份、C空间、UTF-8/非空/无NUL/无尾空格，flush/fsync后逐一os.replace。任何原子替换失败立即停写，不重试、清理或改权限。最终四hash与atomic-receipt单独回传，QA不自嵌自身hash。
+
+### C78可复现脚本（13组：原10组＋本次队列交错3组）
+
+在仓库根目录执行下方PowerShell提取命令。默认导入正式action.js；暂存检查可设置A3_ACTION_MODULE/A3_ACTION_HTML指向本批同目录暂存文件。它只操作进程内合成state和真实reducer，不调用loadSession、IDB或浏览器，不把模拟回执当成持久读回证据。
+
+~~~powershell
+$qaText = Get-Content -LiteralPath 'docs/development/demo/QA_AGENT_3.md' -Encoding UTF8 -Raw
+$qaSmoke = [regex]::Match($qaText, '(?s)<!-- A3_C78_SMOKE_START -->\s*~~~javascript\r?\n(.*?)\r?\n~~~\s*<!-- A3_C78_SMOKE_END -->').Groups[1].Value
+if (-not $qaSmoke) { throw 'C78 smoke block missing' }
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$qaSmoke | node --input-type=module
+~~~
+
+<!-- A3_C78_SMOKE_START -->
+~~~javascript
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createEmptyState, reduceCommand, FEEDBACK_DETAILS_VERSION } from './demo/shared/model.js';
+import { buildDemoAnalysis, buildDemoArtifact } from './demo/shared/demo-data.js';
+import { buildExperimentReview } from './demo/shared/experiment-memory.js';
+import { getAcceptedExperimentRound } from './demo/shared/experiment-round.js';
+const modulePath = process.env.A3_ACTION_MODULE || './demo/pages/action.js';
+const htmlPath = process.env.A3_ACTION_HTML || './demo/03-action.html';
+const page = await import(modulePath);
+const { activeSelection, currentArtifacts, buildActionCopy, buildActionPack, describeActionPath,
+  experimentIdentityRows, experimentCardRows, experimentAssumptionLines, makeFeedbackPayload,
+  findSavedFeedback, resolveFeedbackRecord, describeExperimentReview, candidatePlanRows,
+  reviewSnapshotMatches, canAcceptExperimentReview, makeExperimentAcceptanceCommand,
+  acceptanceReceiptMatches, experimentOriginLines } = page;
+const NOW = '2026-08-28T16:00:00.000Z';
+function harness(actionKey = 'juicer_first_screen', transform = () => {}) {
+  let n = 0;
+  const context = { now: NOW, newId: () => 'a3_c78_' + (++n) };
+  let state = createEmptyState(context);
+  const apply = (command) => {
+    const result = reduceCommand(state, command, context);
+    state = result.state; return result;
+  };
+  const send = (type, payload) => apply({ type, payload, commandId: 'a3_c78_cmd_' + (++n), expectedRevision: state.revision });
+  send('LOAD_FIXTURE', { fixtureId: 'juicer_cup_v1' });
+  send('FOCUS_CONFIRM', { inputVersion: state.round.inputVersion });
+  const generated = buildDemoAnalysis(state);
+  assert.equal(generated.ok, true);
+  transform(generated.analysis);
+  send('ANALYSIS_SET', { analysis: generated.analysis });
+  const path = state.analysis.paths.find((item) => item.actionKey === actionKey);
+  assert(path, actionKey);
+  send('PATH_SELECT', { analysisId: state.analysis.id, pathId: path.id, inputVersion: state.round.inputVersion });
+  const saveArtifacts = () => {
+    const result = buildDemoArtifact(state);
+    assert.equal(result.ok, true, result.message);
+    for (const artifact of result.artifacts) send('ARTIFACT_SAVE', { artifact });
+    return result;
+  };
+  saveArtifacts();
+  const feedback = (overrides = {}) => {
+    const draft = { adoption: 'adopted', execution: 'done', scope: '合成自述：只改详情页首屏', executedAt: null,
+      observation: 'unchanged', rawText: '合成反馈：新增点击后自述没有明显变化；商品标题不能修改。',
+      reason: '保持其他变量不变后观察', sampleSize: '100', metricBeforePercent: '6.62', metricAfterPercent: '6.62',
+      constraintsText: '商品标题不能修改\n没有打冰与续航测试数据', guardrailStatus: 'unknown', ...overrides };
+    const payload = makeFeedbackPayload(currentArtifacts(state).find((item) => item.kind === 'copy'), draft,
+      { detailsVersion: FEEDBACK_DETAILS_VERSION });
+    const pending = { command: { payload }, beforeIds: new Set(state.feedbackRecords.map((item) => item.id)) };
+    send('FEEDBACK_SAVE', payload);
+    const record = state.feedbackRecords.at(-1);
+    assert.equal(findSavedFeedback(pending, state)?.id, record.id);
+    return { id: record.id, payload, record };
+  };
+  return { context, send, apply, saveArtifacts, feedback, get state() { return state; } };
+}
+function reviewFor(h, overrides) {
+  const saved = h.feedback(overrides);
+  const result = buildExperimentReview(h.state, saved.id);
+  assert.equal(result.ok, true, result.message);
+  return result.review;
+}
+function pack(h, allowSummaries = true) {
+  return buildActionPack(h.state, { exportId: 'a3_c78_export', generatedAt: NOW, allowSummaries });
+}
+
+test('C78 published first A/B preserve saved identity, selected copy and per-export authorization', () => {
+  for (const key of ['juicer_first_screen', 'juicer_question_video']) {
+    const h = harness(key, (analysis) => { analysis.paths.reverse(); });
+    const path = activeSelection(h.state).path;
+    assert.equal(path.actionKey, key);
+    assert.equal(path.experiment.experimentId, key === 'juicer_first_screen'
+      ? 'EXP-JUICER01-click_cart-A-R1' : 'EXP-JUICER01-click_cart-B-R1');
+    assert(path.experiment.hypothesis);
+    assert(experimentIdentityRows(path).flat().includes(path.experiment.experimentId));
+    assert(experimentIdentityRows(path).flat().includes(path.experiment.hypothesis));
+    assert(experimentCardRows(path).flat().some((line) => line.includes('商品点击后的加购率')));
+    const artifacts = currentArtifacts(h.state);
+    assert.deepEqual(artifacts.map((item) => item.kind).sort(), ['checklist', 'copy', 'experiment_plan']);
+    assert(artifacts.every((item) => item.pathId === path.id));
+    const before = structuredClone(h.state);
+    const copy = buildActionCopy(h.state);
+    assert.equal(copy.text, artifacts.filter((item) => item.kind === 'copy').map((item) => item.body).join('\n\n'));
+    const facts = h.state.analysis.inputSnapshot.facts;
+    assert(artifacts.every((item) => item.sourceFactIds.every((id) => facts.some((fact) => fact.id === id))));
+    assert.match(copy.text, /350ml/);
+    assert.match(copy.text, /USB-C/);
+    assert.doesNotMatch(copy.text, /一次能榨350|可以打冰|续航[0-9]+|保证成交/);
+    const exported = pack(h);
+    assert(exported.text.includes(path.experiment.experimentId));
+    assert(exported.text.includes(path.experiment.hypothesis));
+    assert.match(exported.text, /artifactVersion: 1/);
+    assert.throws(() => pack(h, false), /确认本次/);
+    assert.throws(() => pack(h, false), /确认本次/);
+    assert.deepEqual(h.state, before);
+    assert.equal(h.state.feedbackRecords.length, 0);
+  }
+});
+
+test('C78 page v1 DTO is truly retained by FEEDBACK_SAVE without inferring execution or zeros', () => {
+  assert.equal(FEEDBACK_DETAILS_VERSION, 1);
+  const h = harness();
+  const first = h.feedback({ execution: 'unknown', sampleSize: '0', metricBeforePercent: '0',
+    metricAfterPercent: '', reason: '', constraintsText: '', rawText: '合成：已采用，尚未说明执行。' });
+  const bundle = resolveFeedbackRecord(h.state, first.id);
+  assert.equal(bundle.execution.adoption, 'adopted');
+  assert.equal(bundle.execution.execution, 'unknown');
+  assert.equal(bundle.execution.executedAt, null);
+  assert.equal(bundle.feedback.detailsVersion, 1);
+  assert.equal(bundle.feedback.sampleSize, 0);
+  assert.equal(bundle.feedback.sampleUnit, 'product_clicks');
+  assert.equal(bundle.feedback.metricBefore, 0);
+  assert.equal(bundle.feedback.metricAfter, null);
+  assert.equal(bundle.feedback.reason, null);
+  assert.equal(bundle.feedback.guardrailStatus, 'unknown');
+  assert.equal(buildExperimentReview(h.state, first.id).review.decision, 'needs_information');
+  const last = h.feedback({ observation: 'worse' });
+  const saved = resolveFeedbackRecord(h.state, last.id);
+  assert.equal(saved.execution.execution, 'done');
+  assert.equal(saved.execution.executedAt, null);
+  assert.equal(saved.feedback.metricBefore, 0.0662);
+  assert.equal(saved.feedback.metricAfter, 0.0662);
+  assert.equal(saved.feedback.observation, 'worse');
+  assert.equal(saved.feedback.rawText, last.payload.feedbackRecord.rawText);
+  assert.deepEqual(saved.feedback.constraintsLearned, last.payload.feedbackRecord.constraintsLearned);
+  assert.deepEqual(saved.feedback.observedWindow, { start: null, end: null });
+});
+
+test('C78 four C7 branches consume real feedback and never force B to FAQ or fabricate success', () => {
+  const cases = [
+    [{ execution: 'unknown' }, 'needs_information'],
+    [{ sampleSize: '99' }, 'continue_observation'],
+    [{ guardrailStatus: 'triggered' }, 'pause'],
+    [{ observation: 'worse' }, 'pause'],
+    [{}, 'change_variable'],
+  ];
+  for (const [draft, decision] of cases) {
+    const h = harness(), review = reviewFor(h, draft), before = structuredClone(h.state);
+    const presentation = describeExperimentReview(review);
+    assert.equal(review.decision, decision);
+    assert.match(presentation.source, /本机回退规则.*未调用 MoneyAI/);
+    assert.equal(review.moneyaiCalled, false);
+    assert.equal(review.source, 'local_fallback');
+    assert(review.unknowns.length > 0);
+    assert.equal(reviewSnapshotMatches(h.state, review), true);
+    if (decision === 'change_variable') {
+      assert.equal(review.nextAction.status, 'candidate');
+      assert.equal(review.nextAction.actionKey, 'juicer_faq');
+      assert.equal(review.nextAction.optionLabel, 'A');
+      assert(candidatePlanRows(review.nextAction).flat().includes(review.nextAction.experimentId));
+      assert(candidatePlanRows(review.nextAction).flat().some((line) => line.includes('尚未提供完整窗口')));
+      assert.equal(canAcceptExperimentReview(h.state, review), true);
+    } else {
+      assert.equal(review.nextAction, null);
+      assert.equal(canAcceptExperimentReview(h.state, review), false);
+    }
+    assert.deepEqual(h.state, before, 'presenting review does not accept or execute');
+    assert.equal(h.state.round.index, 1);
+  }
+  const h = harness('juicer_question_video');
+  const bReview = reviewFor(h);
+  assert.notEqual(bReview.decision, 'change_variable');
+  assert.equal(bReview.nextAction, null);
+  assert.throws(() => describeExperimentReview({ ...bReview, source: 'MoneyAI' }), /来源/);
+});
+
+test('C78 history reads original experiment assumptions even after a new analysis replaces current values', () => {
+  const h = harness();
+  const review = reviewFor(h);
+  const original = resolveFeedbackRecord(h.state, review.sourceFeedbackId);
+  const originalLines = experimentAssumptionLines(original.path);
+  const next = buildDemoAnalysis(h.state);
+  assert.equal(next.ok, true);
+  const path = next.analysis.paths[0];
+  path.estimate.assumptions.push({ id: 'a3_current_parameter', label: '当前分析的合成参数', value: 777,
+    unit: '次新增商品点击', sourceFactIds: [], note: '只用于验证新参数不能补到历史计划。' });
+  path.experiment.assumptionIds = ['a3_current_parameter'];
+  path.experiment.minSample = 777;
+  path.experiment.minSampleUnit = '次新增商品点击';
+  path.experiment.hypothesis = '本次新分析的合成假设，不能覆盖旧记录';
+  h.send('ANALYSIS_SET', { analysis: next.analysis });
+  const historical = resolveFeedbackRecord(h.state, review.sourceFeedbackId);
+  assert(historical);
+  assert.equal(historical.analysis.id, review.analysisId);
+  assert.equal(historical.path.experiment.experimentId, original.path.experiment.experimentId);
+  assert.equal(historical.path.experiment.minSample, original.path.experiment.minSample);
+  assert.deepEqual(experimentAssumptionLines(historical.path), originalLines);
+  assert.match(experimentAssumptionLines(h.state.analysis.paths[0]).join('\n'), /777/);
+  assert.doesNotMatch(originalLines.join('\n'), /777|当前分析的合成参数/);
+  for (const id of historical.path.experiment.assumptionIds) {
+    const assumption = historical.path.estimate.assumptions.find((item) => item.id === id);
+    assert(assumption);
+    const joined = originalLines.join('\n');
+    assert(joined.includes(id));
+    assert(joined.includes(assumption.value === null ? '未知' : String(assumption.value)));
+    assert(joined.includes(assumption.label));
+    assert(joined.includes(assumption.note));
+  }
+  assert.equal(reviewSnapshotMatches(h.state, review), true);
+  assert.equal(canAcceptExperimentReview(h.state, review), false);
+  const missing = structuredClone(historical.path);
+  missing.experiment.assumptionIds = ['missing_parameter'];
+  assert.match(experimentAssumptionLines(missing).join('\n'), /未知/);
+  delete missing.experiment.assumptionIds;
+  assert.match(experimentAssumptionLines(missing).join('\n'), /没有引用.*不补默认值/);
+  const source = readFileSync(new URL(modulePath, import.meta.url), 'utf8');
+  const historyCode = source.slice(source.indexOf('async function openRecord(feedbackId)'), source.indexOf('\nfunction openProject()'));
+  assert.match(historyCode, /const \{ feedback, execution, artifact, analysis, path \} = bundle/);
+  assert.match(historyCode, /experimentAssumptionLines\(path\)/);
+  const plan = historyCode.slice(historyCode.indexOf('    if (path) {'), historyCode.indexOf("    } else container.append(node('p', '原计划快照缺失"));
+  assert(plan.includes('experimentAssumptionLines(path)'));
+  assert.doesNotMatch(plan, /state\.analysis|state\.input|activeSelection|shownContext/);
+});
+
+test('C78 accepts only the exact four source payload fields with the freshly read revision', () => {
+  const h = harness(), review = reviewFor(h);
+  const revision = h.state.revision;
+  h.send('EVENT_APPEND', { event: { type: 'session_read', roundId: h.state.round.id,
+    refs: { pageId: 'action', stateRevision: revision } } });
+  assert(h.state.revision > revision);
+  assert.equal(reviewSnapshotMatches(h.state, review), true, 'read event is not changed business evidence');
+  const command = makeExperimentAcceptanceCommand(h.state, review, 'a3_explicit_accept');
+  assert.equal(command.expectedRevision, h.state.revision);
+  assert.equal(command.type, 'EXPERIMENT_ACCEPT');
+  assert.deepEqual(Object.keys(command.payload).sort(), ['feedbackId', 'inputVersion', 'reviewFingerprint', 'roundId']);
+  assert.equal(command.payload.reviewFingerprint, review.fingerprint);
+  assert.equal(getAcceptedExperimentRound(h.state, review.sourceFeedbackId, review.fingerprint).code, 'not_found');
+  for (const changed of [
+    { ...review, fingerprint: 'sha256:' + '0'.repeat(64) },
+    { ...review, analysisId: 'other_analysis' },
+    { ...review, sessionId: 'other_session' },
+  ]) assert.throws(() => makeExperimentAcceptanceCommand(h.state, changed, 'not_allowed'));
+});
+
+test('C78 real acceptance proof precedes separate R2 artifacts and preserves original feedback and source', () => {
+  const h = harness(), review = reviewFor(h), before = structuredClone(h.state);
+  const command = makeExperimentAcceptanceCommand(h.state, review, 'a3_accept_then_read');
+  h.apply(command);
+  const receipt = getAcceptedExperimentRound(h.state, review.sourceFeedbackId, review.fingerprint);
+  assert.equal(acceptanceReceiptMatches(receipt, review), true);
+  assert(receipt.acceptanceId && receipt.acceptedAt);
+  assert.equal(receipt.source.sourceExecutionId, review.sourceExecutionId);
+  assert.equal(receipt.source.sourceAnalysisId, before.analysis.id);
+  assert.equal(receipt.analysisId, h.state.analysis.id);
+  assert.equal(receipt.roundId, h.state.round.id);
+  assert.equal(receipt.experimentId, activeSelection(h.state).path.experiment.experimentId);
+  assert.equal(h.state.fixtureId, null);
+  assert.equal(h.state.analysis.sourceFixtureId, null);
+  assert.equal(h.state.analysis.paths.length, 1);
+  assert.equal(activeSelection(h.state).path.actionKey, 'juicer_faq');
+  assert.equal(activeSelection(h.state).path.optionLabel, 'A');
+  assert.deepEqual(h.state.feedbackRecords, before.feedbackRecords);
+  assert.deepEqual(h.state.executionRecords, before.executionRecords);
+  assert.equal(currentArtifacts(h.state).length, 0, 'acceptance does not silently save generated artifacts');
+  assert.equal(h.state.analysis.funnelSource.kind, 'accepted_prior_snapshot');
+  assert.equal(h.state.analysis.funnelSource.analysisId, before.analysis.id);
+  assert.match(experimentOriginLines(h.state.analysis).join('\n'), /不是本轮新增样本/);
+  h.saveArtifacts();
+  assert.deepEqual(currentArtifacts(h.state).map((item) => item.kind).sort(), ['checklist', 'copy', 'experiment_plan']);
+  const copy = buildActionCopy(h.state);
+  assert.match(copy.text, /不修改商品标题/);
+  assert.match(copy.text, /无测试资料不作承诺/);
+  assert.doesNotMatch(copy.text, /可以打冰|一次能榨350|续航[0-9]+|测试成功/);
+  const txt = pack(h).text;
+  assert(txt.includes(receipt.experimentId));
+  assert(txt.includes(review.sourceFeedbackId));
+  assert.match(txt, /不是本轮新增样本/);
+  assert.match(txt, /fixtureId: null/);
+  assert.equal(h.state.executionRecords.filter((item) => item.roundId === receipt.roundId).length, 0);
+  const history = resolveFeedbackRecord(h.state, review.sourceFeedbackId);
+  assert.equal(history.artifact.body, before.artifacts.find((item) => item.id === review.artifactId).body);
+  assert.equal(history.path.actionKey, 'juicer_first_screen');
+  assert.equal(history.path.experiment.experimentId, review.priorAction.experimentId);
+  assert.equal(getAcceptedExperimentRound(h.state, review.sourceFeedbackId, review.fingerprint).ok, true);
+});
+
+test('C78 replay cannot create another round and incomplete acceptance records are never proof', () => {
+  const h = harness(), review = reviewFor(h);
+  const command = makeExperimentAcceptanceCommand(h.state, review, 'a3_same_command');
+  h.apply(command);
+  const accepted = structuredClone(h.state);
+  assert.equal(h.apply(command).changed, false);
+  assert.deepEqual(h.state, accepted);
+  const partials = [
+    (copy) => { copy.history = copy.history.filter((item) => item.type !== 'experiment_acceptance'); },
+    (copy) => { copy.feedbackRecords = []; },
+    (copy) => { copy.history.find((item) => item.type === 'round').analysis = null; },
+    (copy) => { copy.selection = null; },
+  ];
+  for (const damage of partials) {
+    const partial = structuredClone(accepted);
+    damage(partial);
+    const result = getAcceptedExperimentRound(partial, review.sourceFeedbackId, review.fingerprint);
+    assert.equal(result.ok, false);
+    assert.equal(acceptanceReceiptMatches(result, review), false);
+  }
+  assert.equal(acceptanceReceiptMatches({ ok: true, accepted: true, roundId: accepted.round.id }, review), false);
+});
+
+test('C78 changed input or newer related feedback blocks old acceptance without changing saved records', () => {
+  const h = harness(), review = reviewFor(h);
+  const command = makeExperimentAcceptanceCommand(h.state, review, 'a3_stale_accept');
+  h.send('INPUT_EDIT', { description: h.state.input.description + ' 合成更正' });
+  assert.equal(canAcceptExperimentReview(h.state, review), false);
+  assert.equal(activeSelection(h.state), null);
+  assert.equal(currentArtifacts(h.state).length, 0);
+  assert.throws(() => pack(h));
+  const before = structuredClone(h.state);
+  assert.throws(() => h.apply(command));
+  assert.deepEqual(h.state, before);
+  const h2 = harness(), oldReview = reviewFor(h2);
+  const oldCommand = makeExperimentAcceptanceCommand(h2.state, oldReview, 'a3_older_feedback');
+  h2.feedback({ sampleSize: '101' });
+  const newer = structuredClone(h2.state);
+  assert.throws(() => h2.apply(oldCommand), /相关反馈|执行自述/);
+  assert.deepEqual(h2.state, newer);
+});
+
+test('C78 legacy saved action keys still resolve legacy artifacts without renaming or forcing a next round', () => {
+  for (const key of ['juicer_faq', 'juicer_video_intro']) {
+    const h = harness(key, (analysis) => {
+      for (const path of analysis.paths) {
+        if (path.actionKey === 'juicer_first_screen') path.actionKey = 'juicer_faq';
+        if (path.actionKey === 'juicer_question_video') path.actionKey = 'juicer_video_intro';
+        delete path.experiment.experimentId;
+        delete path.experiment.hypothesis;
+      }
+    });
+    const path = activeSelection(h.state).path;
+    assert.equal(path.actionKey, key);
+    assert(describeActionPath(path, true).label.includes('历史'));
+    assert(experimentIdentityRows(path).every((row) => row[1].includes('未知')));
+    assert.equal(buildActionCopy(h.state).artifacts.every((item) => item.pathId === path.id), true);
+    assert.match(pack(h).text, new RegExp('actionKey: ' + key));
+    const review = reviewFor(h);
+    assert.notEqual(review.decision, 'change_variable');
+    assert.equal(review.nextAction, null);
+    assert.equal(resolveFeedbackRecord(h.state, review.sourceFeedbackId).path.actionKey, key);
+  }
+});
+
+test('C78 page wiring gates explicit acceptance, full readback, retry identity and separate read-only draft opening', () => {
+  const source = readFileSync(new URL(modulePath, import.meta.url), 'utf8');
+  const html = readFileSync(htmlPath, 'utf8');
+  const accepting = source.slice(source.indexOf('async function acceptCandidate('), source.indexOf('async function openAcceptedContent('));
+  const complete = source.slice(source.indexOf('async function completeAcceptedExperiment('), source.indexOf('async function acceptCandidate('));
+  const readReview = source.slice(source.indexOf('async function openReview('), source.indexOf('function returnToAction('));
+  assert.match(readReview, /await readReviewRecord/);
+  assert.match(readReview, /buildExperimentReview\(bundle\.snapshot, feedbackId\)/);
+  assert.match(accepting, /await shared\.loadSession\(\)/);
+  assert.match(accepting, /getAcceptedExperimentRound\(fresh, review\.sourceFeedbackId, review\.fingerprint\)/);
+  assert(accepting.indexOf('const existing =') < accepting.indexOf('!canAcceptExperimentReview(fresh, review)'));
+  assert(accepting.indexOf('if (readOnly)') < accepting.indexOf('await commit(attempt.command)'));
+  assert.match(accepting, /await commit\(attempt\.command\)/);
+  assert.match(accepting, /const reread = await readFresh\(\)/);
+  assert.match(accepting, /getAcceptedExperimentRound\(reread, review\.sourceFeedbackId, review\.fingerprint\)/);
+  assert.match(accepting, /pendingAcceptance === attempt/);
+  assert.match(accepting, /acceptanceRecheckId = review\.sourceFeedbackId/);
+  assert.match(accepting, /if \(result\.ok\) attempt\.phase = 'readback'/);
+  assert(complete.indexOf('!acceptanceReceiptMatches') < complete.indexOf('await ensureArtifacts()'));
+  assert.match(source, /expectedRevision: command\.expectedRevision \?\? state\.revision/);
+  assert.match(source, /if \(generating \|\| dirty \|\| accepting \|\| pendingAcceptance\) return;/);
+  assert.match(source, /if \(!generating && !saving && !readingReview && !accepting\)/);
+  assert.match(source, /acceptCandidate\(false, true\)/);
+  assert.match(source, /function rememberAcceptedRead\(snapshot\)/);
+  assert.match(source, /rememberAcceptedRead\(result\.state\)/);
+  assert.match(source, /不能据此认定未保存/);
+  assert.match(source, /实际状态以本轮已保存记录为准/);
+  assert.match(source, /token !== acceptanceToken/);
+  assert.doesNotMatch(source, /command\(\s*(?:'|")(?:ROUND_START|MATERIAL_ADD)(?:'|")/);
+  for (const control of ['feedback-image', 'feedback-table', 'start-candidate', 'generate-candidate', 'show-change-list']) {
+    assert.match(html, new RegExp('<(?:input|button)\\b[^>]*\\bid="' + control + '"[^>]*\\bdisabled\\b'));
+  }
+  for (const id of ['review-candidate-region', 'acceptance-status', 'acceptance-retry']) assert(html.includes('id="' + id + '"'));
+});
+
+function deferredQueueStep() {
+  let release;
+  const promise = new Promise((resolve) => { release = resolve; });
+  return { promise, release };
+}
+async function untilMicrotask(predicate) {
+  for (let index = 0; index < 80 && !predicate(); index++) await Promise.resolve();
+  assert(predicate(), 'expected page await boundary was not reached');
+}
+function originalQueuePage() {
+  const h = harness(), review = reviewFor(h);
+  h.apply(makeExperimentAcceptanceCommand(h.state, review, 'a3_guard_accept'));
+  const snapshot = structuredClone(h.state);
+  const receipt = getAcceptedExperimentRound(snapshot, review.sourceFeedbackId, review.fingerprint);
+  assert.equal(receipt.ok, true);
+  const source = readFileSync(new URL(modulePath, import.meta.url), 'utf8');
+  const section = (start, end) => {
+    const a = source.indexOf(start), b = source.indexOf(end, a + start.length);
+    assert(a >= 0 && b > a, 'missing original page section ' + start);
+    return source.slice(a, b);
+  };
+  const logs = [], dispatched = [], opened = [], nodes = new Map();
+  let sequence = 0;
+  const env = { ...page, CONTRACT_VERSION: 'demo.v1', state: snapshot,
+    shared: { ...{ buildDemoArtifact }, getAcceptedExperimentRound,
+      async loadSession() { return { ok: true, state: structuredClone(h.state) }; },
+      async dispatch(command) {
+        dispatched.push(structuredClone(command));
+        if (command.expectedRevision !== h.state.revision) return { ok: false, code: 'conflict', state: h.state };
+        return { ok: true, state: h.apply(command).state };
+      } },
+    pendingAcceptance: null, acceptanceRecheckId: null, acceptedReceipt: null,
+    activeReview: { review, bundle: { snapshot } }, acceptanceToken: 1, acceptanceBusyOwner: 1, accepting: true,
+    readFeedbackIds: new Set([review.sourceFeedbackId]), reviewFeedbackId: review.sourceFeedbackId,
+    readEventLogged: false, pageMode: 'review', saving: false, readingReview: false,
+    generating: false, generationToken: 0, dirty: false, generationFailures: [], generationLimitations: [],
+    artifactCommands: new Map(), commandQueue: Promise.resolve(),
+    id: () => 'a3_guard_page_' + (++sequence), invalidateViewRead() {}, render() {},
+    status(target, value) { logs.push({ target, value }); },
+    $(id) {
+      if (!nodes.has(id)) nodes.set(id, { hidden: false, focus() {}, scrollIntoView() {} });
+      return nodes.get(id);
+    },
+    errorText: (result) => result.message || result.code,
+    choosePreview: (key) => opened.push(key),
+    sameReference: (a, b) => Boolean(a && b && a.roundId === b.roundId && a.analysisId === b.analysisId &&
+      a.pathId === b.pathId && a.inputVersion === b.inputVersion) };
+  const bind = (code, names) => Object.assign(env,
+    new Function('env', 'with(env){' + code + '; return {' + names.join(',') + '};}')(env));
+  // Only UI rendering/status and persistent I/O are controlled. All page functions under test are verbatim source.
+  bind(section('function acceptState(next) {', 'function rememberAcceptedRead(snapshot) {'),
+    ['acceptState', 'checkedAcceptedIdentity', 'commit', 'command']);
+  bind(section('function matchesDraft(artifact, draft) {', 'function renderCopyAllControls() {'),
+    ['matchesDraft', 'ensureArtifacts']);
+  bind(section('async function completeAcceptedExperiment(', 'async function acceptCandidate('), ['completeAcceptedExperiment']);
+  bind(section('async function acceptCandidate(', 'async function openAcceptedContent('), ['acceptCandidate']);
+  bind(section('async function openAcceptedContent(', 'function renderReview()'), ['openAcceptedContent']);
+  bind(section('function previewArtifactKey(', 'export function selectPreviewArtifact('), ['previewArtifactKey']);
+  const changeOriginalFeedback = () => {
+    const originalArtifact = h.state.artifacts.find((item) => item.id === review.artifactId && item.version === review.artifactVersion);
+    const payload = makeFeedbackPayload(originalArtifact, { adoption: 'adopted', execution: 'done', executedAt: null,
+      scope: '原首屏补充反馈', observation: 'worse', rawText: '原首屏最新自述变差，需要核对', reason: '',
+      sampleSize: '101', metricBeforePercent: '', metricAfterPercent: '', constraintsText: '', guardrailStatus: 'triggered' },
+    { detailsVersion: FEEDBACK_DETAILS_VERSION });
+    h.send('FEEDBACK_SAVE', payload);
+    env.acceptState(h.state);
+    const stale = getAcceptedExperimentRound(env.state, review.sourceFeedbackId, review.fingerprint);
+    assert.equal(stale.ok, false);
+    assert.equal(stale.code, 'stale_input');
+    assert.equal(env.acceptedReceipt, null);
+  };
+  return { h, env, snapshot, receipt, review, logs, dispatched, opened, changeOriginalFeedback };
+}
+
+test('C78 queued R2 writes recheck the original acceptance before first and subsequent dispatch', async () => {
+  for (const beforeSecond of [false, true]) {
+    const t = originalQueuePage(), barrier = deferredQueueStep();
+    const originalDispatch = t.env.shared.dispatch;
+    if (!beforeSecond) t.env.commandQueue = barrier.promise;
+    else t.env.shared.dispatch = async (command) => {
+      const result = await originalDispatch(command);
+      if (t.dispatched.length === 1) t.env.commandQueue = barrier.promise;
+      return result;
+    };
+    const completion = t.env.completeAcceptedExperiment(t.snapshot, t.review, t.receipt, 1);
+    const nextKind = buildDemoArtifact(t.snapshot).artifacts[1].kind;
+    await untilMicrotask(() => beforeSecond
+      ? t.dispatched.length === 1 && [...t.env.artifactCommands.values()].some((cmd) => cmd.payload.artifact.kind === nextKind)
+      : t.env.generating && t.env.artifactCommands.size === 1);
+    const firstCommand = structuredClone([...t.env.artifactCommands.values()][0]);
+    const context = activeSelection(t.env.state);
+    t.changeOriginalFeedback();
+    assert.deepEqual(activeSelection(t.env.state), context, 'round/analysis/path remain unchanged in this race');
+    barrier.release();
+    assert.equal(await completion, false);
+    assert.equal(t.dispatched.length, beforeSecond ? 1 : 0, 'stale queued command must not reach dispatch');
+    assert.equal(currentArtifacts(t.env.state).length, beforeSecond ? 1 : 0);
+    assert.equal(t.env.generating, false);
+    assert.deepEqual([...t.env.artifactCommands.values()][0], firstCommand, 'unsent command identity is retained');
+    assert.match(t.logs.at(-1).value, /接受来源已变化/);
+    assert.doesNotMatch(t.logs.at(-1).value, /已接受并重新读回/);
+  }
+  const h = harness();
+  const identitySource = h.state.analysis.experimentReview;
+  assert.equal(identitySource, undefined, 'ordinary first-round taking has no C8 source dependency');
+  assert.equal(buildActionCopy(h.state).artifacts.length, 1);
+});
+
+test('C78 source invalidation after final save or completion blocks completion and draft opening', async () => {
+  // A new feedback can arrive after the final command resolves, before the generator clears its error.
+  {
+    const t = originalQueuePage(), commit = t.env.commit;
+    t.env.accepting = false;
+    t.env.commit = async (...args) => {
+      const result = await commit(...args);
+      if (t.dispatched.length === 3) t.changeOriginalFeedback();
+      return result;
+    };
+    assert.equal(await t.env.ensureArtifacts(), false);
+    assert.equal(t.dispatched.length, 3, 'already committed artifacts are retained, never rolled back by the page');
+    assert.match(t.logs.at(-1).value, /接受来源已变化/);
+  }
+  // Arrival after the real generator completed still invalidates the enclosing completion message.
+  {
+    const t = originalQueuePage(), generate = t.env.ensureArtifacts;
+    t.env.ensureArtifacts = async () => {
+      const result = await generate();
+      t.changeOriginalFeedback();
+      return result;
+    };
+    assert.equal(await t.env.completeAcceptedExperiment(t.snapshot, t.review, t.receipt, 1), false);
+    assert.equal(t.dispatched.length, 3);
+    assert.match(t.logs.at(-1).value, /接受来源已变化/);
+    assert.doesNotMatch(t.logs.at(-1).value, /已接受并重新读回/);
+  }
+  // The read-only opener must also recheck after its awaited acceptance/read-back controller finishes.
+  {
+    const t = originalQueuePage();
+    assert.equal(await t.env.completeAcceptedExperiment(t.snapshot, t.review, t.receipt, 1), true);
+    const read = t.env.acceptCandidate;
+    t.env.acceptCandidate = async (retry, readOnly) => {
+      assert.equal(readOnly, true);
+      const result = await read(retry, readOnly);
+      assert.equal(result, true);
+      t.changeOriginalFeedback();
+      return result;
+    };
+    await t.env.openAcceptedContent('copy');
+    assert.equal(t.opened.length, 0);
+    assert.equal(t.dispatched.length, 3);
+    assert.match(t.logs.at(-1).value, /接受来源已变化/);
+  }
+});
+
+test('C78 old finally releases its own busy owner without clearing a newer request or trapping cancellation', async () => {
+  {
+    const t = originalQueuePage(), artifactBarrier = deferredQueueStep(), nextRead = deferredQueueStep();
+    let reads = 0;
+    t.env.accepting = false; t.env.acceptanceBusyOwner = null;
+    t.env.shared.loadSession = async () => {
+      reads++;
+      if (reads === 1) { t.env.commandQueue = artifactBarrier.promise; return { ok: true, state: structuredClone(t.h.state) }; }
+      return nextRead.promise;
+    };
+    const first = t.env.acceptCandidate(false);
+    await untilMicrotask(() => t.env.generating && t.env.artifactCommands.size === 1);
+    const second = t.env.acceptCandidate(false);
+    const newOwner = t.env.acceptanceBusyOwner;
+    artifactBarrier.release();
+    assert.equal(await first, false, 'superseded acceptance must not report completion');
+    await untilMicrotask(() => reads === 2);
+    assert.equal(t.env.accepting, true, 'old finally must not release the newer busy flag');
+    assert.equal(t.env.acceptanceBusyOwner, newOwner);
+    nextRead.release({ ok: false, code: 'read_failed' });
+    assert.equal(await second, false);
+    assert.equal(t.env.accepting, false);
+    assert.equal(t.env.acceptanceBusyOwner, null);
+    assert.equal(t.dispatched.length, 0);
+  }
+  {
+    const t = originalQueuePage(), read = deferredQueueStep();
+    let started = false;
+    t.env.accepting = false; t.env.acceptanceBusyOwner = null;
+    t.env.shared.loadSession = async () => { started = true; return read.promise; };
+    const cancelled = t.env.acceptCandidate(false);
+    await untilMicrotask(() => started);
+    t.env.acceptanceToken++;
+    read.release({ ok: true, state: structuredClone(t.h.state) });
+    assert.equal(await cancelled, false);
+    assert.equal(t.env.accepting, false, 'cancelled request still releases the flag it owns');
+    assert.equal(t.env.acceptanceBusyOwner, null);
+  }
+});
+~~~
+<!-- A3_C78_SMOKE_END -->
+
+## 以下为历史交付与当前18-ID对照
+
+## 首轮独立交付（历史记录：共享新版发布前）
+
+> 下节记录的是上一批交付时的能力状态；其中“未发布／待接线”已被本QA顶部当前批次覆盖，不能用历史状态判断现在的C7/C8。PRD8组仍保留并在当前暂存实现上复跑。
 
 已完整阅读统筹指定的 PRD 原件，重点核对第9、10、11.3、15、17、19、20节；按最新下发覆盖旧草图冲突。首轮A应为“详情页首屏”，B为“真实问题验证内容”；后续是否采用购买问答区由共享依据判断，不固定 A→B。本页不写新策略模板，也不把旧 `juicer_faq` / `juicer_video_intro` 记录改名。
 
@@ -356,8 +1020,10 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $qaSmoke | node --input-type=module
 ```
 
+**历史脚本归档**：该9组脚本依赖旧C5生成器的默认旧key、两个事实和旧按钮占位。新首轮策略已发布，不能据此重跑并误报现版失败；当前新/旧兼容、参数追溯与按钮门控由顶部C78脚本覆盖。保留原断言供历史核查，以下标为text，不作为当前执行入口。
+
 <!-- A3-C5-SMOKE -->
-```javascript
+```text
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -663,7 +1329,7 @@ test('C5 historical plan keeps original parameter provenance after current analy
 </details>
 
 
-## REQ-30 图3执行记录与图2反馈后改判（随 C5 更新状态）
+## REQ-30 图3执行记录与图2反馈后改判（当前18-ID状态）
 
 ### 范围、实际参考与依赖
 
@@ -680,11 +1346,11 @@ REQ-30首批实际查看过以下两张原图，均为 **1586×992 静态设计�
 
 | 共享依赖 | 本次实际消费与仍缺的能力 |
 | --- | --- |
-| C5 | 已接所选路径 buildDemoArtifact → 逐项 ARTIFACT_SAVE。juicer_faq／juicer_video_intro 按保存的 actionKey、optionLabel 与 analysis.inputSnapshot 生成 copy/checklist/experiment_plan；卡片与TXT共用 minSampleUnit、guardrails、restoreSteps 等八项计划投影。旧记录缺字段保持未知。此接口只覆盖当前明确选择的 A/B，不提供未选择的候选对象或第二轮稿。 |
-| C6 | 现有 FEEDBACK_SAVE 可追加文字、执行自述、观察及指标 JSON；无反馈附件 Blob 原子接口。新截图／Excel／CSV 输入禁用并具名说明，绝不借 MATERIAL_ADD 改原输入。附件格式接收另依赖 C2。 |
-| C7 | 没有版本化再判断接口，结论／原行动处理／候选建议／理由区域标等待共享结果。普通分析摘要中“读取了本地反馈”不被当成再判断。 |
-| C8 | 旧 ROUND_START 会清空分析、选择并使旧稿失效，不是“接受候选及建有效下一轮”。本页已移除旧建轮调用；开始第二轮禁用，不创建正式未来记录。 |
-| C9／MoneyAI | 公共壳仍负责真实服务状态；本页只显示本机保存和读回证据。未调用个人历史/管理 API，未称 MoneyAI 已写入、读回或记住。 |
+| C5／新PRD | 当前首轮 juicer_first_screen／juicer_question_video，旧juicer_faq／juicer_video_intro保留快照兼容；实验ID/假设/八项计划/参数来源由共享生成，本页只投影已保存值。 |
+| 反馈v1／C6 | FEEDBACK_DETAILS_VERSION=1已实际发布，新明细走原FEEDBACK_SAVE完整保存；C6附件Blob事务仍未发布，截图／Excel／CSV输入禁用，不借MATERIAL_ADD改旧输入。 |
+| C7 | 实际消费experiment-memory.js的buildExperimentReview，先真实读取原bundle再呈现local_fallback判断/理由/未知/候选，moneyaiCalled=false。 |
+| C8 | 实际消费state公开getAcceptedExperimentRound与EXPERIMENT_ACCEPT；精确四字段接受、版本核对、幂等原命令、完整读回确认后再逐项ARTIFACT_SAVE。C7未提供接受前候选全文；本页不补造。 |
+| C9／MoneyAI | 公共壳负责真实服务状态；本页只显示本机保存/读回/本机规则。MoneyAI个人实验历史、写入与读回均未接通。 |
 
 ### 逐项交回（沿用原功能 ID 与模块名）
 
@@ -692,24 +1358,24 @@ REQ-30首批实际查看过以下两张原图，均为 **1586×992 静态设计�
 
 | 功能 ID／锁定模块 | 状态与本批实现 | 代码位置 | 复现与实际证据／依赖 |
 | --- | --- | --- | --- |
-| R30-P3-01 所选行动头区 | 已接页内新/旧actionKey语义；新首轮共享未发布、UI未验。只读保存的optionLabel/actionKey，不改旧记录名称，不默认选路。 | `03-action.html:42`；`action.js:247` | PRD第7组与旧C5身份/失效组通过；新首轮真实生成与保存待共享。 |
-| R30-P3-02 “可以直接使用的修改稿” | 沿当前已选的共享产物/标题/版本展示，copy与checklist分开。页面不生成新模板；旧问答/字幕记录按旧快照保留。 | `03-action.html:67`、`03-action.html:120`；`action.js:247` | 旧C5第1、2、6、8组通过；新A首屏与B真实问题验证稿尚未发布。PC预览/滚动未验。 |
-| R30-P3-03 “复制全部文案／下载执行清单” | 原真实操作逻辑保留，复制全部仅当前copy正文；TXT是含清单/计划/风险/来源/版本的整包且逐次授权，无反馈可取用。 | `03-action.html:103`；`action.js:344` | PRD第8组、旧C5第5/7与REQ30第1/2/9组通过。真实剪贴板/下载落盘/操作日志重试未验。 |
-| R30-P3-04 “本轮实验卡”八项 | 页内增加保存的实验编号与待验证假设，八项原计划仍共享投影；新字段缺失明确未知，不构造ID或取当前priority。 | `03-action.html:136`；`action.js:264`、`action.js:271`、`action.js:344` | PRD第7/8组与旧C5第3/4组通过；身份实际共享保存待交付。100次/24—72小时仍只是计划假设。UI未验。 |
-| R30-P3-05 “查看实验依据” | 原assumptionIds只关联本路径estimate.assumptions；参数ID/名称/值/单位/note及口径/限制保留，风险在取用前可发现。 | `03-action.html:425`；`action.js:302`、`action.js:551` | 旧C5第3/4/9与PRD第7/8组通过；历史不拿当前参数补值。真实弹窗、焦点与可见性未验。 |
-| R30-P3-06 执行状态三按钮 | 页内新增独立采用三按钮，保留done/partial/not_started执行按钮；全部默认unknown。采用不推导执行；新采用值提交受版本门禁。 | `03-action.html:176`、`03-action.html:199`；`action.js:117`、`action.js:1412`、`action.js:1512` | PRD第2/3/4/8组与静态六按钮检查通过。实际点击/刷新与新采用值真实保存未验。 |
-| R30-P3-07 新截图／新Excel或CSV／文字反馈 | 原文字反馈仍可保存；新增原因/样本/百分比/异常/限制完成可选承载与严格门禁。附件仍禁用，等待C6事务。 | `03-action.html:231`；`action.js:100`、`action.js:117` | PRD第1—4组验证空白null、0保留、转比例及不截断。没有处理真实文件，也没有把反馈用MATERIAL_ADD写入旧输入。 |
-| R30-P3-08 “稍后回来补充／保存本轮记录” | 旧字段按原稿引用保存；新字段未获版本1拒绝提交。缺完整回执留草稿与原commandId，完整保存/读回分开；稍后不记执行。 | `03-action.html:304`；`action.js:719`、`action.js:1082`、`action.js:1096` | PRD第1/2/5/8组通过；新明细真实事务、响应丢失、IDB/多标签未验；C6未交付。 |
-| R30-P3-09 保存后进入复盘 | 仍以明确选择已存记录并读回后进入同页复盘；读回再次核对本次新明细和采用/执行，不从查看创建新轮。 | `03-action.html:317`；`action.js:1096`、`action.js:1163` | PRD第5/8组与REQ30第5/6/10组通过；真实页面读回/切换未验，自动再判断/候选建轮仍待C7/C8。 |
-| R30-R-01 记录回执与“查看完整实验记录” | 原bundle完整记录增加新版明细/采用标签与实验身份，原计划参数追溯保留；旧记录缺明细/身份仍未知。 | `03-action.html:324`；`action.js:160`、`action.js:1163`、`action.js:1321` | PRD第5—8组与旧C5第9组通过；原analysis/path不被当前覆盖。真实读回/弹窗、MoneyAI及附件均未验或未接通。 |
-| R30-R-02 上轮发生了什么四块 | 动作、采用/执行、观察及补充明细读取原记录；第四块当前结论明确待C7，不从样本/感觉自动判失败。 | `03-action.html:339`；`action.js:1245` | PRD第3/6/8组保持未知、比例原值与独立执行。C7与四块真实运行截图未验。 |
-| R30-R-03 不再重复／下一步建议与原因 | 继续具名等待版本化C7结果。不固定A→B；达到约定样本仍无变化后的FAQ是否合适不由页面擅自诊断。 | `03-action.html:362`；`action.js:1245` | 未有共享再判断回执；本批没有生成结论或未来反馈。 |
-| R30-R-04 B执行预览（新PRD改为下一轮候选） | 候选容器改为中性的下一轮候选行动；尚无候选稿，不用当前B或另一条旧稿替代，不覆盖当前稿。 | `03-action.html:378`；`action.js:1245` | C7/C8及候选稿接口未交付；页面只保留明确待接通状态，未有候选运行证据。 |
-| R30-R-05 “生成完整执行稿／查看修改清单” | 两按钮仍禁用，候选不会覆盖当前；已可取用的当前稿不充当候选稿。 | `03-action.html:378`；`action.js:1245` | REQ30第10组与PRD第8组静态边界通过；候选完整稿/修改清单未接通。 |
-| R30-R-06 “第二轮实验规则” | 候选五项规则继续等待共享，不将当前合成计划复制为未来轮次，不把未知退款/投诉当护栏已通过。 | `03-action.html:390`；`action.js:1245` | C7/C8未交付，无第二轮规则实际运行证据。 |
-| R30-R-07 “开始第二轮／暂时不继续” | 开始仍禁用；暂不继续只回当前行动，不改记录或执行。保持无ROUND_START捷径。 | `03-action.html:401`；`action.js:1512` | REQ30第10组与PRD第8组通过。明确接受及幂等建轮仍待C8。 |
-| R30-R-08 “这个商家的实验记忆”时间线 | 当前只列已存本机反馈/原稿与独立采用/执行；没有合成正式第二轮，没有宣称MoneyAI记忆。 | `03-action.html:409`；`action.js:1245` | 原记录关联测试通过；候选/正式新轮与MoneyAI历史待共享，真实时间线未验。 |
-| R30-R-09 商家中心／演示商家／导航入口 | 原当前项目弹窗与同页返回保留，仍是三页，不新增账号、多商家中心或第四页。 | `03-action.html:453`；`action.js:1321` | 静态同页区域/共享壳保留；真实打开关闭/焦点未验，独立D盘新项目不在本任务范围。 |
+| R30-P3-01 所选行动头区 | 已接新首轮A首屏/B真实问题验证与旧actionKey；只读保存的标识、名称和版本，已接受R2保持独立FAQ方案A。 | `03-action.html:38`；`action.js:256` | C78第1/6/9组通过；切换到其他路径需重新显式选择，真实头区/UI未验。 |
+| R30-P3-02 “可以直接使用的修改稿” | 所选共享copy/checklist/experiment_plan逐项保存后展示；接受候选并完整读回才生成R2稿；每条排队保存重新校验原接受身份，失效停止，原稿不覆盖。 | `03-action.html:71`；`action.js:1030` | C78第1/6/9组通过；先选A或B查看三份产物，接受R2后原稿仍可追溯。真实预览/滚动未验。 |
+| R30-P3-03 “复制全部文案／下载执行清单” | 复制仅当前copy；TXT含清单/计划/风险/来源/版本且每次授权，反馈为空不阻塞。R2标明漏斗为原快照，非新样本。 | `03-action.html:103`；`action.js:422` | C78第1/6与REQ30取用组通过；取消一次TXT授权后不得沿用上次同意。剪贴板/落盘未验。 |
+| R30-P3-04 “本轮实验卡”八项 | 显示保存实验ID/单变量/假设与八项实际值，当前卡/TXT/历史共用投影。100次、24—72小时仅为原合成计划。 | `03-action.html:137`；`action.js:275` | C78第1/4/6/9组通过；旧字段缺失保持未知，新轮ID读取保存值。真实布局未验。 |
+| R30-P3-05 “查看实验依据” | 原路径参数ID→同路径assumptions，显示名称/值/单位/note；历史换分析后仍读原参数。核心风险/未知仍在取用前可见。 | `03-action.html:427`；`action.js:313` | C78第4组及HTML静态通过；改当前参数为777后历史保留原100/24/72及未知值。弹窗/可发现性未验。 |
+| R30-P3-06 执行状态三按钮 | 采用与执行独立，默认未知；采用不自动done，日期可空。已接真实v1 reducer，不从样本推断执行。 | `03-action.html:187`；`03-action.html:210`；`action.js:126` | C78第2/3与原PRD组通过；已采用+执行未知可保存且C7要求补充。实际点击/持久化未验。 |
+| R30-P3-07 新截图／新Excel或CSV／文字反馈 | 文字及新版原因/样本/比例/异常/限制已接v1；新截图/Excel/CSV附件仍禁用，C6未发布。 | `03-action.html:231`；`action.js:109` | C78第2、PRD解析组通过；0保留、空白null、百分数转比例，不丢旧rawText/metrics/window。附件未接通/未验。 |
+| R30-P3-08 “稍后回来补充／保存本轮记录” | 按原稿保存，缺完整回执保留草稿/原命令；保存与读回分开。稍后不新增采用、执行或观察。 | `03-action.html:304`；`action.js:1227`；`action.js:1241` | C78第2与PRD回执组通过；重新读取前不称完整读回。真实事务/异常重试/刷新未验。 |
+| R30-P3-09 保存后进入复盘 | 明确查看已存记录后重新loadSession、核对原bundle与C7来源；同一HTML进入复盘，不由查看建立新轮。 | `03-action.html:317`；`action.js:1308`；`action.js:1323` | C78第3/4/10组通过；以一条已保存反馈进入，读回失败可重试，不展示伪结论。真实点击/读回未验。 |
+| R30-R-01 记录回执与“查看完整实验记录” | 反馈/执行/原稿/原分析/参数从本次读回原bundle展示，当前参数不补历史；本机读回与MoneyAI分开。 | `03-action.html:332`；`action.js:1732` | C78第4/6/10与PRD历史组通过；换当前分析仍保留原ID/值/note。真实历史弹窗/IDB未验。 |
+| R30-R-02 上轮发生了什么四块 | 上轮动作、独立采用/执行、观察与结论来自C7的已读回原记录；未知和异常保留，不称统计/因果证明。 | `03-action.html:339`；`action.js:1578` | C78第2/3组通过；未知执行→补信息、不足样本→继续观察、异常→暂停建议。四块实截未验。 |
+| R30-R-03 不再重复／下一步建议与原因 | 已接共享四类decision及原行动处理、reason、阈值含义、重要未知和新限制来源。未调用MoneyAI，不自行诊断或固定A→B。 | `03-action.html:373`；`action.js:355`；`action.js:1578` | C78第3/4/8组通过；B不强转FAQ，来源变更后需重读。真实理由区交互未验。 |
+| R30-R-04 B执行预览（新PRD改为下一轮候选） | 仅C7实际candidate显示具名预览/ID/动作/限制；无候选隐藏整区。候选是计划，不冒充当前A或正式第二轮。 | `03-action.html:376`；`action.js:1578` | C78第3/5组通过；满足共享条件时出现FAQ候选，尚未接受时不改轮次/稿件。候选真实预览未验。 |
+| R30-R-05 “生成完整执行稿／查看修改清单” | 分阶段接通：候选阶段只预览计划；完整接受并读回后生成新轮稿，可“打开本轮完整稿／修改清单”。两读取按钮不隐式接受，await后再次核对原接受身份才打开。 | `03-action.html:383`；`action.js:1558` | C78第6/10/12组通过；接受前候选全文/修改清单未由C7提供，不补造。已建立轮次的打开动作须再次读回，真实点击未验。 |
+| R30-R-06 “第二轮实验规则” | 候选读取其实际ID/变量/固定项/指标/样本；缺窗口/停止/回滚明确未知。接受后完整规则来自R2保存path.experiment。 | `03-action.html:391`；`action.js:364`；`action.js:674` | C78第3/6组通过；不拿原轮窗口代填，不把未知护栏当通过。完整规则实截未验。 |
+| R30-R-07 “开始第二轮／暂时不继续” | 已接显式EXPERIMENT_ACCEPT四字段命令；先load核对原链/指纹，成功再load+完整getAccepted后生成稿件。不确定结果保留原命令，明确拒绝须重读并显式重提；排队/完成前均重核来源，busy只由自己的请求释放。 | `03-action.html:401`；`action.js:1456`；`action.js:1418` | C78第5—8/10及新增11—13组通过；幂等不重复建轮；暂不继续只返回。无ROUND_START捷径。真实事务丢响应/跨标签/重试未验。 |
+| R30-R-08 “这个商家的实验记忆”时间线 | 显示实际已存反馈与原稿，另显示经过完整读回核对的当前接受记录/来源反馈；采用与执行按本轮自述，不一律重置未知。 | `03-action.html:409`；`action.js:610`；`action.js:1703` | C78第6/7/10组与源码复核；无接受记录不造正式新轮。MoneyAI历史未接通；真实时间线/刷新未验。 |
+| R30-R-09 商家中心／演示商家／导航入口 | 保留当前项目弹窗及同页返回；接受核对期间防误离开，待确认操作由共享离开守卫提示。仍为原生三页，无新账号/工程。 | `03-action.html:455`；`action.js:1803`；`action.js:1878` | HTML静态及C78第10组通过；真实焦点/返回/离开守卫未验，独立D盘新项目未触碰。 |
 
 ### 本批重要修补与事件边界
 

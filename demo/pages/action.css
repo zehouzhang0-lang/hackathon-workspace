@@ -314,6 +314,18 @@ body[data-page="action"] .feedback-save-row #discard-feedback { margin-inline-st
 body[data-page="action"] .saved-feedback-details > summary { font-size: 17px; line-height: 1.7; }
 body[data-page="action"] .saved-feedback-details .experiment-facts { margin-block: 10px; }
 
+/* C7: read-back conclusions and candidate scopes, without a new round. */
+body[data-page="action"] .review-decision { font-weight: 600; font-size: 21px; line-height: 1.6; }
+body[data-page="action"] .review-reason-text { margin-block: 0 12px; font-size: 18px; line-height: 1.8; }
+body[data-page="action"] .review-evidence-details { padding-block-start: 8px; border-block-start: 1px solid var(--color-line); }
+body[data-page="action"] .review-evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 20px 28px; padding-block: 12px 4px; }
+body[data-page="action"] .review-evidence-grid > section { min-width: 0; }
+body[data-page="action"] .review-evidence-grid h3 { margin-block: 0 10px; font-size: 18px; line-height: 1.6; }
+body[data-page="action"] .review-evidence-list { margin-block: 10px 18px; padding-inline-start: 22px; font-size: 17px; line-height: 1.75; }
+body[data-page="action"] .review-evidence-list li + li { margin-block-start: 6px; }
+body[data-page="action"] #review-candidate-region[hidden] { display: none; }
+body[data-page="action"] #review-candidate-preview h3 { margin-block: 0 10px; font-size: 21px; line-height: 1.6; }
+
 /* Existing narrow-screen fallbacks stay protective; this batch is PC-first. */
 @media (max-width: 1280px) {
   body[data-page="action"] #action-main { width: calc(100% - 64px); }

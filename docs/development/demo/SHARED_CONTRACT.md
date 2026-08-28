@@ -1,7 +1,7 @@
 # 三页共享契约｜demo.v1
 
-> 当前发布口径（REQ-31，2026-08-28）：冲突处以[最新PRD执行基线](PRD_V1_EXECUTION.md)和[队友测试版本](../../team-testing/LATEST_DEMO.md)为准。下方REQ-30段落保留当时批次记录。
-> 当前XLSX/XLS支持原件接收，解析／OCR仍未接通；FEEDBACK_DETAILS_VERSION=1及C7/C8共享逻辑已实现，第三页C7/C8按钮仍待接线，C6反馈附件事务未发布。代码存在不等于浏览器、存储或MoneyAI验收通过。
+> 当前发布口径（REQ-31，2026-08-29）：冲突处以[最新PRD执行基线](PRD_V1_EXECUTION.md)和[队友测试版本](../../team-testing/LATEST_DEMO.md)为准。下方REQ-30段落保留当时批次记录。
+> 当前XLSX支持原件接收及已知指标列本机解析，XLS旧格式仅接收，OCR仍未接通；FEEDBACK_DETAILS_VERSION=1及C7/C8共享逻辑已实现，第三页C7/C8按钮已接线但真实浏览器／事务仍未验，C6反馈附件事务未发布。代码存在不等于浏览器、存储或MoneyAI验收通过。
 
 ## REQ-30 共享增量边界（C2—C5首批在场，页面与运行逐项验收）
 

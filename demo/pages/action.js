@@ -1,7 +1,9 @@
 import { enhanceFoldTitle } from '../shared/title-motion.js';
 
 const CONTRACT_VERSION = 'demo.v1';
-const EXECUTION_LABELS = { unknown: '执行情况未知', not_started: '明确还没做', partial: '做了一部分', done: '自述已完成' };
+const EXECUTION_LABELS = { unknown: '执行情况未知', not_started: '还没执行', partial: '做了一部分', done: '自述已完成' };
+const ADOPTION_LABELS = { unknown: '采用情况未知', intended: '有意采用，尚未确认采用', adopted: '已采用', partial: '采用了一部分', declined: '没有采用' };
+const GUARDRAIL_LABELS = { unknown: '异常情况未知', clear: '暂未见明显异常（商家自述）', triggered: '自述发现异常，需核对' };
 const OBSERVATION_LABELS = { unknown: '观察结果未知', better: '感觉好一些', unchanged: '感觉没变化', worse: '感觉变差' };
 const SOURCE_LABELS = { merchant_statement: '商家自述', file_extract: '文件提取，待核对', derived: '派生计算', public_reference: '公共参考', scenario_assumption: '情景假设' };
 const INTAKE_SOURCE_LABELS = { voice: '语音转写', paste: '粘贴文字', manual: '手动填写', txt: 'TXT 材料', csv: 'CSV 材料', json: 'JSON 材料' };
@@ -13,7 +15,7 @@ const INTAKE_FIELD_LABELS = { merchantName: '商家名称', productName: '具体
   'metrics.productClicks': '商品点击次数', 'metrics.addToCarts': '加购次数', 'metrics.createdOrders': '创建订单数', 'metrics.paidOrders': '支付订单数',
   confirmedProductFacts: '商家确认的商品信息', proofMaterials: '证明材料', previousAttempts: '已尝试的动作', constraints: '本轮限制',
   customerQuestions: '顾客问题', unknowns: '重要未知' };
-const FIELD_LABELS = { video_views: '播放次数', product_clicks: '商品点击', add_to_carts: '加购', created_orders: '下单', paid_orders: '支付订单', product_detail_visitors: '商品详情访客', price: '价格', units_per_order: '每单件数',
+const FIELD_LABELS = { video_views: '播放次数', product_clicks: '商品点击', add_to_carts: '加购', click_to_cart_rate: '商品点击后的加购率', created_orders: '下单', paid_orders: '支付订单', product_detail_visitors: '商品详情访客', price: '价格', units_per_order: '每单件数',
   external_length: '单只外长', external_width: '单只外宽', external_height: '单只外高', dimension_scope: '尺寸口径',
   current_title: '现有标题', current_opening: '现有说明开头', selected_inquiries: '精选咨询' };
 
@@ -66,18 +68,67 @@ export function artifactPreviewText(artifact, part = 'content') {
   throw new Error('未知的预览方式。');
 }
 
-function feedbackHasContent(draft) {
-  return Boolean(draft.rawText?.trim() || draft.scope?.trim() || draft.executedAt ||
-    draft.execution !== 'unknown' || draft.observation !== 'unknown');
+export function hasFeedbackDetailsInput(draft = {}) {
+  const filled = (value) => value !== undefined && value !== null && String(value).trim() !== '';
+  return (draft.adoption ?? 'unknown') !== 'unknown' || (draft.guardrailStatus ?? 'unknown') !== 'unknown' ||
+    ['reason', 'sampleSize', 'metricBeforePercent', 'metricAfterPercent', 'constraintsText'].some((key) => filled(draft[key]));
 }
 
-export function makeFeedbackPayload(artifact, draft) {
+function feedbackHasContent(draft) {
+  return Boolean(draft.rawText?.trim() || draft.scope?.trim() || draft.executedAt ||
+    (draft.execution ?? 'unknown') !== 'unknown' || (draft.observation ?? 'unknown') !== 'unknown' || hasFeedbackDetailsInput(draft));
+}
+
+function optionalFeedbackText(value, label, limit) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string' || value.length > limit) throw new Error(label + '最多 ' + limit + ' 字，请保留原意后自行精简。');
+  return value.trim() || null;
+}
+
+function feedbackNumber(value, label, percentage = false) {
+  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return null;
+  if (!['string', 'number'].includes(typeof value)) throw new Error(label + '请填写有效数字或留空。');
+  const raw = String(value).trim();
+  const valid = percentage ? /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw) : /^\d+$/.test(raw);
+  const number = Number(raw);
+  if (!valid || !Number.isFinite(number) || number < 0 || (percentage ? number > 100 : !Number.isSafeInteger(number))) {
+    throw new Error(label + (percentage ? '请填写 0—100 的百分数，不带百分号；留空表示未知。' : '请填写非负安全整数；留空表示未知。'));
+  }
+  return percentage ? number / 100 : number;
+}
+
+export function parseFeedbackDetails(draft = {}) {
+  const reason = optionalFeedbackText(draft.reason, '采用或未采用的原因', 1000);
+  const sampleSize = feedbackNumber(draft.sampleSize, '新增商品点击');
+  const metricBefore = feedbackNumber(draft.metricBeforePercent, '改动前加购率', true);
+  const metricAfter = feedbackNumber(draft.metricAfterPercent, '改动后加购率', true);
+  const constraintsText = draft.constraintsText ?? '';
+  if (typeof constraintsText !== 'string') throw new Error('新限制请按每行一项填写。');
+  const constraintsLearned = constraintsText.split(/\r\n?|\n/).map((item) => item.trim()).filter(Boolean);
+  if (constraintsLearned.length > 20 || constraintsLearned.some((item) => item.length > 300)) {
+    throw new Error('新限制最多 20 项，每项最多 300 字；请自行精简，页面不会截断后保存。');
+  }
+  const guardrailStatus = draft.guardrailStatus ?? 'unknown';
+  if (!Object.hasOwn(GUARDRAIL_LABELS, guardrailStatus)) throw new Error('异常状态无效，请重新选择。');
+  return { detailsVersion: 1, reason, sampleSize, sampleUnit: sampleSize === null ? null : 'product_clicks',
+    metricBefore, metricAfter, constraintsLearned, guardrailStatus };
+}
+
+export function makeFeedbackPayload(artifact, draft, { detailsVersion } = {}) {
   if (!artifact?.id || artifact.version < 1) throw new Error('请先保存对应的行动内容。');
-  if ((draft.rawText?.length ?? 0) > 500) throw new Error('本次文字反馈最多 500 字，原输入仍保留，请自行精简后再保存。');
-  if (!(draft.execution in EXECUTION_LABELS) || !(draft.observation in OBSERVATION_LABELS)) throw new Error('反馈状态无效。');
+  const rawText = optionalFeedbackText(draft.rawText, '本次文字反馈', 500);
+  const adoption = draft.adoption ?? 'unknown';
+  const execution = draft.execution ?? 'unknown';
+  const observation = draft.observation ?? 'unknown';
+  if (!Object.hasOwn(ADOPTION_LABELS, adoption) || !Object.hasOwn(EXECUTION_LABELS, execution) ||
+      !Object.hasOwn(OBSERVATION_LABELS, observation)) throw new Error('反馈状态无效。');
+  const details = parseFeedbackDetails(draft);
+  if (hasFeedbackDetailsInput(draft) && detailsVersion !== 1) {
+    throw new Error('新版反馈保存尚未接通；采用、原因、样本、比例、异常和新限制仍是本页草稿，没有交给旧接口保存。取用稿件不受影响。');
+  }
   if (!feedbackHasContent(draft)) throw new Error('可以只记一句话或选一个状态；暂时不记录也可以直接离开。');
   if (draft.executedAt) {
-    const date = new Date(`${draft.executedAt}T00:00:00.000Z`);
+    const date = new Date(draft.executedAt + 'T00:00:00.000Z');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.executedAt) || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== draft.executedAt) {
       throw new Error('请填写有效日期，或留空表示执行时间未知。');
     }
@@ -85,11 +136,38 @@ export function makeFeedbackPayload(artifact, draft) {
   const refs = { roundId: artifact.roundId, analysisId: artifact.analysisId, pathId: artifact.pathId,
     inputVersion: artifact.inputVersion, artifactId: artifact.id, artifactVersion: artifact.version };
   return {
-    executionRecord: { id: null, ...refs, adoption: 'unknown', execution: draft.execution,
+    executionRecord: { id: null, ...refs, adoption, execution,
       scope: draft.scope?.trim() || null, executedAt: draft.executedAt || null },
-    feedbackRecord: { id: null, ...refs, executionRecordId: null, observation: draft.observation,
-      rawText: draft.rawText?.trim() || null, metrics: [], observedWindow: { start: null, end: null } },
+    feedbackRecord: { id: null, ...refs, executionRecordId: null, observation,
+      rawText, metrics: [], observedWindow: { start: null, end: null }, ...(detailsVersion === 1 ? details : {}) },
   };
+}
+
+export function feedbackDetailsMatch(record, expected) {
+  if (expected?.detailsVersion !== 1) return true;
+  if (record?.detailsVersion !== 1) return false;
+  return ['reason', 'sampleSize', 'sampleUnit', 'metricBefore', 'metricAfter'].every((key) =>
+    record[key] === expected[key]) &&
+    record.guardrailStatus === expected.guardrailStatus && Array.isArray(record.constraintsLearned) &&
+    JSON.stringify(record.constraintsLearned) === JSON.stringify(expected.constraintsLearned);
+}
+
+function feedbackRatioLabel(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? String(Number((value * 100).toPrecision(12))) + '%（保存比例 ' + value + '）' : '未知';
+}
+
+export function feedbackDetailRows(record) {
+  if (record?.detailsVersion !== 1) return [['补充反馈', '原记录未保存新版明细，原因、样本、比例、异常与新限制保持未知。']];
+  const sample = Number.isSafeInteger(record.sampleSize) && record.sampleSize >= 0 ? record.sampleSize : null;
+  return [
+    ['采用或未采用原因', textValue(record.reason)],
+    ['新增样本', sample === null ? '未知' : sample + (record.sampleUnit === 'product_clicks' ? ' 次新增商品点击' : '（计数单位未知）')],
+    ['改动前加购率', feedbackRatioLabel(record.metricBefore)],
+    ['改动后加购率', feedbackRatioLabel(record.metricAfter)],
+    ['异常观察', GUARDRAIL_LABELS[record.guardrailStatus] ?? GUARDRAIL_LABELS.unknown],
+    ['新发现的限制', Array.isArray(record.constraintsLearned) && record.constraintsLearned.length ? record.constraintsLearned.join('\n') : '未提供，保持未知'],
+  ];
 }
 
 function originLabel(mode) {
@@ -166,24 +244,70 @@ export function buildActionCopy(snapshot, { expectedSignature } = {}) {
   return { text: artifacts.map((artifact) => artifact.body).join('\n\n'), artifacts, context, signature };
 }
 
+export function describeActionPath(path, historical = false) {
+  const label = path?.optionLabel
+    ? (historical ? '历史方案 ' : '已选方案 ') + path.optionLabel
+    : historical ? '已保存的原行动' : '已选行动';
+  const prefix = historical ? '这份历史行动' : '当前已选行动';
+  const note = path?.actionKey === 'juicer_first_screen'
+    ? prefix + '只调整详情页首屏；文案与核对清单分开，未确认的商品信息不能直接发布。'
+    : path?.actionKey === 'juicer_question_video'
+    ? prefix + '提供真实问题验证内容的脚本与拍摄安排；还需实际验证和拍摄，不是视频文件，也不表示已执行。'
+    : path?.actionKey === 'juicer_faq'
+    ? prefix + '提供购买问答参考稿；待核对的性能和售后另列清单，不进入“复制全部文案”。'
+    : path?.actionKey === 'juicer_video_intro'
+    ? prefix + '提供字幕稿与剪辑安排，不是视频文件，也不是未选择的候选方案。'
+    : prefix + '的内容来自对应分析与稿件版本；查看不同内容不会重新选路或记录执行。';
+  return { label, note };
+}
+
+export function experimentIdentityRows(path) {
+  return [
+    ['实验编号', textValue(path?.experiment?.experimentId, '原计划未提供实验编号，保持未知')],
+    ['待验证假设', textValue(path?.experiment?.hypothesis, '原计划未提供假设，保持未知')],
+  ];
+}
+
 export function experimentCardRows(path, mode = 'local_limited') {
   const plan = path?.experiment;
   const target = plan?.target;
   const metric = target ? (FIELD_LABELS[target.metric] ?? textValue(target.metric)) : '未知';
   const sample = plan?.minSample;
-  const sampleLabel = sample === null || sample === undefined ? '尚未确定，不设默认达标门槛'
-    : (mode === 'demo_fixture' ? '合成计划假设：' : '计划值（依据待核对）：') + textValue(sample) + '；不代表统计充分';
-  const restore = plan?.restoreConditions?.map((item) => item.text).filter(Boolean).join('；');
+  const sampleUnit = textValue(plan?.minSampleUnit, '计数单位未知');
+  const sampleLabel = sample === null || sample === undefined
+    ? '尚未确定，不设默认达标门槛；' + sampleUnit
+    : (mode === 'demo_fixture' ? '合成计划假设：' : '计划值（依据待核对）：') +
+      textValue(sample) + ' ' + sampleUnit + '；不代表统计充分';
+  const conditions = (items) => (items ?? []).map((item) => item.text).filter(Boolean);
+  const guardrails = conditions(plan?.guardrails);
+  const restore = conditions(plan?.restoreConditions).join('；');
+  const restoreSteps = conditions(plan?.restoreSteps);
+  const rollback = restoreSteps.length
+    ? '回滚步骤（仅为计划，未记录执行）：\n' + restoreSteps.map((step, index) => (index + 1) + '. ' + step).join('\n') +
+      '\n恢复条件：' + (restore || '原记录未提供，须先核对是否可以恢复')
+    : restore ? '当前仅有恢复条件：' + restore + '。原记录未提供具体回滚步骤，不能声称已经回滚。'
+    : '原记录未提供具体回滚步骤与恢复条件，不能声称已经回滚';
   return [
     ['本轮只改什么', textValue(plan?.change, '当前路径未提供修改对象')],
     ['本轮保持不变', plan?.keepFixed?.join('；') || '保持不变项尚未提供'],
     ['主要观察', metric + (target?.unit ? '（' + target.unit + '）' : '') + '；对象：' + textValue(target?.subject)],
     ['最小样本', sampleLabel],
     ['观察时间', textValue(plan?.window?.description, '尚未确定') + '；起止：' + textValue(plan?.window?.start) + '—' + textValue(plan?.window?.end)],
-    ['护栏指标', '尚未提供，待共享实验计划接通；缺少投诉／退款等数据不代表风险未触发'],
-    ['停止条件', plan?.stopConditions?.map((item) => item.text).filter(Boolean).join('；') || '停止条件尚未提供'],
-    ['回滚方式', restore ? '当前仅有恢复条件：' + restore + '。具体回滚步骤待共享提供。' : '具体回滚步骤尚未提供，不能声称已经回滚'],
+    ['护栏指标', guardrails.length ? guardrails.join('\n') : '原记录未提供护栏指标；缺少投诉／退款等数据不代表风险未触发'],
+    ['停止条件', conditions(plan?.stopConditions).join('\n') || '停止条件尚未提供'],
+    ['回滚方式', rollback],
   ];
+}
+
+export function experimentAssumptionLines(path) {
+  const referenced = path?.experiment?.assumptionIds ?? [];
+  if (!referenced.length) return ['原计划没有引用样本或时间参数，不补默认值。'];
+  return referenced.map((assumptionId) => {
+    const assumption = path.estimate?.assumptions?.find((item) => item.id === assumptionId);
+    if (!assumption) return '计划参数 ' + assumptionId + '：原分析中未找到，保持未知。';
+    return '计划假设 ' + assumption.id + '｜' + textValue(assumption.label) + '：' + textValue(assumption.value) +
+      (assumption.unit ? ' ' + assumption.unit : '（单位未知）') + '；' + textValue(assumption.note, '参数依据尚未提供');
+  });
 }
 
 export function feedbackMetricRows(metric) {
@@ -234,10 +358,11 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
   };
   const lines = [originLabel(state.analysis.mode), '行动执行包', '', ...Object.entries(metadata).map(([key, value]) => `${key}: ${value ?? 'null'}`),
     '', `本轮问题：${textValue(state.input.focus || state.input.description).slice(0, 300)}`,
-    `选定行动：${context.path.title}`, `要做什么：${context.path.action}`, '', '行动内容'];
+    `选定行动：${context.path.title}`, `方案标识：${textValue(context.path.optionLabel)}；actionKey: ${textValue(context.path.actionKey)}`,
+    `要做什么：${context.path.action}`, '', '行动内容（整包包含文案、核对清单与观察计划；不等于复制全部文案）'];
   for (const [index, artifact] of artifacts.entries()) {
     lines.push('', `${index + 1}. ${artifact.title}`, `artifactId: ${artifact.id}`, `artifactVersion: ${artifact.version}`,
-      `artifactSavedAt: ${artifact.savedAt ?? 'null'}`, `来源标签：${originLabel(artifact.mode)}`,
+      `artifactSavedAt: ${artifact.savedAt ?? 'null'}`, `artifactKind: ${artifact.kind}`, `来源标签：${originLabel(artifact.mode)}`,
       `使用位置：${textValue(artifact.usage?.placement)}`, '', artifact.body, '', '使用步骤：',
       ...(artifact.usage?.steps?.length ? artifact.usage.steps.map((step, i) => `${i + 1}. ${step}`) : ['未提供额外步骤。']),
       '必要风险：', ...(artifact.usage?.risks?.length ? artifact.usage.risks.map((risk) => `- ${risk}`) : ['没有补充风险资料，不表示没有风险。']),
@@ -256,14 +381,12 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
     ? context.path.risk.flatMap((risk) => [`- ${risk.description}`, `触发条件：${textValue(risk.trigger?.text)}`,
       `暂停条件：${textValue(risk.stop?.text)}`, `恢复条件：${textValue(risk.restore?.text)}`]) : ['尚无完整风险资料。']));
   const plan = context.path.experiment;
+  lines.push('', '本轮实验卡', ...[...experimentIdentityRows(context.path), ...experimentCardRows(context.path, context.mode)].map(([label, value]) => label + '：' + value));
   if (plan) {
-    lines.push('', '本轮实验卡', ...experimentCardRows(context.path, context.mode).map(([label, value]) => label + '：' + value), '', '观察依据与口径', `修改对象：${textValue(plan.change)}`,
-      `保持不变：${plan.keepFixed?.join('；') || '未知'}`, `观察指标：${FIELD_LABELS[plan.target?.metric] ?? textValue(plan.target?.metric)}${plan.target?.unit ? `（${plan.target.unit}）` : ''}`,
+    lines.push('', '观察依据与口径',
       `观察对象：${textValue(plan.target?.subject)}`, `渠道：${textValue(plan.target?.channel)}；口径：${textValue(plan.target?.cohort)}`,
-      `观察窗口：${textValue(plan.window?.description)}`, `样本下限：${plan.minSample ?? '未知'}`,
-      ...(plan.limitations ?? []).map((item) => `限制：${item}`),
-      ...(plan.stopConditions ?? []).map((item) => `暂停条件：${item.text}`),
-      ...(plan.restoreConditions ?? []).map((item) => `恢复条件：${item.text}`));
+      `计划来源模式：${originLabel(context.mode)}`, ...experimentAssumptionLines(context.path),
+      ...(plan.limitations ?? []).map((item) => `限制：${item}`));
   }
   lines.push('', '此文件为本机导出，不代表采用、执行、平台核验、真实模型生成或经营成效。',
     '实际执行和结果没有反馈时保持未知；本机下载不等于云同步或对外分享授权。');
@@ -428,9 +551,9 @@ function renderSources(context) {
 function renderExperiment(path) {
   const container = $('experiment-content');
   const facts = node('dl', undefined, 'experiment-facts');
-  for (const [label, value] of experimentCardRows(path, shownContext?.mode)) facts.append(node('dt', label), node('dd', value));
+  for (const [label, value] of [...experimentIdentityRows(path), ...experimentCardRows(path, shownContext?.mode)]) facts.append(node('dt', label), node('dd', value));
   container.replaceChildren(facts);
-  container.append(node('p', '样本与观察时间只是计划条件，不保证效果；新增护栏与回滚字段待共享 C5 提供。', 'action-warning'));
+  container.append(node('p', '样本与观察时间只是计划条件，不代表统计充分或效果保证；缺失字段按原记录保留未知，不视为风险未触发。', 'action-warning'));
   const basis = $('experiment-basis');
   basis.replaceChildren(node('p', '沿用当前已选路径的观察计划，没有在本页重新诊断或调用专家。'));
   const plan = path.experiment;
@@ -440,6 +563,9 @@ function renderExperiment(path) {
     ['计划来源模式', originLabel(shownContext?.mode)],
   ]) scope.append(node('dt', label), node('dd', textValue(value)));
   basis.append(scope);
+  const assumptions = node('ul', undefined, 'experiment-limits');
+  for (const line of experimentAssumptionLines(path)) assumptions.append(node('li', line));
+  basis.append(node('h3', '原计划参数及依据'), assumptions);
   const limitations = node('ul', undefined, 'experiment-limits');
   appendList(limitations, plan?.limitations, '计划依据尚未给全，请先核对来源和未知。');
   basis.append(limitations);
@@ -536,6 +662,31 @@ function choosePreviewPart(part) {
   renderPreview();
 }
 
+function renderTakeawayChecklists(artifacts, stale) {
+  const checklists = artifacts.filter((artifact) => artifact.kind === 'checklist' && artifact.id && artifact.version > 0);
+  const section = $('takeaway-checklist');
+  section.hidden = !checklists.length;
+  $('takeaway-checklist-note').textContent = (stale ? '历史清单，仍对应原稿件；' : '') +
+    '仅供内部核对，不随“复制全部文案”复制。请先核对未知项，再决定是否使用文案；TXT 整包另含这些清单。';
+  const container = $('takeaway-checklist-items');
+  container.replaceChildren();
+  for (const artifact of checklists) {
+    const item = node('article', undefined, 'takeaway-checklist-item');
+    const heading = node('h4', artifact.title);
+    const body = node('pre', artifact.body, 'takeaway-checklist-body');
+    body.tabIndex = 0;
+    body.setAttribute('aria-label', artifact.title + '，内部核对清单，稿件 v' + artifact.version);
+    const view = node('button', '查看该清单与修改步骤', 'button button--secondary');
+    view.type = 'button';
+    view.addEventListener('click', () => {
+      choosePreview(previewArtifactKey(artifact));
+      $('preview-content-tab').focus();
+    });
+    item.append(heading, node('p', '稿件 v' + artifact.version + ' · ' + originLabel(artifact.mode), 'muted'), body, view);
+    container.append(item);
+  }
+}
+
 function renderArtifacts(artifacts, stale) {
   const drafts = generationFailures.filter((draft) => sameReference(draft, shownContext) && !artifacts.some((artifact) => matchesDraft(artifact, draft)));
   previewItems = [...artifacts, ...drafts];
@@ -544,6 +695,7 @@ function renderArtifacts(artifacts, stale) {
   const fingerprint = JSON.stringify([stale, previewItems.map((artifact) => [previewArtifactKey(artifact), artifact.kind, artifact.title])]);
   if (fingerprint !== artifactFingerprint) {
     artifactFingerprint = fingerprint;
+    renderTakeawayChecklists(artifacts, stale);
     const container = $('artifact-list');
     container.replaceChildren();
     for (const [index, artifact] of previewItems.entries()) {
@@ -565,8 +717,14 @@ function renderArtifacts(artifacts, stale) {
 }
 
 function getFormDraft() {
-  return { execution: $('execution-select').value, observation: $('observation-select').value,
-    rawText: $('feedback-text').value, scope: $('execution-scope').value, executedAt: $('executed-date').value || null };
+  return {
+    adoption: $('adoption-select').value, execution: $('execution-select').value,
+    observation: $('observation-select').value, rawText: $('feedback-text').value,
+    scope: $('execution-scope').value, executedAt: $('executed-date').value || null,
+    reason: $('feedback-reason').value, sampleSize: $('feedback-sample-size').value,
+    metricBeforePercent: $('feedback-metric-before').value, metricAfterPercent: $('feedback-metric-after').value,
+    constraintsText: $('feedback-constraints').value, guardrailStatus: $('feedback-guardrail').value,
+  };
 }
 
 function formSignature() { return JSON.stringify([$('feedback-artifact').value, getFormDraft()]); }
@@ -612,7 +770,15 @@ function renderSavedFeedback(context) {
       $('next-round').disabled = dirty || saving || readingReview;
     });
     label.append(radio, document.createTextNode(` ${EXECUTION_LABELS[execution?.execution ?? 'unknown']} · ${OBSERVATION_LABELS[record.observation] ?? '观察结果未知'}`));
-    article.append(label);
+    article.append(label, node('p', ADOPTION_LABELS[execution?.adoption ?? 'unknown'] + '（商家自述）', 'muted'));
+    if (record.detailsVersion === 1) {
+      const details = node('details', undefined, 'action-disclosure saved-feedback-details');
+      details.append(node('summary', '查看已保存的采用原因、样本与异常'));
+      const values = node('dl', undefined, 'experiment-facts');
+      for (const [title, value] of feedbackDetailRows(record)) values.append(node('dt', title), node('dd', value));
+      details.append(values);
+      article.append(details);
+    }
     if (record.rawText) article.append(node('p', record.rawText));
     if (execution?.scope) article.append(node('p', `自述执行范围：${execution.scope}`));
     article.append(node('p', `稿件 v${record.artifactVersion} · 实际执行时间：${execution?.executedAt || '未知'}`, 'muted'),
@@ -687,8 +853,9 @@ function render() {
     : currentArtifacts(state, context);
   $('round-label').textContent = `第 ${context.roundIndex} 轮 · 输入 v${context.inputVersion}`;
   $('action-title').textContent = context.path.title;
-  const pathIndex = state.analysis?.id === context.analysisId ? state.analysis.paths.findIndex((path) => path.id === context.pathId) : -1;
-  $('selected-plan-label').textContent = pathIndex >= 0 && pathIndex < 26 ? '已选方案 ' + String.fromCharCode(65 + pathIndex) : '已保存的原行动';
+  const pathPresentation = describeActionPath(context.path, keepOldDraft);
+  $('selected-plan-label').textContent = pathPresentation.label;
+  $('action-path-note').textContent = pathPresentation.note;
   appendList($('keep-fixed-list'), context.path.experiment?.keepFixed, '本轮保持不变项尚未提供，请先核对。');
   $('problem-summary').textContent = keepOldDraft
     ? '本轮资料或选择已更新；这里保留原行动的反馈草稿，不把新资料写入原版本。'
@@ -782,7 +949,7 @@ function renderCopyAllControls() {
   $('copy-all').disabled = blocked;
   $('select-all').disabled = blocked;
   $('copy-all').textContent = copying ? '正在复制…' : '复制全部文案';
-  $('copy-all').title = pack ? '复制当前方案的全部已保存文案，不包含观察计划' : '当前尚无已保存文案；已有核对清单仍可分别取用或下载';
+  $('copy-all').title = pack ? '复制当前方案的全部已保存文案，不包含核对清单或观察计划' : '当前尚无已保存文案；已有核对清单仍可分别取用或下载';
   const area = $('all-copy-fallback');
   if (!area.hidden && (!pack || area.dataset.signature !== pack.signature)) {
     area.value = ''; area.hidden = true; delete area.dataset.signature;
@@ -912,11 +1079,11 @@ async function exportPack() {
   }
 }
 
-function findSavedFeedback(pending, next) {
+export function findSavedFeedback(pending, next) {
   const expected = pending.command.payload.feedbackRecord;
   const matching = (next.feedbackRecords ?? []).filter((record) => !pending.beforeIds.has(record.id) &&
     sameReference(record, expected) && record.artifactId === expected.artifactId && record.artifactVersion === expected.artifactVersion &&
-    record.observation === expected.observation && (record.rawText || null) === expected.rawText);
+    record.observation === expected.observation && (record.rawText || null) === expected.rawText && feedbackDetailsMatch(record, expected));
   const exact = matching.filter((record) => {
     const execution = next.executionRecords?.find((item) => item.id === record.executionRecordId);
     const wanted = pending.command.payload.executionRecord;
@@ -934,7 +1101,7 @@ async function saveFeedback(event) {
   try {
     if (!pendingFeedback || pendingFeedback.signature !== signature) {
       const artifact = feedbackBinding || currentArtifacts(state).find((item) => item.id === $('feedback-artifact').value);
-      const payload = makeFeedbackPayload(artifact, getFormDraft());
+      const payload = makeFeedbackPayload(artifact, getFormDraft(), { detailsVersion: shared?.FEEDBACK_DETAILS_VERSION });
       pendingFeedback = { signature, command: command('FEEDBACK_SAVE', payload), beforeIds: new Set((state.feedbackRecords ?? []).map((item) => item.id)) };
       feedbackBinding = artifact;
     }
@@ -942,7 +1109,14 @@ async function saveFeedback(event) {
     status('feedback-status', '正在保存到本机浏览器…');
     const saved = await commit(pendingFeedback.command);
     if (!saved.ok) { status('feedback-status', errorText(saved), true); return false; }
+    const savedAttempt = pendingFeedback;
+    const expectedFeedback = savedAttempt.command.payload.feedbackRecord;
     const record = findSavedFeedback(pendingFeedback, state);
+    if (expectedFeedback.detailsVersion === 1 && !record) {
+      dirty = true;
+      status('feedback-status', '提交已返回，但完整明细保存尚未确认。原草稿与本次命令仍保留；可重试核对，不会自动退回旧版字段或重复新建记录。', true);
+      return false;
+    }
     selectedFeedbackId = record?.id ?? null;
     lastSavedDraft = pendingFeedback.signature;
     dirty = false;
@@ -953,8 +1127,11 @@ async function saveFeedback(event) {
     if (record) {
       let rereadConfirmed = false;
       try {
-        const reread = await readState(true);
-        rereadConfirmed = reread.ok && Boolean(resolveFeedbackRecord(state, record.id));
+        const reread = await readState();
+        const rereadBundle = reread.ok ? resolveFeedbackRecord(state, record.id) : null;
+        rereadConfirmed = Boolean(rereadBundle && findSavedFeedback(savedAttempt, state)?.id === record.id);
+        if (rereadConfirmed) readFeedbackIds.add(record.id);
+        else readFeedbackIds.delete(record.id);
       } catch { /* Save was confirmed; a read failure must not become a second save. */ }
       savedRecordNotice += rereadConfirmed ? ' 已重新读取对应记录，可查看反馈后改判。'
         : ' 本机保存已确认，但对应记录读回尚未确认；打开复盘时可重试，不会再次保存。';
@@ -1088,11 +1265,21 @@ function renderReview() {
   $('open-record').disabled = !hasRead;
   $('review-last-action').replaceChildren(node('p', path?.title || '原路径快照不完整，不能用当前行动代替'),
     node('p', artifact.title + ' · 输入 v' + feedback.inputVersion + ' · 稿件 v' + artifact.version, 'muted'));
-  $('review-last-execution').replaceChildren(node('p', EXECUTION_LABELS[execution?.execution ?? 'unknown']),
+  $('review-last-execution').replaceChildren(node('p', ADOPTION_LABELS[execution?.adoption ?? 'unknown']),
+    node('p', EXECUTION_LABELS[execution?.execution ?? 'unknown']),
+    node('p', '实际改动：' + textValue(execution?.scope)),
     node('p', '商家自述，未由平台核验；实际执行日期：' + (execution?.executedAt || '未知'), 'muted'));
   $('review-last-observation').replaceChildren(node('p', OBSERVATION_LABELS[feedback.observation] || '观察结果未知'),
     node('p', feedback.rawText || '未填写观察原话。'),
-    node('p', feedback.metrics?.length ? '另存有 ' + feedback.metrics.length + ' 项指标，请在完整实验记录中核对数值与口径。' : '未保存数值指标；感受不等于测量结果。', 'muted'));
+    node('p', feedback.metrics?.length ? '另存有 ' + feedback.metrics.length + ' 项指标，请在完整实验记录中核对数值与口径。' : '没有额外保存带对象和观察口径的指标条目；补充反馈按原值展示，感受不等于测量结果。', 'muted'));
+  if (feedback.detailsVersion === 1) {
+    const details = node('details', undefined, 'action-disclosure saved-feedback-details');
+    details.append(node('summary', '已保存的补充反馈'));
+    const values = node('dl', undefined, 'experiment-facts');
+    for (const [label, value] of feedbackDetailRows(feedback)) values.append(node('dt', label), node('dd', value));
+    details.append(values);
+    $('review-last-observation').append(details);
+  }
   $('review-last-conclusion').replaceChildren(node('p', '等待共享再判断'),
     node('p', '现有自述不能自动证明有效、失败或根因；本页没有生成结论。', 'muted'));
   $('review-old-treatment').replaceChildren(node('p', '旧行动如何处理：尚未判断'),
@@ -1102,7 +1289,7 @@ function renderReview() {
   $('review-reason').textContent = '等待关联反馈 ' + feedback.id + '、分析 ' + feedback.analysisId +
     '、输入 v' + feedback.inputVersion + ' 的再判断依据（C7）。';
   $('review-candidate-preview').replaceChildren(node('p', '尚未生成候选执行稿'),
-    node('p', '候选稿 C5／再判断 C7 待接通。没有把另一条已选前的文案覆盖到原稿。', 'muted'));
+    node('p', '候选再判断 C7 待接通，不按 A→B 固定切换，也不覆盖当前已选稿。', 'muted'));
   const rules = node('dl', undefined, 'experiment-facts');
   for (const label of ['本轮只改', '继续保持不变', '主要观察', '停止条件', '回滚方式']) {
     rules.append(node('dt', label), node('dd', '待共享候选计划返回，尚未开始'));
@@ -1119,7 +1306,7 @@ function renderMemoryList(container) {
     const item = node('div', undefined, 'history-item');
     item.append(node('p', (bundle?.roundIndex ? '第 ' + bundle.roundIndex + ' 轮 · ' : '') +
       (bundle?.path?.title || '原路径待核对') + ' · 稿件 v' + feedback.artifactVersion),
-      node('p', EXECUTION_LABELS[bundle?.execution?.execution ?? 'unknown'] + ' · ' +
+      node('p', ADOPTION_LABELS[bundle?.execution?.adoption ?? 'unknown'] + ' · ' + EXECUTION_LABELS[bundle?.execution?.execution ?? 'unknown'] + ' · ' +
         (OBSERVATION_LABELS[feedback.observation] || '观察结果未知') + ' · 本机自述记录', 'muted'));
     const view = node('button', '查看这次完整记录', 'button button--quiet');
     view.type = 'button'; view.disabled = !bundle;
@@ -1147,19 +1334,23 @@ async function openRecord(feedbackId) {
       ['分析 ID／输入版本', feedback.analysisId + ' / v' + feedback.inputVersion],
       ['路径 ID', feedback.pathId], ['稿件 ID／版本', artifact.id + ' / v' + artifact.version],
       ['执行自述', EXECUTION_LABELS[execution?.execution ?? 'unknown']],
-      ['采用', execution?.adoption === 'unknown' || !execution ? '未知' : execution.adoption], ['实际执行时间', execution?.executedAt],
+      ['采用', ADOPTION_LABELS[execution?.adoption ?? 'unknown']], ['实际执行时间', execution?.executedAt],
       ['实际范围', execution?.scope], ['观察', OBSERVATION_LABELS[feedback.observation] ?? '未知'],
       ['反馈原话', feedback.rawText], ['观察开始／结束', textValue(feedback.observedWindow?.start) + '—' + textValue(feedback.observedWindow?.end)],
       ['保存时间', readableTime(feedback.savedAt)], ['本机读回', '本次已成功读回'],
       ['产物来源', originLabel(artifact.mode)], ['MoneyAI 写入／读回', '未接通，未核验'],
     ]) details.append(node('dt', label), node('dd', textValue(value)));
-    container.replaceChildren(details, node('h3', '已保存的观察指标'));
+    const feedbackDetails = node('dl', undefined, 'experiment-facts');
+    for (const [label, value] of feedbackDetailRows(feedback)) feedbackDetails.append(node('dt', label), node('dd', value));
+    container.replaceChildren(details, node('h3', '已保存的补充反馈'), feedbackDetails,
+      node('p', '采用、执行、样本与观察分别记录；有样本但没有明确执行，不据此判定行动失败。', 'action-field-note'),
+      node('h3', '已保存的观察指标'));
     for (const [index, metric] of (feedback.metrics ?? []).entries()) {
       const values = node('dl', undefined, 'experiment-facts');
       for (const [label, value] of feedbackMetricRows(metric)) values.append(node('dt', label), node('dd', value));
       container.append(node('h4', '指标 ' + (index + 1)), values);
     }
-    if (!feedback.metrics?.length) container.append(node('p', '未报数值指标，不以 0 补齐。', 'muted'));
+    if (!feedback.metrics?.length) container.append(node('p', '没有额外保存带对象、时间和口径的指标条目；上方补充反馈按原值展示，不以 0 补齐。', 'muted'));
     container.append(node('h3', '当时保存的稿件'), node('pre', artifact.body, 'record-artifact-body'), node('h3', '原稿使用步骤'));
     const steps = node('ol');
     appendList(steps, artifact.usage?.steps, '当时未保存使用步骤。');
@@ -1168,8 +1359,10 @@ async function openRecord(feedbackId) {
     container.append(steps, node('h3', '原稿必要风险'), risks, node('h3', '当时的实验计划'));
     if (path) {
       const plan = node('dl', undefined, 'experiment-facts');
-      for (const [label, value] of experimentCardRows(path, analysis?.mode)) plan.append(node('dt', label), node('dd', value));
-      container.append(plan);
+      for (const [label, value] of [...experimentIdentityRows(path), ...experimentCardRows(path, analysis?.mode)]) plan.append(node('dt', label), node('dd', value));
+      const assumptions = node('ul', undefined, 'experiment-limits');
+      for (const line of experimentAssumptionLines(path)) assumptions.append(node('li', line));
+      container.append(plan, node('h4', '原计划参数与依据'), assumptions);
     } else container.append(node('p', '原计划快照缺失，没有用当前实验代替。', 'action-warning'));
     container.append(node('h3', '原分析引用资料（不是本次反馈附件）'));
     const facts = analysis?.inputSnapshot?.facts ?? [];
@@ -1217,6 +1410,16 @@ function openProject() {
 }
 
 function syncFeedbackControls() {
+  const adoption = $('adoption-select').value;
+  for (const button of document.querySelectorAll('[data-adoption]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.adoption === adoption));
+  }
+  $('adoption-status').textContent = adoption === 'unknown' ? '尚未选择，采用情况保持未知。'
+    : ADOPTION_LABELS[adoption] + '（商家自述）；不会自动记录为已执行。';
+  $('feedback-details-status').textContent = shared?.FEEDBACK_DETAILS_VERSION === 1
+    ? '新版反馈保存已接通。各项可留空；本机保存和读回分开确认，不代表平台核验。'
+    : '新版反馈保存尚未接通：采用、原因、样本、比例、异常与新限制可先填写，但不能提交到旧接口。仅原有文字／执行自述可保存；取用不受影响。';
+  $('feedback-details-status').dataset.available = String(shared?.FEEDBACK_DETAILS_VERSION === 1);
   const execution = $('execution-select').value;
   for (const button of document.querySelectorAll('[data-execution]')) {
     button.setAttribute('aria-pressed', String(button.dataset.execution === execution));
@@ -1355,6 +1558,11 @@ function connectPage() {
     formChanged();
   }));
   $('clear-execution').addEventListener('click', () => { $('execution-select').value = 'unknown'; formChanged(); });
+  document.querySelectorAll('[data-adoption]').forEach((button) => button.addEventListener('click', () => {
+    $('adoption-select').value = button.dataset.adoption;
+    formChanged();
+  }));
+  $('clear-adoption').addEventListener('click', () => { $('adoption-select').value = 'unknown'; formChanged(); });
   document.querySelectorAll('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.closeDialog)));
   document.querySelectorAll('dialog').forEach((dialog) => dialog.addEventListener('cancel', (event) => {
     event.preventDefault(); closeDialog(dialog.id);

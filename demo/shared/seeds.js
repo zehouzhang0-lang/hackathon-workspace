@@ -7,24 +7,26 @@ export function makeFixtureIntake(fixtureId) {
   if (fixtureId !== 'juicer_cup_v1') return createMerchantIntakeDraft({ sources: ['manual'] });
   const draft = createMerchantIntakeDraft({
     sources: ['manual'], transcript: '',
-    productName: '350ml便携榨汁杯', price: '69.9元', specifications: '容量350ml；USB-C充电',
+    merchantName: '轻活电器旗舰店', productName: '350ml便携榨汁杯', category: '家居小电器',
+    price: '69.9元', specifications: '容量350ml；USB-C充电',
+    targetCustomerHypothesis: '租房上班族、宿舍学生、轻食人群',
     platform: '抖音', desiredAction: '先验证商品点击后的加购问题',
-    confirmedProductFacts: ['容量为350ml', '充电接口为USB-C'],
+    confirmedProductFacts: ['容量为350ml', '充电接口为USB-C', '全国包邮', '清洗方式以商品说明书为准'],
     currentProblem: '可能是商品介绍和信任说明不够清楚，想先验证点击后的加购问题。',
     constraints: ['不能降价', '不能编造性能', '不能复杂重拍'],
     unknowns: ['加购少是否真的是信任问题，尚未证实', '投流来源与投流花费未提供',
-      '退款和投诉数据未提供', '能否打冰块、续航与清洗细则未确认', '真实售后规则未提供', '之前做过哪些经营动作未提供'],
+      '退款和投诉数据未提供', '能否打冰块、续航次数与具体清洗步骤未确认', '真实售后规则未提供', '真实顾客问题及出现频次未提供', '之前做过哪些经营动作未提供'],
     metrics: { windowStart: '2026-08-21', windowEnd: '2026-08-27',
       videoViews: 58000, productClicks: 1450, addToCarts: 96, createdOrders: 54, paidOrders: 42 }
   });
   const values = [
-    ...['productName', 'price', 'specifications', 'platform', 'desiredAction', 'currentProblem'].map((field) => [field, draft[field]]),
+    ...['merchantName', 'productName', 'category', 'price', 'specifications', 'platform', 'desiredAction', 'targetCustomerHypothesis', 'currentProblem'].map((field) => [field, draft[field]]),
     ...Object.entries(draft.metrics).map(([field, value]) => ['metrics.' + field, value]),
     ...['confirmedProductFacts', 'constraints', 'unknowns'].flatMap((field) => draft[field].map((value, index) => [field + '.' + index, value]))
   ];
   draft.evidenceLedger = values.map(([field, value]) => ({
     field, value: field.startsWith('unknowns.') ? null : value,
-    status: field.startsWith('unknowns.') ? 'unknown' : field === 'currentProblem' ? 'owner_hypothesis' : 'confirmed_fact',
+    status: field.startsWith('unknowns.') ? 'unknown' : ['currentProblem', 'targetCustomerHypothesis'].includes(field) ? 'owner_hypothesis' : 'confirmed_fact',
     source: 'manual', quote: '合成演示首次资料｜' + field + '：' + value
   }));
   return createMerchantIntakeDraft(draft);
@@ -46,9 +48,9 @@ export function makeFixtureInput(fixtureId, context, roundId) {
   }
   if (fixtureId === 'juicer_cup_v1') {
     const draft = makeFixtureIntake(fixtureId);
-    input.description = '【合成演示，不代表真实商家效果】350ml便携榨汁杯，69.9元，USB-C充电。'
+    input.description = '【合成演示，不代表真实商家效果】轻活电器旗舰店的350ml便携榨汁杯，69.9元，USB-C充电，全国包邮，清洗方式以商品说明书为准。'
       + '2026-08-21至2026-08-27的合成嵌套事件链：播放58000、商品点击1450、加购96、创建订单54、支付42。'
-      + '老板判断可能是商品介绍和信任说明不够清楚，尚未证实。不能降价、不能编造性能、不能复杂重拍；缺少投流来源、退款和投诉数据。';
+      + '老板假设租房上班族、宿舍学生和轻食人群可能购买，尚未验证。可能是商品价值与信任说明不够清楚，尚未证实。不能降价、不能编造性能、不能复杂重拍；缺少投流来源、退款、投诉及真实顾客问题频次。';
     for (const [field, key, unit] of [
       ['videoViews', 'video_views', '次播放'], ['productClicks', 'product_clicks', '次商品点击'],
       ['addToCarts', 'add_to_carts', '次加购'], ['createdOrders', 'created_orders', '笔创建订单'],

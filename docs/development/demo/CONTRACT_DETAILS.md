@@ -1,5 +1,8 @@
 # demo.v1 共享契约补充细则
 
+> 当前发布口径（REQ-31，2026-08-28）：冲突处以[最新PRD执行基线](PRD_V1_EXECUTION.md)和[队友测试版本](../../team-testing/LATEST_DEMO.md)为准。下方REQ-30段落保留当时批次记录。
+> 当前XLSX/XLS支持原件接收，解析／OCR仍未接通；FEEDBACK_DETAILS_VERSION=1及C7/C8共享逻辑已实现，第三页C7/C8按钮仍待接线，C6反馈附件事务未发布。代码存在不等于浏览器、存储或MoneyAI验收通过。
+
 更新：2026-08-28。依据：[主契约](SHARED_CONTRACT.md)、三页 [QA1](QA_AGENT_1.md)／[QA2](QA_AGENT_2.md)／[QA3](QA_AGENT_3.md) 及对应 prompt。
 
 **最小 Demo 已按[需求基线 REQ-10](../CURRENT_BRIEF.md)接受；本文于2026-08-28由新统筹完成文档审查，与主契约一并启用为实施约定，未做运行验证。** 视觉未最终批准，基础实现按用户最新REQ-16启动；本文不批准全部历史业务方案或真实外部能力。
@@ -210,7 +213,7 @@ JSON 未知根键／条目键、错误类型或 schema 不匹配，整体不自�
 | `estimate.assumptions` | `{id,label,value,unit,sourceFactIds,note}[]`；示例参数明确写“合成演示条件”；无事实依据的假设不能说是本店测得 |
 | `estimate.calculation/values` | calculation=`{method:"visitors_times_rate",displayFormula:"期望订单=可比访客×假设支付率"}`；values 为 `{id,label,visitorAssumptionId,rateAssumptionId,value}[]`，结果由引用参数相乘复算，不 eval 字符串公式 |
 | `estimate.kind/limitations/incrementalEffect` | kind 仅 scenario/unavailable；limitations 为字符串数组；incrementalEffect 固定 `{kind:"unavailable",reason:"无法估计行动增量"}`，不把情景差额当收益 |
-| `path.experiment` | `{change,keepFixed,target,window,minSample,sourceFactIds,assumptionIds,limitations,stopConditions,restoreConditions}`；change 为单一修改对象文本，keepFixed 为文本数组，target/horizon 同上（字段名为 window），minSample 为 number 或 null；后两项为 Condition 数组 |
+| `path.experiment` | `{change,keepFixed,target,window,minSample,sourceFactIds,assumptionIds,limitations,stopConditions,restoreConditions}`；C5新增可选minSampleUnit、guardrails与restoreSteps。change为单一修改对象，keepFixed为文本数组，target/horizon同上（字段名window），minSample为正数或null；minSampleUnit为文字，四类条件为Condition数组，旧字段缺失不自动补造 |
 
 scenario 必须至少有一个可复算的 values 项；每个参数引用存在、访客非负、假设支付率在 0—1，口径适用性在 assumptions/limitations 中明确。100×0/1/2% 得到的是条件下期望 0/1/2 单，不是实际结果必落在 0—2，也不是行动提升。非此方法或缺少合理假设时为 unavailable：calculation=null、values=[]，limitations 写明原因。
 
@@ -244,9 +247,9 @@ AnalysisDraft 的 status 仅 ready/limited/insufficient；没有可支持行动�
 
 ArtifactDraft 采用原 artifact 字段，新稿 `id=null,version=0,savedAt=null`；kind=`copy|checklist|experiment_plan`，body 为纯文本，usage=`{placement,steps,risks}`（文本、文本数组、文本数组）。补 mode 与 editedByUser，持续显示演示／有限参考稿来源。
 
-ARTIFACT_SAVE 仍逐项接受 `{artifact}`；新稿保存后共享层生成 id/version=1。编辑时传原 id 与当前 version 作为基版，共享层追加 version+1，不覆盖旧 body；同内容不造新版本，旧版本在现有执行引用中保持不变。
+ARTIFACT_SAVE仍逐项接受`{artifact}`；新稿保存后共享层生成id/version=1。**当前实际只读已有稿**：原id/version且body/title/usage完全相同时无变化，否则返回invalid_transition；已有稿追加version+1尚未实现，不能按历史设计目标开放编辑。旧稿与执行引用保持不变。
 
-编辑时在 `ARTIFACT_SAVE` 的 payload 补 `editKind:"wording"|"substantive"`，即 `{artifact,editKind}`；新生成草稿可省略，编辑已有稿必须提供。只有可确认不改变事实、承诺、行动范围的口吻修改可保存为当前稿；价格／尺寸／规格／发货售后承诺／行动变化走 FACT_PATCH 等输入更正并重新分析。无法确认时按 substantive 处理，保留内存草稿并返回核对，不以关键词检测或一个下拉选项声称语义已验证。共享层拒绝用 substantive 直接保存当前产物。
+editKind为历史编辑设计目标，不是当前已经实现的许可出口；传wording也不能绕过只读保护。价格／规格／售后承诺／行动范围变化应回资料确认并重新分析，不靠关键词或一个选项声称语义已验证。C5当前检查usage的placement为文字、steps/risks为文字数组，事实引用仍须存在。
 
 FEEDBACK_SAVE 的两个记录可以一项为 null，但不能都为 null；没有陈述的 adoption/execution/observation 分别保持 unknown。两者同时新建时，只有 round/path/artifact版本一致才能原子关联 executionRecordId；仅反馈时此引用可 null。新增记录 id=null，由共享层分配并在返回 state 中读取，不从猜测的下一条 ID 取值。
 

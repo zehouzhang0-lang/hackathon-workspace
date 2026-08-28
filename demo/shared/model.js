@@ -1,7 +1,11 @@
+import { prepareExperimentAcceptance, carryExperimentInput, buildAcceptedExperimentAnalysis, makeExperimentAcceptanceRecord, matchesAcceptedExperimentPayload, isAcceptedExperimentAnalysis } from './experiment-round.js';
+export { getAcceptedExperimentRound, matchesAcceptedExperimentPayload } from './experiment-round.js';
 import { makeFixtureInput, makeFixtureIntake } from './seeds.js';
+import { buildFunnelSnapshot, latestAnalysisReview, analysisReviewPolicy, applyAnalysisReviewPolicy, juicerProductFacts, buildDemoBreakpoint, buildDemoDataQuality } from './analysis-evidence.js';
 import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeReferencesFact } from './intake-draft.js';
 
 export const CONTRACT_VERSION = 'demo.v1';
+export const FEEDBACK_DETAILS_VERSION = 1;
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 export const PAGE_IDS = ['intake', 'decisions', 'action'];
 export const MATERIAL_LIMITS = Object.freeze({ maxFiles: 6, maxFileBytes: 10_000_000, maxTotalBytes: 20 * 1024 * 1024 });
@@ -297,12 +301,76 @@ function checkRefs(ids, available) {
   requireValue(Array.isArray(ids) && ids.every((id) => available.has(id)), '证据或假设引用不完整。', 'invalid_structure');
 }
 export function validateAnalysis(analysis, state) {
+  const acceptedExperiment = isAcceptedExperimentAnalysis(analysis, state);
   requireValue(['ready', 'limited', 'insufficient'].includes(analysis.status), '分析状态不合法。', 'invalid_structure');
   requireValue(['demo_fixture', 'local_limited'].includes(analysis.mode), '当前没有真实模型分析能力。', 'invalid_structure');
   requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
   uniqueIds(analysis.paths);
+  const reviewPolicy = analysisReviewPolicy(state);
+  requireValue(applyAnalysisReviewPolicy(analysis.paths, reviewPolicy).length === analysis.paths.length
+    && (!(reviewPolicy.withdrawn || reviewPolicy.unresolved) || analysis.priority?.status !== 'hypothesis' && analysis.priority?.hypothesis == null),
+  '分析不能恢复本轮已撤回的假设或明确无法执行的路径。', 'invalid_structure');
   const facts = new Set(state.input.facts.map((fact) => fact.id));
+  if (own(analysis, 'funnel')) {
+    requireValue(acceptedExperiment || same(analysis.funnel, buildFunnelSnapshot(state)), '漏斗来源、口径或算式与当前输入不一致。', 'invalid_structure');
+  }
+  if (own(analysis, 'routing')) requireValue(same(analysis.routing, buildDemoBreakpoint(acceptedExperiment ? analysis.funnel : buildFunnelSnapshot(state))),
+    'Demo路由必须使用当前可比数据与明确阈值，不能改写规则或伪造专家调用。', 'invalid_structure');
+  if (own(analysis, 'dataQuality')) requireValue(same(analysis.dataQuality, buildDemoDataQuality(acceptedExperiment ? analysis.funnel : buildFunnelSnapshot(state))),
+    '数据质量分必须可从本机检查逐项复核。', 'invalid_structure');
+  if (own(analysis, 'priority')) {
+    const priority = analysis.priority;
+    requireValue(priority && ['hypothesis', 'unavailable'].includes(priority.status)
+      && priority.rootCauseConfirmed === false && nonempty(priority.title) && nonempty(priority.reason)
+      && Array.isArray(priority.facts) && Array.isArray(priority.unknowns) && priority.unknowns.every(nonempty),
+    '优先问题必须保留假设与未知，不能确认根因。', 'invalid_structure');
+    for (const entry of [...priority.facts, ...(priority.hypothesis ? [priority.hypothesis] : [])]) {
+      requireValue(nonempty(entry.text), '优先问题依据缺少说明。', 'invalid_structure');
+      checkRefs(entry.sourceFactIds || [], facts);
+      for (const sourceId of entry.sourceIds || []) requireValue(validSourceId(sourceId, state), '优先假设来源无法定位。', 'invalid_structure');
+    }
+    for (const entry of priority.facts) {
+      const sourceIds = entry.sourceIds || [];
+      requireValue(Array.isArray(sourceIds) && sourceIds.every((sourceId) => typeof sourceId === 'string' && sourceId.startsWith('fact:')),
+        '观测来源必须定位事实，不能用原话或材料标签绕过类型检查。', 'invalid_structure');
+      const references = [...new Set([...(entry.sourceFactIds || []), ...sourceIds.map((sourceId) => sourceId.slice(5))])];
+      requireValue(references.length > 0 && references.every((factId) => {
+        const fact = state.input.facts.find((item) => item.id === factId);
+        return fact && fact.availability === 'known' && !['owner_hypothesis', 'unknown'].includes(fact.evidenceStatus)
+          && fact.verification !== 'conflicting' && ['merchant_statement', 'file_extract'].includes(fact.source?.kind);
+      }), '不能把空依据、假设、冲突或参考值列为已提供观测。', 'invalid_structure');
+    }
+    if (priority.status === 'hypothesis') {
+      requireValue(analysis.funnel?.status === 'comparable' && (state.fixtureId === 'juicer_cup_v1' || acceptedExperiment)
+        && priority.fromKey === 'product_clicks' && priority.toKey === 'add_to_carts'
+        && priority.hypothesis && buildDemoBreakpoint(analysis.funnel).stage === 'click_cart',
+        '当前没有可支持的优先环节或未命中Demo规则。', 'invalid_structure');
+    }
+  }
+  if (own(analysis, 'processing')) requireValue(Array.isArray(analysis.processing)
+    && analysis.processing.every((entry) => nonempty(entry.name) && entry.kind === 'local_rule'
+      && ['done', 'not_run'].includes(entry.status)), '不能伪造专家或模型调用过程。', 'invalid_structure');
+  const actionKeys = new Set();
+
   for (const path of analysis.paths) {
+    if (own(path, 'actionKey')) {
+      const product = juicerProductFacts(state.input);
+      requireValue(['juicer_faq', 'juicer_video_intro', 'juicer_first_screen', 'juicer_question_video'].includes(path.actionKey) && !actionKeys.has(path.actionKey)
+        && (state.fixtureId === 'juicer_cup_v1' && analysis.mode === 'demo_fixture'
+          || acceptedExperiment && path.actionKey === 'juicer_faq' && analysis.mode === 'local_limited')
+        && analysis.funnel?.status === 'comparable'
+        && product.capacity && product.charging, '行动模板缺少本轮合成依据或重复标识。', 'invalid_structure');
+      if (['juicer_first_screen', 'juicer_question_video'].includes(path.actionKey)) {
+        const firstScreen = path.actionKey === 'juicer_first_screen';
+        requireValue(analysis.prdVersion === '1.0' && product.shipping && product.cleaning
+          && analysis.routing?.stage === 'click_cart' && buildDemoBreakpoint(analysis.funnel).stage === 'click_cart'
+          && path.optionLabel === (firstScreen ? 'A' : 'B')
+          && path.title === (firstScreen ? '补全首屏购买判断' : '制作真实问题验证内容')
+          && nonempty(path.validationMetric),
+        'PRD首轮行动缺少四项事实、稳定方案身份、路由或验证指标。', 'invalid_structure');
+      }
+      actionKeys.add(path.actionKey);
+    }
     requireValue(nonempty(path.title) && nonempty(path.action), '路径没有具体行动。', 'invalid_structure');
     requireValue(path.estimate && ['scenario', 'unavailable'].includes(path.estimate.kind), '估计必须区分情景和不可估。', 'invalid_structure');
     requireValue(path.estimate.incrementalEffect?.kind === 'unavailable', '本Demo不能估计行动增量。', 'invalid_structure');
@@ -331,6 +399,33 @@ export function validateAnalysis(analysis, state) {
         const rate = path.estimate.assumptions.find((item) => item.id === result.rateAssumptionId);
         requireValue(visitors && rate && Number.isFinite(visitors.value) && visitors.value >= 0 && Number.isFinite(rate.value) && rate.value >= 0 && rate.value <= 1 && Math.abs(result.value - visitors.value * rate.value) < 1e-9, '情景参数或算式不一致。', 'invalid_structure');
       }
+    }
+
+    const plan = path.experiment;
+    requireValue(plan && nonempty(plan.change) && Array.isArray(plan.keepFixed) && plan.keepFixed.every(nonempty)
+      && plan.target && nonempty(plan.target.metric) && plan.window && nonempty(plan.window.description)
+      && Array.isArray(plan.limitations) && plan.limitations.every(nonempty)
+      && (plan.minSample === null || Number.isFinite(plan.minSample) && plan.minSample > 0),
+    '实验计划的修改项、对象或样本结构不完整。', 'invalid_structure');
+    if (['juicer_first_screen', 'juicer_question_video'].includes(path.actionKey)) {
+      const firstScreen = path.actionKey === 'juicer_first_screen';
+      requireValue(plan.experimentId === 'EXP-JUICER01-click_cart-' + path.optionLabel + '-R' + state.round.index
+        && plan.round === state.round.index && nonempty(plan.hypothesis)
+        && plan.change === (firstScreen ? '商品详情页首屏' : '一条真实问题验证视频')
+        && plan.target.metric === 'click_to_cart_rate'
+        && plan.minSample === 100 && plan.minSampleUnit === '次新增商品点击'
+        && Array.isArray(plan.guardrails) && plan.guardrails.length > 0
+        && Array.isArray(plan.restoreSteps) && plan.restoreSteps.length > 0
+        && Array.isArray(plan.assumptionIds) && Array.isArray(path.estimate.assumptions)
+        && path.estimate.assumptions.some((entry) => plan.assumptionIds.includes(entry.id) && entry.note === plan.hypothesis),
+      'PRD实验卡的编号、假设来源、单变量、指标、样本或护栏不完整。', 'invalid_structure');
+    }
+    if (own(plan, 'minSampleUnit')) requireValue(nonempty(plan.minSampleUnit), '样本单位必须明确。', 'invalid_structure');
+    checkRefs(plan.sourceFactIds || [], facts); checkRefs(plan.assumptionIds || [], assumptions);
+    for (const key of ['stopConditions', 'restoreConditions', 'guardrails', 'restoreSteps']) {
+      if (plan[key] === undefined && ['guardrails', 'restoreSteps'].includes(key)) continue;
+      requireValue(Array.isArray(plan[key]), '实验计划的条件列表不完整。', 'invalid_structure');
+      for (const entry of plan[key]) { requireValue(entry !== null, '实验条件不能是空条目。', 'invalid_structure'); condition(entry); }
     }
     const tree = path.tree;
     requireValue(tree && Array.isArray(tree.nodes) && Array.isArray(tree.edges), '缺少完整业务树。', 'invalid_structure');
@@ -369,6 +464,31 @@ export function validSourceId(sourceId, state) {
       : normalizeClarification(state.round.clarification).questions.some((question) => question.questionId === match[2])
         || state.history.some((entry) => entry.type === 'round' && entry.round?.clarification
           && normalizeClarification(entry.round.clarification).questions.some((question) => question.questionId === match[2]));
+}
+
+const feedbackDetailFields = ['reason', 'sampleSize', 'sampleUnit', 'metricBefore', 'metricAfter', 'constraintsLearned', 'guardrailStatus'];
+function feedbackDetails(source) {
+  if (!own(source, 'detailsVersion') && !feedbackDetailFields.some((key) => own(source, key))) return {};
+  requireValue(source.detailsVersion === FEEDBACK_DETAILS_VERSION, '新增反馈字段需要detailsVersion:1，未保存未识别的数据。');
+  const nullableText = (key, limit) => {
+    if (own(source, key)) requireValue(source[key] === null || typeof source[key] === 'string' && source[key].length <= limit,
+      key + '必须是规定长度的文字或未知。');
+  };
+  nullableText('reason', 1000);
+  if (own(source, 'sampleSize')) requireValue(source.sampleSize === null
+    || Number.isSafeInteger(source.sampleSize) && source.sampleSize >= 0, '样本量必须是非负安全整数或未知。');
+  if (own(source, 'sampleUnit')) requireValue(source.sampleUnit === null || source.sampleUnit === 'product_clicks',
+    '样本单位仅支持product_clicks或未知。');
+  for (const key of ['metricBefore', 'metricAfter']) if (own(source, key)) requireValue(source[key] === null
+    || typeof source[key] === 'number' && Number.isFinite(source[key]) && source[key] >= 0 && source[key] <= 1,
+    key + '必须是0至1的比例或未知，不能把百分数字符串当数值。');
+  if (own(source, 'constraintsLearned')) requireValue(Array.isArray(source.constraintsLearned)
+    && source.constraintsLearned.length <= 20 && source.constraintsLearned.every((entry) =>
+      typeof entry === 'string' && entry.trim().length > 0 && entry.length <= 300),
+    '新增限制最多20条，每条为1至300字文字。');
+  if (own(source, 'guardrailStatus')) requireValue(['unknown', 'clear', 'triggered'].includes(source.guardrailStatus),
+    '护栏状态只能为unknown、clear或triggered。');
+  return Object.fromEntries(['detailsVersion', ...feedbackDetailFields].filter((key) => own(source, key)).map((key) => [key, clone(source[key])]));
 }
 
 export function reduceCommand(original, command, context) {
@@ -625,10 +745,16 @@ export function reduceCommand(original, command, context) {
       state.input.confirmedVersion = state.round.inputVersion;
       break;
     case 'ANALYSIS_SET': {
+      requireValue(!payload.analysis?.experimentReview, '历史候选只能通过明确接受事务建立，不能用普通分析保存绕过。', 'invalid_transition');
       const analysis = mapDrafts(payload.analysis, context);
+      // Capture provenance from the confirmed state, never from a draft claim.
+      analysis.sourceFixtureId = state.fixtureId ?? null;
       requireValue(analysis.roundId === state.round.id && analysis.inputVersion === state.round.inputVersion, '分析依据已过期。', 'stale_input');
       requireValue(state.input.confirmedVersion === state.round.inputVersion, '请先确认这轮问题。', 'invalid_transition');
+      const review = latestAnalysisReview(state);
+      requireValue((analysis.reviewId ?? null) === (review?.id ?? null), '分析感受已变化，请重新判断，不能覆盖新反馈。', 'stale_input');
       validateAnalysis(analysis, state);
+      requireValue(same(analysis.reviewIds ?? [], analysisReviewPolicy(state).reviewIds), '分析未包含本轮感受和限制的完整版本，请重新判断。', 'stale_input');
       if (state.analysis) state.history.push({ type: 'analysis', at: context.now, analysis: clone(state.analysis) });
       archiveSelection(state, context);
       analysis.id = analysis.id || context.newId();
@@ -636,6 +762,34 @@ export function reduceCommand(original, command, context) {
       analysis.inputSnapshot = clone(state.input);
       analysis.clarificationSnapshot = clone(state.round.clarification);
       state.analysis = analysis;
+      break;
+    }
+    case 'ANALYSIS_REVIEW_SAVE': {
+      currentInput(payload, state);
+      requireValue(payload.roundId === state.round.id && payload.analysisId === state.analysis?.id,
+        '这条感受反馈不属于当前分析。', 'stale_input');
+      requireValue(['agree', 'uncertain', 'disagree', 'not_actionable'].includes(payload.stance), '分析感受类型不合法。');
+      requireValue(payload.reason == null || typeof payload.reason === 'string', '原因必须是文字或未知。');
+      const reason = payload.reason?.trim() || null;
+      requireValue(reason === null || reason.length <= 1000, '原因不能超过1000字。');
+      const blockedPathIds = payload.blockedPathIds ?? [];
+      requireValue(Array.isArray(blockedPathIds) && new Set(blockedPathIds).size === blockedPathIds.length
+        && blockedPathIds.every((pathId) => state.analysis.paths.some((path) => path.id === pathId)), '无法执行的路径引用不正确。', 'invalid_structure');
+      requireValue(payload.stance === 'not_actionable' ? blockedPathIds.length > 0 && reason !== null : blockedPathIds.length === 0,
+        '无法执行需明确路径和原因；其他感受不代替路径限制。');
+      const record = { type: 'analysis_review', roundId: state.round.id, inputVersion: state.round.inputVersion,
+        analysisId: state.analysis.id, stance: payload.stance, reason, blockedPathIds: [...blockedPathIds].sort(),
+        source: { kind: 'merchant_statement', note: '商家对当前分析的感受或限制，不是事实核验，也不是执行反馈。' } };
+      const prior = latestAnalysisReview(state);
+      if (prior && ['roundId', 'inputVersion', 'analysisId', 'stance', 'reason', 'blockedPathIds'].every((key) => same(prior[key], record[key]))) { changed = false; break; }
+      const analysis = activeAnalysis(state);
+      if (['disagree', 'not_actionable'].includes(record.stance)) {
+        state.history.push({ type: 'analysis', at: context.now, analysis: clone(analysis) });
+        analysis.status = 'stale';
+        archiveSelection(state, context);
+      }
+      state.history.push({ ...record, id: context.newId(), at: context.now });
+      event('analysis_review_saved', { analysisId: analysis.id, inputVersion: state.round.inputVersion });
       break;
     }
     case 'PATH_SELECT': {
@@ -654,6 +808,9 @@ export function reduceCommand(original, command, context) {
       requireValue(draft && draft.analysisId === analysis.id && draft.pathId === state.selection.pathId && draft.roundId === state.round.id && draft.inputVersion === state.round.inputVersion, '执行内容所依赖的选择已变化。', 'stale_input');
       requireValue(['copy', 'checklist', 'experiment_plan'].includes(draft.kind) && typeof draft.body === 'string' && nonempty(draft.title), '执行内容结构不正确。');
       checkRefs(draft.sourceFactIds || [], new Set(state.input.facts.map((fact) => fact.id)));
+      requireValue(draft.usage && nonempty(draft.usage.placement) && Array.isArray(draft.usage.steps)
+        && draft.usage.steps.every(nonempty) && Array.isArray(draft.usage.risks) && draft.usage.risks.every(nonempty),
+      '执行内容需要明确使用位置、步骤和风险。', 'invalid_structure');
       if (draft.id !== null) {
         const old = state.artifacts.find((artifact) => artifact.id === draft.id && artifact.version === draft.version);
         requireValue(old && old.status === 'current', '编辑版本已经过期。', 'stale_input');
@@ -683,7 +840,8 @@ export function reduceCommand(original, command, context) {
       if (payload.executionRecord) {
         const source = payload.executionRecord;
         checkRecord(source);
-        requireValue(['unknown', 'intended', 'partial', 'declined'].includes(source.adoption ?? 'unknown') && ['unknown', 'not_started', 'partial', 'done'].includes(source.execution ?? 'unknown'), '执行状态不合法。');
+        requireValue(['unknown', 'intended', 'adopted', 'partial', 'declined'].includes(source.adoption ?? 'unknown') && ['unknown', 'not_started', 'partial', 'done'].includes(source.execution ?? 'unknown'), '执行状态不合法。');
+        requireValue(source.scope == null || typeof source.scope === 'string', '实际改动范围必须是文字或未知。');
         const record = { ...common, id: context.newId(), adoption: source.adoption ?? 'unknown', execution: source.execution ?? 'unknown', scope: source.scope ?? null, executedAt: source.executedAt ?? null };
         state.executionRecords.push(record);
         executionId = record.id;
@@ -695,13 +853,49 @@ export function reduceCommand(original, command, context) {
         checkRecord(source);
         requireValue(['unknown', 'better', 'unchanged', 'worse'].includes(source.observation ?? 'unknown'), '观察状态不合法。');
         const record = { ...common, id: context.newId(), executionRecordId: executionId, observation: source.observation ?? 'unknown', rawText: source.rawText ?? '', metrics: source.metrics ?? [], observedWindow: source.observedWindow ?? { start: null, end: null } };
-        requireValue(typeof record.rawText === 'string' && Array.isArray(record.metrics), '反馈原话或指标格式不正确。');
+        requireValue(typeof record.rawText === 'string' && record.rawText.length <= 500 && Array.isArray(record.metrics), '反馈原话须不超过500字且指标为列表。');
+        Object.assign(record, feedbackDetails(source));
         state.feedbackRecords.push(record);
         event('feedback_saved', { feedbackId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
         if (record.observation !== 'unknown') event('observation_reported', { feedbackId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
       } else event('feedback_saved', { executionRecordId: executionId, artifactId: artifact.id, artifactVersion: artifact.version });
       break;
     }
+    case 'EXPERIMENT_ACCEPT': {
+      const replay = matchesAcceptedExperimentPayload(state, payload);
+      if (replay.ok) { changed = false; break; }
+      const prepared = prepareExperimentAcceptance(state, payload);
+      requireValue(prepared.ok, prepared.message, prepared.code);
+      const review = prepared.review;
+      const archive = { type: 'round', sourceFeedbackId: review.sourceFeedbackId, at: context.now,
+        round: clone(state.round), input: clone(state.input), analysis: clone(state.analysis), selection: clone(state.selection) };
+      state.history.push(archive);
+      state.round = { id: context.newId(), index: state.round.index + 1, inputVersion: state.round.inputVersion + 1,
+        clarification: blankClarification(), sourceFeedbackId: review.sourceFeedbackId,
+        acceptedReviewFingerprint: review.fingerprint };
+      state.fixtureId = null;
+      state.input = carryExperimentInput(archive.input, state.round);
+      const analysis = mapDrafts(buildAcceptedExperimentAnalysis(archive, state, review), context);
+      analysis.id = analysis.id || context.newId();
+      analysis.savedAt = context.now;
+      analysis.inputSnapshot = clone(state.input);
+      analysis.clarificationSnapshot = clone(state.round.clarification);
+      state.analysis = analysis;
+      state.selection = { analysisId: analysis.id, pathId: analysis.paths[0].id,
+        inputVersion: state.round.inputVersion, selectedAt: context.now, sourceFeedbackId: review.sourceFeedbackId };
+      state.artifacts.forEach((artifact) => { artifact.status = 'stale'; });
+      state.history.push(makeExperimentAcceptanceRecord(review, state, context.now, context.newId()));
+      const accepted = matchesAcceptedExperimentPayload(state, payload);
+      requireValue(accepted.ok, accepted.message, accepted.code);
+      validateAnalysis(analysis, state);
+      roundLink = { feedbackId: review.sourceFeedbackId, roundId: state.round.id,
+        kind: 'experiment_acceptance', analysisId: analysis.id, pathId: state.selection.pathId,
+        reviewFingerprint: review.fingerprint };
+      event('round_started', { feedbackId: review.sourceFeedbackId });
+      event('path_selected', { analysisId: analysis.id, pathId: state.selection.pathId, inputVersion: state.round.inputVersion });
+      break;
+    }
+
     case 'ROUND_START': {
       const feedback = state.feedbackRecords.find((record) => record.id === payload.feedbackId);
       requireValue(feedback && feedback.roundId === state.round.id, '请先保存本轮反馈，再开始下一轮。', 'invalid_transition');

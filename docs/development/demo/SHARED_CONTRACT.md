@@ -1,12 +1,15 @@
 # 三页共享契约｜demo.v1
 
-## REQ-30 共享增量边界（C2/C3首批已交付，其余逐项跟踪）
+> 当前发布口径（REQ-31，2026-08-28）：冲突处以[最新PRD执行基线](PRD_V1_EXECUTION.md)和[队友测试版本](../../team-testing/LATEST_DEMO.md)为准。下方REQ-30段落保留当时批次记录。
+> 当前XLSX/XLS支持原件接收，解析／OCR仍未接通；FEEDBACK_DETAILS_VERSION=1及C7/C8共享逻辑已实现，第三页C7/C8按钮仍待接线，C6反馈附件事务未发布。代码存在不等于浏览器、存储或MoneyAI验收通过。
+
+## REQ-30 共享增量边界（C2—C5首批在场，页面与运行逐项验收）
 
 [四图功能锁定](WIREFRAME_FUNCTION_LOCK.md)第8节列出C1—C9：公共壳、截图／Excel能力矩阵、榨汁杯种子与六组投影、分析互动、执行稿／实验卡、反馈附件原子保存、再判断、显式幂等下一轮以及MoneyAI业务通路。统筹逐项实现并追加接口后才由页面调用，不能把目标字段或名字当成已经存在的API。保留demo.v1和现有接口，不重建共享状态。
 
 本批允许新增截图和Excel目标，覆盖下文旧产品限制；共享C2首批已更新能力矩阵、用户分类和单文件限额，首页接线尚待交回。Excel和OCR仍未接通，不以格式入口存在声明解析完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
 
-P1签收后的最小接线依赖按下方C2/C3分批发布：材料能力／限额／类别已提供，榨汁杯fixtureId与草稿投影已提供；Excel解析、C4—C8等仍待交付。页面只能使用实际出口，不猜名称、写私有字段或硬编码榨汁杯数值。
+P1签收后的最小接线依赖按下方C2/C3分批发布：材料能力／限额／类别已提供，榨汁杯fixtureId与草稿投影已提供；C4/C5本批新增如下。Excel解析与C6—C8等仍待交付。页面只能使用实际出口，不猜名称、写私有字段或硬编码榨汁杯数值。
 
 状态：2026-08-28新统筹已完成文档审查，本文与[补充细则](CONTRACT_DETAILS.md)一并作为本轮实施约定；契约版本仍为demo.v1；保留原公开API与命令，REQ-25追加INTAKE_SET及草稿/提取辅助接口，不另建状态库。用户已要求先跑通基础版本，实施与完整验收状态分开登记在[入口READY表](README.md)。变更只能由统筹同步通知三页，不能由一页私自改接口。
 
@@ -64,9 +67,59 @@ LOAD_FIXTURE先取得新round与inputVersion，再初始化完整intake、来源
 
 映射仅对紧邻已有的intake-owned五计数字段保留测量口径：已知原值、key/evidenceStatus、对象、窗口、平台以及来源kind/materialId/materialVersion/locator均不变，且没有冲突／更正时，才沿用原unit/channel/cohort。任何改变都不从种子模板补回；恢复旧数字也不复活旧口径。文件解析事实的归属和更正优先级不变。
 
-**C3不等于C4/C5完成。** 新种子当前仍只得到明确标注的本机有限核对步骤，五阶段专用判断、A/B路径及问答稿另待共享交付。普通同名商品不能触发合成种子或补入五个数；榨汁杯案例不能冒充MoneyAI调用。
+**C3独立交付不等于C4/C5完成。** C3批次只有首次资料；后续五阶段专用判断、A/B路径及执行稿按下方C4/C5接口另行交付。普通同名商品不能触发合成种子或补入五个数；榨汁杯案例不能冒充MoneyAI调用。
 
-本批66项Node通过（含新增5项C3组合），先实际复现原样确认丢fixtureId再修复；P3原10组限定回归仍通过。浏览器宿主既有13组中扩展四种子及原样确认／同命令重试读回定义，实际执行0组。首页专用按钮、六组可见表现及真实确认／刷新待页面接线和运行验收。
+C3独立批次66项Node通过（含新增5项C3组合），先实际复现原样确认丢fixtureId再修复；P3原10组限定回归仍通过。浏览器宿主既有13组中扩展四种子及原样确认／同命令重试读回定义，实际执行0组。首页专用按钮、六组可见表现及真实确认／刷新待页面接线和运行验收。
+
+### C4 首批接口：五阶段证据、A/B与分析感受（已实现，运行未验）
+
+继续调用同步纯函数 `buildDemoAnalysis(state)`，经原 `ANALYSIS_SET` 保存后才使用其正式ID。生成器不调用模型、网络或存储；`analysis-evidence.js`是共享内部投影，页面消费已保存analysis，不另算一份诊断或漏斗。
+
+- `analysis.funnel`：`status=comparable|unavailable`、`source`、`nesting`、`stages`、`transitions`、`issues`、`maximumLoss`、`limitations`。旧分析可没有该字段，不在读取时补造。
+- 五个stage为 `{key,label,value,unit,factIds,subject,window,channel,cohort}`；value为明确有效计数或null。多份同指标不擅自挑选；假设、冲突、公共参考及情景值不作观测。
+- transition为 `{fromKey,toKey,factIds,numerator,denominator,conversionRate,lossRate,lossCount,calculation,reason}`。rate是0—1比例，页面显示时再转百分数；null不能格式化成0。即使口径comparable，分母0仍有独立不可计算原因。
+- 当前只有原样显式榨汁杯种子声明嵌套事件链；普通材料的商品、日期、渠道和群体文字相同仍不证明嵌套。必须五项唯一、非负安全整数、阶段单位正确、同对象／有效窗口／渠道／群体且数量非递增才计算；不满足时并列实际值和问题，不画成已经成立的漏斗。
+- `maximumLoss.byCount/byRate`分别为 `{fromKey,toKey,value}`或null。榨汁杯播放→点击为2.5%、数量差56550，点击→加购约6.62%、数量差1354；后者不是最大流失。
+- `analysis.priority`含status、fromKey/toKey、title、reason、`rootCauseConfirmed:false`、facts（文字、sourceFactIds／fact:sourceIds；必须有当前有效观测来源）、hypothesis（文字、sourceFactIds／sourceIds）及unknowns。优先点击→加购来自可行动性、经营限制与待验证方向，不把数值排名或老板认同当根因。
+- `analysis.processing`仅为 `{name,kind:'local_rule',status:'done'|'not_run'}[]`，分别注明实际本机质检、算术、模板及感受规则；不能改成已经调用专家Skill或MoneyAI。新funnel保存时由共享验证器按输入重新核对，不接受改过分子／分母／算式的草稿。
+
+榨汁杯两路保留原path结构，新增稳定 `actionKey=juicer_faq|juicer_video_intro` 及A/B的optionLabel。标题分别是“补全商品购买问答区”“调整视频前几秒的信任表达”；不能靠数组位置、商品同名或标题猜模板。成本实际值仍null，说明低／中工作量只是演示安排；未来结果与行动增量仍不可估。四段观测计算可通过funnel查看，点击→加购计算也进入原evidenceRefs，兼容现有报告；完整树与反证保留。
+
+分析感受单独使用：
+
+```js
+dispatch({
+  type: 'ANALYSIS_REVIEW_SAVE', commandId, expectedRevision,
+  payload: { roundId, inputVersion, analysisId, stance, reason, blockedPathIds }
+})
+```
+
+- stance为 `agree|uncertain|disagree|not_actionable`；reason是文字或null，最多1000字。`not_actionable`须有非空原因及至少一个当前path ID；其他stance的blockedPathIds为空或省略。不能用猜测的新path ID重试。
+- 三个作用域须匹配。记录追加到现有history，`type:'analysis_review'`，包含id/at、上述版本、原话及merchant_statement来源；不是fact、question或执行／观察反馈，不消耗三问额度。
+- agree／uncertain不改输入、不确认根因、不替用户选路。disagree／not_actionable在同笔保存中归档并标旧analysis为stale、撤销selection、旧产物标stale；保留原输入和已确认版本。
+- 成功保存感受不等于完成改判。页面用回执中的最新state调用原生成器，再以最新revision执行ANALYSIS_SET；reviewId须匹配本轮输入最新感受，reviewIds须按历史顺序完整列出同roundId／inputVersion的全部感受ID。只复制这些元数据的旧草稿仍会被共享累计限制校验拒绝。
+- 同一roundId／inputVersion累计应用全部感受：曾明确做不了的路径持续排除，曾异议的假设持续撤回；之后agree／uncertain不撤销限制。稳定actionKey及原始标题兼容身份同时保留，省略可选key不能恢复旧路径；无法查回原受评分析时保守返回空路径。没有有依据的替代方案可返回limited及空paths，必须明确待补资料，不能伪造新根因或强选A/B。当前没有解除限制命令，只有实际输入或新轮次变化进入新的作用域。生成或保存失败时，感受已保存且旧分析仍不可继续。
+- 相同业务内容不重复追加当前感受；响应丢失仍用原commandId／原载荷核对。正式新分析的reviewId指向最近一条，reviewIds标记累计采用记录；页面通过history对应ID展示原话，不把它伪造为fact来源。
+
+### C5 首批接口：所选稿、待核对清单与八项计划（已实现，运行未验）
+
+继续 `buildDemoArtifact(state)` → 逐项 `ARTIFACT_SAVE`；仅为已保存当前选择生成。按路径actionKey与该analysis.inputSnapshot取源，不因保存反馈清掉当前fixtureId而把旧A/B稿退回通用清单；改输入／换路失效保护继续。
+
+两路通常各有三个kind：`copy`（已确认可取用文字）、`checklist`（未确认问题与修改步骤）、`experiment_plan`（同一path.experiment的全文）。A包含容量及充电接口问答；冰块、续航、清洗、售后逐项在待核对清单中显示，不放进可发布回答。B提供0—2／2—4／4—5秒字幕安排，不表示生成了视频。每个必要商品字段必须唯一：同值重复、冲突或缺少均不自动选一份来源，不生成copy，只保留核对清单和限制。容量只回答“容量是多少？”，不扩写成单次可处理或榨汁量。copy的sourceFactIds直接指向所引用商品事实，不以经营数字代替规格来源。
+
+`path.experiment`在原字段上新增三个可选字段：
+
+| 字段 | 当前结构与语义 |
+| --- | --- |
+| minSampleUnit | 非空文字；榨汁杯为“次新增商品点击”，不能只显示无单位100 |
+| guardrails | Condition[]；有效点击／口径、投诉和退款，缺记录必须说明无法判断 |
+| restoreSteps | Condition[]；执行前保存原版本，商家决定后手动恢复对应区域并记录；不自动操作平台或宣称已回滚 |
+
+主要观察的target.metric为 `click_to_cart_rate`、unit为比例，显示“商品点击后的加购率”。minSample=100、实施后24—72小时复查均引用本路径estimate.assumptions的合成计划参数；estimate.kind仍unavailable，不变成成功率或结果区间，实际window.start/end仍null。guardrails、stopConditions、restoreConditions和restoreSteps分别是观察指标、停止条件、恢复前提与恢复操作，不能互相替代。旧计划缺新增字段继续显示未知，不迁移补值；生成器遇缺省guardrails／restoreSteps须安全返回“尚未提供”，不能抛错或编造具体回滚方法。
+
+P3实验卡与TXT应共用上述投影，待核对的冰块／清洗／售后等在取用区域有可见入口；“复制全部文案”仍只复制copy，内部待填清单不混入可发布文字。ARTIFACT_SAVE校验usage的placement／steps／risks，当前仍只读已有稿，不声称实现已有稿编辑和版本递增。
+
+本批不实现C6反馈附件事务、C7执行反馈复盘或C8候选建轮。初次明确选B可以得到当前B稿；未选候选B不能通过ARTIFACT_SAVE占用A的选择或历史。浏览器、剪贴板、TXT落盘与真实MoneyAI仍未验。
 
 ## 1. 文件归属与依赖
 

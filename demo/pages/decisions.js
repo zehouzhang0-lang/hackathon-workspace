@@ -1,3 +1,215 @@
+// B-REVIEW-CORE-START
+// Transient intent helpers only. Persistent state remains in the shared reducer.
+export function decisionScope(snapshot) {
+  return { sessionId: snapshot?.sessionId, roundId: snapshot?.round?.id,
+    inputVersion: snapshot?.round?.inputVersion, analysisId: snapshot?.analysis?.id };
+}
+
+export function sameDecisionInput(snapshot, origin) {
+  return Boolean(snapshot && origin && snapshot.sessionId === origin.sessionId
+    && snapshot.round?.id === origin.roundId && snapshot.round?.inputVersion === origin.inputVersion);
+}
+
+export function currentDecisionAnalysis(snapshot) {
+  return Boolean(snapshot?.analysis && snapshot.input?.confirmedVersion === snapshot.round?.inputVersion
+    && snapshot.analysis.roundId === snapshot.round.id
+    && snapshot.analysis.inputVersion === snapshot.round.inputVersion
+    && ['ready', 'limited', 'insufficient'].includes(snapshot.analysis.status));
+}
+
+export function latestDecisionReview(snapshot) {
+  return [...(snapshot?.history ?? [])].reverse().find((record) => record.type === 'analysis_review'
+    && record.roundId === snapshot.round.id && record.inputVersion === snapshot.round.inputVersion) ?? null;
+}
+
+export function reviewDisplayToken(snapshot) {
+  return JSON.stringify([decisionScope(snapshot), snapshot?.analysis?.status, latestDecisionReview(snapshot)?.id ?? null]);
+}
+
+export function reviewError(message, code = 'stale_input') {
+  return Object.assign(new Error(message), { code });
+}
+
+export function prepareDecisionReview(snapshot, fields, newId) {
+  if (!currentDecisionAnalysis(snapshot)) throw reviewError('请先核对当前有效分析，再提交感受。');
+  const { stance } = fields;
+  if (!['agree', 'uncertain', 'disagree', 'not_actionable'].includes(stance)) {
+    throw reviewError('感受类型无效。', 'invalid_payload');
+  }
+  if (fields.reason != null && typeof fields.reason !== 'string') throw reviewError('原因必须是文字。', 'invalid_payload');
+  const reason = fields.reason?.trim() || null;
+  if (reason && reason.length > 1000) throw reviewError('原因不能超过1000字。', 'invalid_payload');
+  const ids = fields.blockedPathIds ?? [];
+  if (!Array.isArray(ids) || new Set(ids).size !== ids.length
+    || !ids.every((id) => snapshot.analysis.paths.some((path) => path.id === id))) {
+    throw reviewError('无法执行的路径已变化，请重新核对。', 'invalid_payload');
+  }
+  if (stance === 'not_actionable' ? !reason || !ids.length : ids.length > 0) {
+    throw reviewError('无法执行需选择当前路径并填写原因；其他感受不代替路径限制。', 'invalid_payload');
+  }
+  const origin = decisionScope(snapshot);
+  const intentId = newId();
+  return { origin, displayToken: reviewDisplayToken(snapshot),
+    payload: { roundId: origin.roundId, inputVersion: origin.inputVersion, analysisId: origin.analysisId,
+      stance, reason, blockedPathIds: [...ids].sort() },
+    reviewKey: 'review:' + intentId, analysisKey: 'review-analysis:' + intentId,
+    reviewAttempted: false, reviewSaved: false, reviewId: null,
+    analysisAttempted: false, analysisDraft: null, phase: 'review', error: null };
+}
+
+export function matchingDecisionReview(snapshot, operation) {
+  const record = latestDecisionReview(snapshot), payload = operation.payload;
+  return record && ['roundId', 'inputVersion', 'analysisId', 'stance', 'reason'].every((key) => record[key] === payload[key])
+    && JSON.stringify([...(record.blockedPathIds ?? [])].sort()) === JSON.stringify(payload.blockedPathIds) ? record : null;
+}
+
+export function decisionSelectionMatches(snapshot, pathId) {
+  return currentDecisionAnalysis(snapshot) && snapshot.selection?.analysisId === snapshot.analysis.id
+    && snapshot.selection?.pathId === pathId && snapshot.selection?.inputVersion === snapshot.round.inputVersion;
+}
+
+export function isReviewSubmitEvent(event, composing, endedAt, now) {
+  return !composing && !event?.isComposing && event?.keyCode !== 229 && !event?.repeat
+    && (!Number.isFinite(endedAt) || now - endedAt >= 100);
+}
+
+// The adapter reuses the page's read/apply/dispatchIntent functions. No storage is added.
+export function createDecisionReviewRunner(adapter) {
+  let running = false;
+  const assertInput = (snapshot, operation) => {
+    if (!sameDecisionInput(snapshot, operation.origin)
+      || !sameDecisionInput(adapter.getState(), operation.origin)) {
+      throw reviewError('会话或输入已经变化，未把旧感受或旧判断写入当前资料。');
+    }
+  };
+  const announce = (operation, message) => adapter.onStage?.(operation, message);
+  const completed = (operation, snapshot) => {
+    operation.phase = 'done'; operation.error = null;
+    announce(operation, snapshot.analysis.paths.length
+      ? '感受和更新后的本机判断已保存；请重新比较路径。未调用MoneyAI或确认根因。'
+      : '感受已保存，已更新本机判断；当前没有有依据的可行路径，请补充资料。未自动选路。');
+    return { ok: true, state: snapshot, reviewSaved: true };
+  };
+  return {
+    isRunning: () => running,
+    async run(operation) {
+      if (running) return { ok: false, code: 'busy', reviewSaved: operation.reviewSaved };
+      running = true;
+      operation.error = null;
+      try {
+        let snapshot = await adapter.read(operation.origin);
+        assertInput(snapshot, operation);
+        if (operation.phase === 'review') {
+          const sameView = currentDecisionAnalysis(snapshot) && reviewDisplayToken(snapshot) === operation.displayToken;
+          const alreadyVisible = operation.reviewAttempted && matchingDecisionReview(snapshot, operation);
+          if (snapshot.analysis?.id !== operation.origin.analysisId || (!sameView && !alreadyVisible)) {
+            throw reviewError('显示后的分析或感受记录已变化；原因草稿保留，请重新核对。');
+          }
+          operation.reviewAttempted = true;
+          announce(operation, '正在保存这条感受，尚未确认成功。');
+          snapshot = await adapter.dispatch(operation.reviewKey, 'ANALYSIS_REVIEW_SAVE', operation.payload, snapshot,
+            { exactRevision: true, scope: operation.origin });
+          assertInput(snapshot, operation);
+          const saved = matchingDecisionReview(snapshot, operation);
+          if (!saved) throw reviewError('未找到对应感受回执，不能宣称保存完成。', 'read_failed');
+          operation.reviewSaved = true; operation.reviewId = saved.id; operation.phase = 'analysis';
+          announce(operation, '感受已保存到本机；更新判断尚未完成。');
+        }
+        if (operation.phase === 'done') {
+          if (currentDecisionAnalysis(snapshot) && snapshot.analysis.reviewId === operation.reviewId
+            && latestDecisionReview(snapshot)?.id === operation.reviewId) return completed(operation, snapshot);
+          throw reviewError('原操作已完成，但当前判断已有变化。');
+        }
+        const latest = latestDecisionReview(snapshot);
+        if (latest?.id !== operation.reviewId) throw reviewError('已有更新的感受记录，未覆盖当前判断。');
+        if (snapshot.analysis?.id !== operation.origin.analysisId) {
+          if (currentDecisionAnalysis(snapshot) && snapshot.analysis.reviewId === operation.reviewId) return completed(operation, snapshot);
+          throw reviewError('分析已变化；已保存感受保留，不用旧草稿覆盖。');
+        }
+        if (!operation.analysisDraft) {
+          const generated = adapter.generate(structuredClone(snapshot));
+          if (generated?.ok !== true) throw reviewError(generated?.message || '本机判断生成失败。', generated?.code || 'generation_failed');
+          operation.analysisDraft = structuredClone(generated.analysis);
+        }
+        snapshot = await adapter.read(operation.origin);
+        assertInput(snapshot, operation);
+        if (latestDecisionReview(snapshot)?.id !== operation.reviewId) throw reviewError('生成期间已有更新的感受，未保存旧判断。');
+        if (snapshot.analysis?.id !== operation.origin.analysisId) {
+          if (currentDecisionAnalysis(snapshot) && snapshot.analysis.reviewId === operation.reviewId) return completed(operation, snapshot);
+          throw reviewError('生成期间分析已更新，未保存旧判断。');
+        }
+        operation.analysisAttempted = true;
+        announce(operation, '感受已保存；正在保存更新后的本机判断。');
+        snapshot = await adapter.dispatch(operation.analysisKey, 'ANALYSIS_SET', { analysis: operation.analysisDraft }, snapshot,
+          { exactRevision: true, scope: operation.origin });
+        assertInput(snapshot, operation);
+        if (!currentDecisionAnalysis(snapshot) || snapshot.analysis.reviewId !== operation.reviewId
+          || latestDecisionReview(snapshot)?.id !== operation.reviewId) {
+          throw reviewError('更新判断的回执未核对完成；已保存感受仍保留。', 'read_failed');
+        }
+        return completed(operation, snapshot);
+      } catch (error) {
+        operation.error = { code: error?.code || 'operation_failed', message: error?.message || '操作未完成。' };
+        announce(operation, (operation.reviewSaved ? '感受已保存，但更新判断尚未完成。' : '感受保存尚未确认。')
+          + operation.error.message + ' 原因草稿保留；重试不会另建一条感受。');
+        return { ok: false, ...operation.error, reviewSaved: operation.reviewSaved };
+      } finally { running = false; }
+    },
+  };
+}
+// B-REVIEW-CORE-END
+
+// B-DECISION-DISPLAY-START
+// Display existing shared paths only; never synthesize a missing A or B.
+export function visibleDecisionPaths(paths) {
+  return Array.isArray(paths) ? paths.slice(0, 2) : [];
+}
+
+export function decisionMetricText(path) {
+  const target = path?.experiment?.target;
+  if (!target || typeof target.metric !== 'string' || !target.metric.trim()) return '未知；当前方案未提供验证指标';
+  const names = { click_to_cart_rate: '商品点击到加购率', paid_orders: '支付订单',
+    product_detail_visitors: '商品详情访客', product_clicks: '商品点击', add_to_carts: '加购' };
+  return (names[target.metric] || target.metric)
+    + (typeof target.unit === 'string' && target.unit.trim() ? '；单位：' + target.unit : '；单位未知');
+}
+
+export function decisionSelectionLabel(path, selected) {
+  if (selected) return '继续准备已选方案';
+  if (path?.optionLabel === 'A') return '先执行方案A';
+  if (path?.optionLabel === 'B') return '改选方案B';
+  return '选择这条行动';
+}
+
+export function decisionTraceRows(analysis) {
+  const savedText = (value, fallback = '未知；当前分析未保存') => typeof value === 'string' && value.trim() ? value : fallback;
+  const fraction = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 2 }).format(value) : '未知';
+  const source = analysis?.analysisSource;
+  const local = source === 'local_fallback' || (!source && ['demo_fixture', 'local_limited'].includes(analysis?.mode));
+  const quality = analysis?.dataQuality, routing = analysis?.routing;
+  const score = typeof quality?.score === 'number' && Number.isFinite(quality.score) && quality.score >= 0 && quality.score <= 100
+    ? String(quality.score) + '/100' : '未知；当前分析未提供质量评分';
+  const stage = typeof routing?.stage === 'string' && routing.stage.trim()
+    ? ({ click_cart: '商品点击→加购（click_cart）' }[routing.stage] || routing.stage)
+    : routing?.rule?.matched === false ? '本次未命中已保存路由规则' : '未知；当前分析未保存路由断点';
+  return [
+    ['MoneyAI-Agents', local ? '本次未调用；当前结果来自本机规则' : '调用回执未提供，未验证接通'],
+    ['请求ID', '当前分析未保存MoneyAI请求ID'],
+    ['使用模型', '当前分析未保存真实模型调用记录'],
+    ['专家Skill链', routing?.expert ? savedText(routing.expert.label) + '；状态：' + savedText(routing.expert.status)
+      + '；' + savedText(routing.expert.reason) : '未保存专家Skill调用记录'],
+    ['分析来源', savedText(source) + '；模式：' + savedText(analysis?.mode)],
+    ['数据质量分', score + '；' + savedText(quality?.meaning, '仅说明数据检查，不代表真实性、根因或成功概率')],
+    ['质量方法与口径', savedText(quality?.method) + '；口径可用程度：' + savedText(quality?.confidence)],
+    ['路由断点', stage],
+    ['路由依据', savedText(routing?.reason) + '；' + savedText(routing?.rule?.description)],
+    ['路由数值', '已保存观测率：' + fraction(routing?.rule?.observedRate) + '；规则阈值：' + fraction(routing?.rule?.threshold)
+      + '。这是Demo路由规则，不是行业标准、根因或成功概率。'],
+  ];
+}
+// B-DECISION-DISPLAY-END
+
 // Page-local view state only. All persisted data goes through shared/state.js.
 const byId = (id) => document.getElementById(id);
 const list = (value) => Array.isArray(value) ? value : [];
@@ -28,6 +240,280 @@ let pendingExport = null;
 const pendingCommands = new Map();
 const pendingEvents = new Map();
 const seenEvents = new Set();
+
+// B-REVIEW-UI-START
+let reviewOperation = null;
+let reviewDraftMode = null;
+let reviewDraftScope = null;
+let reviewDraftToken = null;
+let reviewComposing = false;
+let reviewCompositionEndedAt = -Infinity;
+let unregisterReviewGuard = null;
+const hasPendingReview = () => Boolean(reviewOperation && reviewOperation.phase !== 'done');
+const hasReviewDraft = () => hasPendingReview() || Boolean(byId('review-reason').value.trim());
+const reviewRunner = createDecisionReviewRunner({
+  getState: () => state,
+  read: (origin) => readDecisionState(origin),
+  dispatch: (...args) => dispatchIntent(...args),
+  generate: (snapshot) => api.buildDemoAnalysis(snapshot),
+  onStage: (operation, value) => {
+    byId('review-status').textContent = value;
+    byId('review-status').dataset.kind = operation.error ? 'error' : 'info';
+    syncReviewControls();
+  },
+});
+
+
+function revisionRecoveryEntry() {
+  if (hasPendingReview()) {
+    const key = reviewOperation.phase === 'review' ? reviewOperation.reviewKey : reviewOperation.analysisKey;
+    const entry = pendingCommands.get(key);
+    return Number.isInteger(entry?.revisionRejected) ? { key, entry } : null;
+  }
+  const match = [...pendingCommands.entries()].find(([key, entry]) => entry.command.type === 'PATH_SELECT'
+    && entry.command.payload.pathId === viewedPathId && Number.isInteger(entry.revisionRejected));
+  return match ? { key: match[0], entry: match[1] } : null;
+}
+
+function syncRevisionRecovery() {
+  const recovery = revisionRecoveryEntry();
+  byId('conflict-retry-panel').hidden = !recovery;
+  byId('conflict-retry').disabled = busy || reviewComposing || !recovery;
+  if (recovery) {
+    const selecting = recovery.entry.command.type === 'PATH_SELECT';
+    byId('conflict-retry-summary').textContent = '共享层已明确拒绝本次版本冲突，原操作未应用。'
+      + (selecting ? '将重新核对当前方案后，再提交这次选择。' : '将重新核对当前分析和限制，再提交被拒绝的这一步。')
+      + '不会自动换操作，也不会把失败当成功。';
+  }
+}
+
+async function retryRejectedDecisionIntent() {
+  if (busy || reviewComposing) return;
+  const recovery = revisionRecoveryEntry();
+  if (!recovery) return;
+  await operate(async () => {
+    const { key, entry } = recovery;
+    const snapshot = await readDecisionState(entry.scope);
+    if (pendingCommands.get(key) !== entry) throw reviewError('待重提操作已变化，请重新核对。');
+    if (entry.command.type === 'PATH_SELECT') {
+      const pathId = entry.command.payload.pathId;
+      if (hasPendingReview() || !currentAnalysis(snapshot) || snapshot.analysis.id !== entry.scope.analysisId
+        || viewedPathId !== pathId || !visibleDecisionPaths(snapshot.analysis.paths).some((path) => path.id === pathId)) {
+        throw reviewError('当前方案已变化，未重新提交旧选择。');
+      }
+      renewRejectedDecisionIntent(key, snapshot);
+      const saved = decisionSelectionMatches(snapshot, pathId) ? snapshot
+        : await dispatchIntent(key, 'PATH_SELECT', entry.command.payload, snapshot, { exactRevision: true, scope: entry.scope });
+      if (!decisionSelectionMatches(saved, pathId)) throw reviewError('选择回执未核对完成，未前往执行页。', 'read_failed');
+      const result = await api.navigateTo('action');
+      if (result === false || result?.ok === false) throw reviewError('选择已保存，但暂时无法进入下一页；可继续已选方案。');
+      return;
+    }
+    if (!hasPendingReview() || (reviewOperation.phase === 'review'
+      ? key !== reviewOperation.reviewKey || reviewDisplayToken(snapshot) !== reviewOperation.displayToken
+      : key !== reviewOperation.analysisKey || latestDecisionReview(snapshot)?.id !== reviewOperation.reviewId)
+      || snapshot.analysis?.id !== reviewOperation.origin.analysisId) {
+      throw reviewError('分析或限制已变化，未重新提交旧操作；原因仍保留。');
+    }
+    renewRejectedDecisionIntent(key, snapshot);
+    await submitReviewDraftDirect();
+  });
+}
+
+function syncReviewControls() {
+  syncRevisionRecovery();
+  const valid = currentAnalysis(state) && !subscriptionFailed;
+  const pending = hasPendingReview();
+  for (const id of ['review-agree', 'review-uncertain']) {
+    byId(id).disabled = busy || !valid || pending || reviewComposing;
+  }
+  // Incorrect source information goes back to P1, including stale/insufficient analyses.
+  byId('review-disagree').disabled = busy || reviewComposing;
+  byId('review-not-actionable').disabled = busy || !valid || pending || reviewComposing || !visibleDecisionPaths(state?.analysis?.paths).length;
+  const sameDraft = reviewDraftScope && sameDecisionInput(state, reviewDraftScope)
+    && reviewDraftToken === reviewDisplayToken(state);
+  byId('review-submit').disabled = busy || pending || reviewComposing || !valid || !sameDraft;
+  byId('review-reason').readOnly = busy || pending;
+  byId('review-blocked-paths').disabled = busy || pending;
+  byId('review-retry').hidden = !pending;
+  byId('review-retry').disabled = busy || reviewComposing;
+  byId('review-cancel').hidden = !pending && !reviewDraftMode;
+  byId('review-cancel').disabled = busy;
+  byId('review-count').textContent = byId('review-reason').value.length + '/1000';
+  byId('review-panel').setAttribute('aria-busy', String(busy && Boolean(reviewDraftMode || pending)));
+  const latest = latestDecisionReview(state);
+  const saved = byId('review-saved-summary');
+  saved.hidden = !latest;
+  saved.textContent = latest ? '本机已保存感受：' + ({ agree: '符合', uncertain: '不确定', disagree: '不符合', not_actionable: '路径无法执行' })[latest.stance]
+    + (latest.reason ? '；原因：' + latest.reason : '；未填写原因') + '。这不是事实核验或执行反馈。' : '';
+  if (reviewDraftMode && !pending && !sameDraft) {
+    byId('review-draft-note').textContent = '分析或输入已变化，原因保留但不能直接提交。请关闭后重新打开限制说明并核对。';
+  }
+}
+
+function openReviewReason(stance) {
+  if (stance !== 'not_actionable' || busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed) return;
+  reviewDraftMode = stance;
+  reviewDraftScope = decisionScope(state);
+  reviewDraftToken = reviewDisplayToken(state);
+  byId('review-form-title').textContent = '哪些方案做不了？请说明限制';
+  byId('review-reason').required = true;
+  byId('review-draft-note').textContent = '勾选当前做不了的方案并填写原因。本机保存后重新筛选，不记为执行失败，也不新增补问。';
+  const fieldset = byId('review-blocked-paths');
+  fieldset.hidden = false;
+  const choices = byId('review-blocked-choices');
+  choices.replaceChildren();
+  for (const path of visibleDecisionPaths(state.analysis.paths)) {
+    const label = element('label', 'review-blocked-choice');
+    const checkbox = element('input');
+    checkbox.type = 'checkbox'; checkbox.name = 'review-blocked-path'; checkbox.value = path.id; checkbox.checked = true;
+    label.append(checkbox, document.createTextNode((path.optionLabel ? path.optionLabel + '：' : '') + text(path.title)));
+    choices.append(label);
+  }
+  byId('review-panel').hidden = false;
+  syncReviewControls();
+  byId('review-reason').focus();
+}
+
+function showDecisionDifferences() {
+  if (busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed) return;
+  const target = byId('decision-difference-content');
+  target.replaceChildren();
+  const paths = visibleDecisionPaths(state.analysis.paths);
+  appendParagraph(target, '这里只比较当前已保存方案，不保存感受、不重新判断，也不会替你选择。');
+  if (paths.length < 2) appendParagraph(target, paths.length
+    ? '当前只有一条有依据的方案；另一条尚未提供，不补造A/B。'
+    : '当前没有有效方案。请返回第一页核对关键资料，不编造两条方案。');
+  for (const path of paths) {
+    const section = element('section', 'decision-difference-path');
+    section.append(element('h4', '', optionText(path) + '：' + text(path.title)));
+    appendParagraph(section, '动作：' + text(path.action));
+    appendParagraph(section, '成本：' + costText(path.cost?.money, '元') + '；' + costText(path.cost?.time, '小时'));
+    appendList(section, [path.cost?.money?.note, path.cost?.time?.note].filter((value) => typeof value === 'string' && value.trim()));
+    appendParagraph(section, '风险：');
+    appendList(section, list(path.risk).map((entry) => text(entry.description)), '风险尚未提供，不能当成没有风险。');
+    appendParagraph(section, '验证指标：' + decisionMetricText(path));
+    target.append(section);
+  }
+  byId('decision-differences').hidden = false;
+  byId('decision-difference-title').focus({ preventScroll: true });
+  byId('decision-differences').scrollIntoView({ block: 'nearest' });
+}
+
+async function runReviewFields(fields, prepared = null) {
+  reviewOperation = prepared ?? prepareDecisionReview(state, fields, () => crypto.randomUUID());
+  const result = await reviewRunner.run(reviewOperation);
+  if (result.ok) {
+    if ((byId('review-reason').value.trim() || null) === reviewOperation.payload.reason) byId('review-reason').value = '';
+    reviewDraftMode = null; reviewDraftScope = null; reviewDraftToken = null;
+    byId('review-panel').hidden = true;
+  }
+  syncReviewControls();
+  return result;
+}
+
+async function submitReviewDraftDirect() {
+  if (reviewComposing) return { ok: false };
+  if (hasPendingReview()) {
+    const result = await reviewRunner.run(reviewOperation);
+    if (result.ok) {
+      if ((byId('review-reason').value.trim() || null) === reviewOperation.payload.reason) byId('review-reason').value = '';
+      reviewDraftMode = null; reviewDraftScope = null; reviewDraftToken = null;
+      byId('review-panel').hidden = true;
+    }
+    syncReviewControls();
+    return result;
+  }
+  if (!reviewDraftMode || !sameDecisionInput(state, reviewDraftScope) || reviewDisplayToken(state) !== reviewDraftToken) {
+    throw reviewError('原因对应的分析已变化，草稿保留，请重新核对。');
+  }
+  const blockedPathIds = reviewDraftMode === 'not_actionable'
+    ? [...byId('review-blocked-choices').querySelectorAll('input:checked')].map((input) => input.value) : [];
+  return runReviewFields({ stance: reviewDraftMode, reason: byId('review-reason').value, blockedPathIds });
+}
+
+function stopReviewRetry(discard = false) {
+  if (busy) return false;
+  if (reviewOperation) {
+    pendingCommands.delete(reviewOperation.reviewKey);
+    pendingCommands.delete(reviewOperation.analysisKey);
+  }
+  reviewOperation = null; reviewDraftMode = null; reviewDraftScope = null; reviewDraftToken = null;
+  if (discard) byId('review-reason').value = '';
+  byId('review-panel').hidden = true;
+  byId('review-status').textContent = discard ? '已放弃本页原因草稿；不会撤销已保存的感受。'
+    : '已停止本页重试，原因文字暂留在本页。停止不等于撤销已保存操作；请重新读取后核对。';
+  setBusy(false);
+  return true;
+}
+
+function bindReviewControls() {
+  byId('conflict-retry').addEventListener('click', (event) => {
+    if (!isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    void retryRejectedDecisionIntent();
+  });
+  byId('review-agree').addEventListener('click', (event) => {
+    if (busy || hasPendingReview() || !isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    byId(currentAnalysis(state) && visibleDecisionPaths(state.analysis.paths).length ? 'path-workspace' : 'no-paths').scrollIntoView({ block: 'start' });
+  });
+  byId('review-uncertain').addEventListener('click', (event) => {
+    if (!isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    showDecisionDifferences();
+  });
+  byId('review-disagree').addEventListener('click', (event) => {
+    if (busy || !isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    void goTo('intake');
+  });
+  byId('review-not-actionable').addEventListener('click', (event) => {
+    if (!isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    openReviewReason('not_actionable');
+  });
+  byId('decision-difference-close').addEventListener('click', () => {
+    byId('decision-differences').hidden = true;
+    byId('review-uncertain').focus({ preventScroll: true });
+  });
+  byId('review-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (busy || !isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    void operate(submitReviewDraftDirect);
+  });
+  byId('review-reason').addEventListener('compositionstart', () => { reviewComposing = true; syncReviewControls(); });
+  byId('review-reason').addEventListener('compositionend', () => {
+    reviewComposing = false; reviewCompositionEndedAt = performance.now(); syncReviewControls();
+  });
+  byId('review-reason').addEventListener('input', () => syncReviewControls());
+  byId('review-reason').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    if (busy || !isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    void operate(submitReviewDraftDirect);
+  });
+  byId('review-retry').addEventListener('click', (event) => {
+    if (busy || !hasPendingReview() || !isReviewSubmitEvent(event, reviewComposing, reviewCompositionEndedAt, performance.now())) return;
+    void operate(submitReviewDraftDirect);
+  });
+  byId('review-cancel').addEventListener('click', () => stopReviewRetry(false));
+}
+
+function registerReviewNavigationGuard() {
+  unregisterReviewGuard?.();
+  unregisterReviewGuard = api.registerNavigationGuard({
+    isDirty: () => hasReviewDraft(),
+    onSave: async () => (await submitReviewDraftDirect())?.ok === true,
+    onDiscard: () => {
+      if (reviewRunner.isRunning()) return false;
+      if (reviewOperation) {
+        pendingCommands.delete(reviewOperation.reviewKey); pendingCommands.delete(reviewOperation.analysisKey);
+      }
+      reviewOperation = null; reviewDraftMode = null; reviewDraftScope = null; reviewDraftToken = null;
+      byId('review-reason').value = ''; byId('review-panel').hidden = true;
+      syncReviewControls();
+      return true;
+    },
+  });
+}
+// B-REVIEW-UI-END
+
 
 function element(tag, className, value) {
   const node = document.createElement(tag);
@@ -85,20 +571,25 @@ function identity(snapshot, pathId) {
 }
 
 function selectedPath(snapshot = state) {
-  return list(snapshot?.analysis?.paths).find((path) => path.id === viewedPathId) || null;
+  return visibleDecisionPaths(snapshot?.analysis?.paths).find((path) => path.id === viewedPathId) || null;
 }
 
 function setBusy(value) {
   busy = value;
-  const valid = currentAnalysis(state) && selectedPath() && !pathInvalid && !subscriptionFailed;
+  const valid = currentAnalysis(state) && selectedPath() && !pathInvalid && !subscriptionFailed && !hasPendingReview();
   byId('choose-path').disabled = busy || !valid;
   byId('download-report').disabled = busy || !valid;
-  byId('refresh-analysis').disabled = busy || !confirmed(state);
+  byId('refresh-analysis').disabled = busy || hasPendingReview() || !confirmed(state);
   byId('retry-load').disabled = busy;
   byId('retry-event').disabled = busy;
   byId('defer-choice').disabled = busy;
   document.querySelectorAll('[data-action="return"], .path-choice').forEach((node) => { node.disabled = busy; });
+  document.querySelectorAll('.path-select').forEach((node) => {
+    node.disabled = busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed
+      || (node.dataset.pathId === viewedPathId && pathInvalid);
+  });
   byId('path-detail').setAttribute('aria-busy', String(busy));
+  syncReviewControls();
 }
 
 function serialize(work) {
@@ -152,12 +643,13 @@ function applyState(next) {
   // A late load/dispatch response must not undo a newer subscription snapshot.
   if (state?.sessionId === next.sessionId && next.revision < state.revision) return true;
   const signature = JSON.stringify([next.sessionId, next.round.id, next.round.inputVersion,
-    next.input.confirmedVersion, next.analysis?.id, next.analysis?.status,
+    next.input.confirmedVersion, next.fixtureId, next.analysis?.id, next.analysis?.status, latestDecisionReview(next)?.id,
     next.selection?.analysisId, next.selection?.pathId, next.savedAt === null]);
   state = next;
   if (signature !== renderedSignature) {
     renderedSignature = signature;
     pendingExport = null;
+    byId('decision-differences').hidden = true;
     byId('report-consent').checked = false;
     renderState();
   }
@@ -237,26 +729,77 @@ function recordVisiblePath(path) {
     state, `view:${identity(state, path.id)}`);
 }
 
-async function dispatchIntent(key, type, payload, snapshot) {
-  let entry = pendingCommands.get(key);
-  if (!entry) {
-    entry = { command: { type, payload, commandId: crypto.randomUUID() }, roundId: snapshot.round.id, inputVersion: snapshot.round.inputVersion };
-    pendingCommands.set(key, entry);
+// B-INTENT-ADAPTER-START
+async function readDecisionState(origin) {
+  if (!sameDecisionInput(state, origin)) throw reviewError('当前会话或输入已变化，未重放旧操作。');
+  const result = await api.loadSession();
+  if (!result?.ok) fail(result, '读取共享资料失败，草稿保留。');
+  if (!sameDecisionInput(state, origin) || !sameDecisionInput(result.state, origin)) {
+    throw reviewError('读回期间会话或输入已变化，未采用迟到的快照。');
   }
-  if (entry.roundId !== snapshot.round.id || entry.inputVersion !== snapshot.round.inputVersion) {
-    fail({ code: 'stale_input', message: '资料版本已经变化，不能重试旧操作。请重新核对。' });
-  }
-  const result = await api.dispatch({ ...entry.command, expectedRevision: snapshot.revision });
-  if (!result?.ok) {
-    if (result?.state) applyState(result.state);
-    fail(result, '保存没有完成，资料仍保留在当前页面，可以重试。');
-  }
-  pendingCommands.delete(key);
-  applyState(result.state);
+  if (!applyState(result.state)) throw reviewError('会话结构不兼容。', 'incompatible_version');
   return state;
 }
 
+async function dispatchIntent(key, type, payload, snapshot, options = {}) {
+  let entry = pendingCommands.get(key);
+  const fingerprint = JSON.stringify([type, payload]);
+  if (!entry) {
+    entry = { command: { type, payload: structuredClone(payload), commandId: crypto.randomUUID() },
+      sessionId: snapshot.sessionId, roundId: snapshot.round.id, inputVersion: snapshot.round.inputVersion,
+      exactRevision: options.exactRevision === true, expectedRevision: snapshot.revision,
+      scope: options.scope ? { ...options.scope } : null, fingerprint };
+    pendingCommands.set(key, entry);
+  }
+  if (entry.fingerprint !== fingerprint || entry.sessionId !== snapshot.sessionId
+    || entry.roundId !== snapshot.round.id || entry.inputVersion !== snapshot.round.inputVersion) {
+    throw reviewError('旧操作不能换载荷、会话或输入版本，请保留草稿后重新核对。');
+  }
+  if (entry.scope && !sameDecisionInput(state, entry.scope)) throw reviewError('派发前会话已变化，旧操作未发送。');
+  // A new uncertain attempt must not inherit permission from an older rejection.
+  entry.revisionRejected = null;
+  const result = await api.dispatch({ ...entry.command,
+    expectedRevision: entry.exactRevision ? entry.expectedRevision : snapshot.revision });
+  if (entry.scope && (!sameDecisionInput(state, entry.scope)
+    || (result?.state && !sameDecisionInput(result.state, entry.scope)))) {
+    throw reviewError('回执期间会话或输入已变化，未采用旧回执或跳转。');
+  }
+  if (!result?.ok) {
+    // The shared store checks a saved command receipt before its revision check.
+    // Only this explicit rejection proves this command was not applied.
+    const revisionRejected = result?.code === 'revision_conflict'
+      || (result?.code === 'conflict' && result?.message === '其他操作已更新资料，请重读后保留并核对你的草稿。');
+    entry.revisionRejected = revisionRejected && entry.exactRevision && entry.scope
+      && Number.isInteger(result?.state?.revision) && result.state.revision > entry.expectedRevision
+      && sameDecisionInput(result.state, entry.scope) ? result.state.revision : null;
+    if (result?.state) applyState(result.state);
+    fail(result, entry.revisionRejected !== null
+      ? '共享层已明确拒绝这次版本冲突；请使用“重新核对后提交”，不会自动更换操作。'
+      : '保存回执尚未确认，草稿保留，可重试原操作。');
+  }
+  if (!result.state || !applyState(result.state)) throw reviewError('保存后的状态无法核对。', 'read_failed');
+  pendingCommands.delete(key);
+  return state;
+}
+
+
+// Called only by the explicit recheck/resubmit control, never by ordinary retry.
+function renewRejectedDecisionIntent(key, snapshot) {
+  const entry = pendingCommands.get(key);
+  if (!entry || !Number.isInteger(entry.revisionRejected) || !entry.scope
+    || !sameDecisionInput(snapshot, entry.scope) || !sameDecisionInput(state, entry.scope)
+    || snapshot.analysis?.id !== entry.scope.analysisId || state.analysis?.id !== entry.scope.analysisId
+    || snapshot.revision < entry.revisionRejected) {
+    throw reviewError('未确认原操作被版本冲突拒绝，或资料已变化；没有另建提交。');
+  }
+  pendingCommands.delete(key);
+  return entry;
+}
+// B-INTENT-ADAPTER-END
+
+
 async function generateAnalysis() {
+  if (hasPendingReview()) throw reviewError('请先处理当前感受保存或判断重试，未另起生成。');
   const snapshot = await readState();
   if (!confirmed(snapshot)) fail({ code: 'invalid_transition', message: '请先回第一页确认本轮问题与资料。' });
   const key = `analysis:${snapshot.round.id}:${snapshot.round.inputVersion}`;
@@ -283,7 +826,266 @@ async function refreshSession(autoAnalyze = true) {
     }
     recordEvent('page_viewed', { pageId: 'decisions', inputVersion: snapshot.round.inputVersion }, snapshot, `page:${snapshot.sessionId}`);
     if (snapshot.savedAt) recordEvent('session_read', { pageId: 'decisions', stateRevision: snapshot.revision }, snapshot, `read:${snapshot.sessionId}`);
-    if (autoAnalyze && confirmed(snapshot) && !currentAnalysis(snapshot)) await generateAnalysis();
+    if (autoAnalyze && !hasPendingReview() && confirmed(snapshot) && !currentAnalysis(snapshot)) await generateAnalysis();
+  });
+}
+
+const funnelDefinitions = [
+  ['video_views', '播放'], ['product_clicks', '商品点击'], ['add_to_carts', '加购'],
+  ['created_orders', '下单'], ['paid_orders', '支付'],
+];
+
+function storedFunnel(analysis) {
+  const saved = analysis?.funnel;
+  return {
+    available: Boolean(saved),
+    comparable: saved?.status === 'comparable',
+    stages: funnelDefinitions.map(([key, label]) =>
+      list(saved?.stages).find((stage) => stage.key === key)
+      || { key, label, value: null, unit: null, factIds: [], window: {} }),
+    transitions: list(saved?.transitions),
+    issues: list(saved?.issues),
+    maximumLoss: saved?.maximumLoss ?? {},
+    limitations: list(saved?.limitations),
+  };
+}
+
+function countText(value, fallback = '未知') {
+  return number(value) ? formatNumber(value) : fallback;
+}
+
+function rateText(value) {
+  return number(value) && value >= 0 && value <= 1
+    ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value * 100) + '%'
+    : '不可计算';
+}
+
+function sourceRefs(entry) {
+  return [...new Set([
+    ...list(entry?.sourceIds).filter((value) => typeof value === 'string'),
+    ...[...list(entry?.sourceFactIds), ...list(entry?.factIds)]
+      .filter((value) => typeof value === 'string').map((value) => 'fact:' + value),
+  ])];
+}
+
+function stageName(funnel, key) {
+  return text(funnel.stages.find((stage) => stage.key === key)?.label, '环节未知');
+}
+
+function transitionView(funnel, transition) {
+  return {
+    label: stageName(funnel, transition.fromKey) + ' → ' + stageName(funnel, transition.toKey),
+    numerator: countText(transition.numerator),
+    denominator: countText(transition.denominator),
+    conversion: funnel.comparable ? rateText(transition.conversionRate) : '不可计算',
+    lossRate: funnel.comparable ? rateText(transition.lossRate) : '不可计算',
+    lossCount: funnel.comparable ? countText(transition.lossCount, '不可计算') : '不可计算',
+    calculation: text(transition.calculation, text(transition.reason, '尚无可核对算式')),
+  };
+}
+
+function optionText(path) {
+  const option = text(path?.optionLabel, '');
+  return option ? '方案' + option : '这条行动';
+}
+
+function isCurrentSelection(snapshot, pathId) {
+  return Boolean(currentAnalysis(snapshot)
+    && snapshot.selection?.analysisId === snapshot.analysis.id
+    && snapshot.selection?.inputVersion === snapshot.round.inputVersion
+    && snapshot.selection?.pathId === pathId);
+}
+
+function reportNeedsConsent(snapshot) {
+  return !(snapshot?.analysis?.mode === 'demo_fixture'
+    && typeof snapshot.fixtureId === 'string' && snapshot.fixtureId.length > 0);
+}
+
+function appendSourceRefs(parent, entry, compact = false) {
+  const refs = sourceRefs(entry);
+  if (!refs.length) {
+    appendParagraph(parent, '没有可核对的来源ID。', 'muted');
+    return;
+  }
+  const wrap = element(compact ? 'details' : 'div', compact ? 'source-details' : 'source-refs');
+  if (compact) wrap.append(element('summary', '', '查看来源（' + refs.length + '）'));
+  const content = compact ? element('div', 'source-refs') : wrap;
+  const valid = currentAnalysis(state);
+  refs.forEach((sourceId) => {
+    const line = element('p');
+    line.append(element('code', 'source-ref-id', sourceId));
+    content.append(line);
+    if (!valid) {
+      appendParagraph(content, '旧分析引用；当前输入不能替代原证据快照。', 'muted');
+      return;
+    }
+    if (sourceId.startsWith('fact:')) {
+      const fact = list(state.input.facts).find((item) => item.id === sourceId.slice(5));
+      if (fact) {
+        appendParagraph(content, (labels.source[fact.source?.kind] || '来源类型未知') + ' · '
+          + (labels.verification[fact.verification] || '尚未核对') + '；' + locatorText(fact.source?.locator), 'muted');
+      } else appendParagraph(content, '对应事实已更新或未找到，不能替补来源。', 'muted');
+    }
+    if (/^(input:(description|focus)|(material|fact|question):[A-Za-z0-9_-]{1,80})$/.test(sourceId)) {
+      content.append(correctionButton(sourceId));
+    }
+  });
+  if (compact) wrap.append(content);
+  parent.append(wrap);
+}
+
+function createTable(headers, caption, className) {
+  const table = element('table', 'estimate-table ' + className);
+  table.append(element('caption', '', caption));
+  const head = element('thead');
+  const row = element('tr');
+  headers.forEach((label) => {
+    const cell = element('th', '', label);
+    cell.scope = 'col';
+    row.append(cell);
+  });
+  head.append(row);
+  const body = element('tbody');
+  table.append(head, body);
+  return { table, body };
+}
+
+function stageArrow() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'stage-connector');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  line.setAttribute('d', 'M4 12h15m-6-6 6 6-6 6');
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', 'currentColor');
+  line.setAttribute('stroke-width', '1.5');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('stroke-linejoin', 'round');
+  svg.append(line);
+  return svg;
+}
+
+function renderFunnel(analysis) {
+  const funnel = storedFunnel(analysis);
+  const container = byId('funnel-stages');
+  container.replaceChildren();
+  container.dataset.comparable = String(funnel.comparable);
+  byId('funnel-status').textContent = !funnel.available
+    ? '这份已保存分析没有五阶段快照；未根据当前输入补造。可更新本轮判断。'
+    : funnel.comparable ? '共享质检判为可比；以下为已保存的事件次数／订单笔数，不代表独立顾客人数。'
+      : '仅并列展示当前记录：口径、来源或嵌套关系未满足条件，不连接成漏斗。';
+  const priority = analysis?.priority;
+  funnel.stages.forEach((stage, index) => {
+    const highlighted = priority?.status === 'hypothesis'
+      && [priority.fromKey, priority.toKey].includes(stage.key);
+    const item = element('li', 'funnel-stage' + (highlighted ? ' is-priority' : ''));
+    item.append(element('span', 'stage-label', text(stage.label)));
+    item.append(element('strong', 'stage-value', countText(stage.value)));
+    item.append(element('span', 'stage-unit', text(stage.unit, '单位未知')));
+    if (funnel.comparable && index < funnel.stages.length - 1) item.append(stageArrow());
+    container.append(item);
+  });
+  byId('funnel-priority').textContent = text(priority?.title, '尚无已保存的优先验证环节');
+
+  const maxima = [['按数量差', funnel.maximumLoss.byCount], ['按流失率', funnel.maximumLoss.byRate]];
+  byId('funnel-loss-summary').textContent = !funnel.comparable ? '当前没有可比的最大流失排名。'
+    : maxima.map(([label, entry]) => entry
+      ? label + '最大：' + stageName(funnel, entry.fromKey) + ' → ' + stageName(funnel, entry.toKey)
+        + '，' + (label === '按流失率' ? rateText(entry.value) : countText(entry.value))
+      : label + '最大：不可计算').join('；') + '。数值排名不能推出根因或优先行动。';
+
+  const transitions = byId('funnel-transition-table');
+  transitions.replaceChildren();
+  if (funnel.transitions.length) {
+    const { table, body } = createTable(['环节', '分子', '分母', '转换率', '流失率', '数量差', '算式与限制', '来源ID'],
+      '仅显示共享分析已保存的计算；0是已知计数，未知或分母为0不会显示成0%。', 'calculation-table');
+    funnel.transitions.forEach((transition) => {
+      const row = element('tr');
+      const view = transitionView(funnel, transition);
+      [view.label, view.numerator, view.denominator, view.conversion, view.lossRate, view.lossCount]
+        .forEach((value) => row.append(element('td', '', value)));
+      const calculation = element('td');
+      appendParagraph(calculation, view.calculation);
+      if (transition.calculation && transition.reason) appendParagraph(calculation, transition.reason, 'muted');
+      const sources = element('td');
+      appendSourceRefs(sources, transition);
+      row.append(calculation, sources);
+      body.append(row);
+    });
+    transitions.append(table);
+  } else appendParagraph(transitions, '此分析没有保存逐阶段计算。');
+
+  const sources = byId('funnel-source-table');
+  sources.replaceChildren();
+  const { table, body } = createTable(['记录', '经营对象', '时间范围', '渠道与群体', '计数单位', '来源与定位'],
+    '来源和口径按每个阶段分别列出；不同记录不会自动合并。', 'source-table');
+  funnel.stages.forEach((stage) => {
+    const row = element('tr');
+    [text(stage.label) + '：' + countText(stage.value), text(stage.subject),
+      text(stage.window?.start, '起日未知') + ' 至 ' + text(stage.window?.end, '止日未知'),
+      text(stage.channel) + '；' + text(stage.cohort), text(stage.unit)].forEach((value) => row.append(element('td', '', value)));
+    const cell = element('td');
+    appendSourceRefs(cell, stage);
+    row.append(cell);
+    body.append(row);
+  });
+  sources.append(table);
+
+  const issues = byId('funnel-issues');
+  issues.replaceChildren();
+  if (!funnel.issues.length) appendParagraph(issues, funnel.comparable
+    ? '本份已保存快照通过共享可比性检查；这不代表未来转化或因果效果已知。'
+    : '此分析未提供可比性检查结果。', 'muted');
+  funnel.issues.forEach((issue) => {
+    const item = element('div', 'evidence-entry');
+    appendParagraph(item, issue.description);
+    if (sourceRefs(issue).length) appendSourceRefs(item, issue, true);
+    issues.append(item);
+  });
+  const limitations = byId('funnel-limitations');
+  limitations.replaceChildren();
+  funnel.limitations.forEach((value) => limitations.append(element('li', '', text(value))));
+}
+
+function renderPriority(analysis) {
+  const trace = byId('decision-call-trace');
+  trace.replaceChildren();
+  decisionTraceRows(analysis).forEach(([label, value]) => addDefinition(trace, label, value));
+  const priority = analysis?.priority;
+  byId('priority-title').textContent = text(priority?.title, '当前尚不能确定优先问题');
+  byId('priority-hypothesis').textContent = text(priority?.hypothesis?.text, '当前没有可展示的优先假设。');
+  byId('priority-reason').textContent = text(priority?.reason, '这份分析没有保存优先问题依据；请更新判断或补充可核对资料。');
+  const facts = byId('priority-facts');
+  facts.replaceChildren();
+  if (!list(priority?.facts).length) appendParagraph(facts, '没有足够观测支持优先问题；不把假设列为事实。', 'muted');
+  list(priority?.facts).forEach((entry) => {
+    const item = element('div');
+    appendParagraph(item, entry.text);
+    appendSourceRefs(item, entry, true);
+    facts.append(item);
+  });
+  const assumptions = byId('priority-assumptions');
+  assumptions.replaceChildren();
+  if (priority?.hypothesis) {
+    appendParagraph(assumptions, priority.hypothesis.text);
+    appendSourceRefs(assumptions, priority.hypothesis, true);
+  } else appendParagraph(assumptions, '尚无已保存的待验证假设。', 'muted');
+  const unknowns = byId('priority-unknowns');
+  unknowns.replaceChildren();
+  appendList(unknowns, priority?.unknowns, '尚未列出；不代表没有未知。');
+  const processing = byId('analysis-processing');
+  processing.replaceChildren();
+  if (!list(analysis?.processing).length) processing.append(element('li', 'muted', '未保存处理记录'));
+  list(analysis?.processing).forEach((entry) => {
+    const item = element('li');
+    item.append(element('span', '', text(entry.name, '处理名称未提供')));
+    const status = element('span', 'processing-status',
+      entry.kind === 'local_rule' ? ({ done: '已完成', not_run: '未运行' })[entry.status] || '状态未知' : '类型未核对');
+    status.dataset.status = entry.kind === 'local_rule' ? entry.status : 'unknown';
+    item.append(status);
+    processing.append(item);
   });
 }
 
@@ -292,14 +1094,34 @@ function renderScope() {
   const facts = list(state.input.facts);
   const subjects = [...new Set(facts.map((fact) => fact.subject).filter((item) => typeof item === 'string' && item.trim()))];
   const windows = [...new Set(facts.filter((fact) => fact.window?.start || fact.window?.end)
-    .map((fact) => `${text(fact.window.start, '起日未知')} 至 ${text(fact.window.end, '止日未知')}`))];
+    .map((fact) => text(fact.window.start, '起日未知') + ' 至 ' + text(fact.window.end, '止日未知')))];
+  const sourceKinds = [...new Set(facts.map((fact) => labels.source[fact.source?.kind]).filter(Boolean))];
+  const materialStates = { received: '已接收，未解析', parsed: '已解析，仍需核对', needs_review: '待核对', failed: '解析失败' };
+  const materials = list(state.input.materials).map((material) =>
+    text(material.name, '已接收材料') + '（' + (materialStates[material.status] || '处理状态未知') + '）');
+  const sourceParts = [...(state.fixtureId ? ['显式合成资料'] : []), ...materials,
+    ...sourceKinds, ...(text(state.input.description, '') ? ['文字／经营背景'] : [])];
+  byId('scope-sources').textContent = sourceParts.join('；') || '来源尚未提供';
+  byId('scope-window').textContent = windows.length === 1 ? windows[0]
+    : windows.length ? '有多个时间范围，请展开分别核对' : '未知';
+  const funnel = storedFunnel(state.analysis);
+  byId('scope-status').textContent = !confirmed(state) ? '当前输入尚未确认'
+    : !currentAnalysis(state) ? '输入已确认，等待本轮有效判断'
+      : funnel.comparable ? '输入已确认，五阶段可比' : '输入已确认，仅支持有限分析';
+  const gaps = [...new Set([...list(state.input.unknowns).map((entry) => text(entry.description, '一项资料尚待核对')),
+    ...(currentAnalysis(state) ? funnel.stages.filter((stage) => stage.value === null).map((stage) => stage.label + '未知') : [])])];
+  byId('scope-gaps').textContent = gaps.length ? gaps.slice(0, 2).join('；')
+    + (gaps.length > 2 ? '；另' + (gaps.length - 2) + '项见资料范围' : '')
+    : '未登记缺口，不代表资料完整。';
   const meta = byId('scope-meta');
   meta.replaceChildren();
-  addDefinition(meta, '经营对象', subjects.length === 1 ? subjects[0] : subjects.length ? '多个对象，按各来源分别核对' : '未知');
-  addDefinition(meta, '资料时间', windows.length === 1 ? windows[0] : windows.length ? '多个观察期，不拼接为同一漏斗' : '未知');
-  addDefinition(meta, '输入版本', `第 ${state.round.index ?? '未知'} 轮 · v${state.round.inputVersion}`);
+  addDefinition(meta, '经营对象', subjects.length === 1 ? subjects[0] : subjects.length ? subjects.join('；') : '未知');
+  addDefinition(meta, '资料时间', windows.join('；') || '未知');
+  addDefinition(meta, '输入版本', '第 ' + (state.round.index ?? '未知') + ' 轮 · v' + state.round.inputVersion);
   const mode = state.analysis?.mode;
-  addDefinition(meta, '分析来源', mode === 'demo_fixture' ? '合成演示 · 非真实模型' : mode === 'local_limited' ? '本机有限分析 · 非真实模型' : '尚未生成');
+  addDefinition(meta, '分析来源', mode === 'demo_fixture' ? '合成演示 · 本机规则，非真实模型'
+    : mode === 'local_limited' ? '本机有限分析 · 非真实模型' : '尚未生成');
+  addDefinition(meta, '当前全部缺口', gaps.join('；') || '未登记，不代表没有未知');
 }
 
 function renderState() {
@@ -323,23 +1145,33 @@ function renderState() {
   const limitations = byId('analysis-limitations');
   limitations.replaceChildren();
   list(analysis?.limitations).forEach((value) => limitations.append(element('li', '', text(value))));
+  renderFunnel(analysis);
+  renderPriority(analysis);
   if (analysis && !Array.isArray(analysis.paths)) {
     pathInvalid = true;
     message('分析的路径结构不完整，无法继续。请更新判断或返回核对。', 'error');
   }
-  const paths = list(analysis?.paths);
+  const paths = visibleDecisionPaths(analysis?.paths);
   byId('no-paths').hidden = paths.length > 0 || !analysis;
   byId('path-workspace').hidden = paths.length === 0;
+  byId('path-detail-disclosure').hidden = paths.length === 0;
+  byId('review-not-actionable').textContent = paths.length === 2 ? '两个都做不了，告诉AI原因'
+    : paths.length === 1 ? '这条做不了，告诉AI原因' : '这些都做不了，告诉AI原因';
   const unknowns = byId('no-paths-unknowns');
   unknowns.replaceChildren();
   list(state.input.unknowns).forEach((entry) => unknowns.append(element('li', '', text(entry.description, '一项资料尚待核对'))));
-  if (!paths.length) { viewedPathId = null; return; }
+  if (!paths.length) {
+    viewedPathId = null;
+    byId('path-list').replaceChildren();
+    byId('path-detail-disclosure').open = false;
+    return;
+  }
   if (!paths.some((path) => path.id === viewedPathId)) {
     const previousSelection = valid && state.selection?.analysisId === analysis.id ? state.selection.pathId : null;
     viewedPathId = paths.some((path) => path.id === previousSelection) ? previousSelection : paths[0].id;
   }
-  renderPathList(paths);
   renderPath(selectedPath());
+  renderPathList(list(analysis?.paths));
 }
 
 function costText(cost, unit) {
@@ -347,34 +1179,90 @@ function costText(cost, unit) {
   return `${formatNumber(cost.value)}${unit}${cost.basis === 'scenario' ? '（假设）' : ''}`;
 }
 
+function viewPath(pathId, openDetails = false) {
+  if (busy) return false;
+  const path = visibleDecisionPaths(state?.analysis?.paths).find((item) => item.id === pathId);
+  if (!path) return false;
+  viewedPathId = path.id;
+  pendingExport = null;
+  byId('report-consent').checked = false;
+  renderPath(path);
+  renderPathList(list(state.analysis.paths));
+  setBusy(false);
+  if (openDetails) {
+    byId('path-detail-disclosure').open = true;
+    byId('path-title').focus({ preventScroll: true });
+    byId('path-detail-disclosure').scrollIntoView({ block: 'start' });
+  }
+  return !pathInvalid && !subscriptionFailed;
+}
+
 function renderPathList(paths) {
+  const total = list(paths).length;
+  paths = visibleDecisionPaths(paths);
+  byId('paths-availability-note').textContent = paths.length < 2 ? '当前仅有' + paths.length + '条有依据的方案，不补造第二条。' : total > 2 ? '本轮只显示当前保存的前两条方案；其他旧方案未自动采用。' : '两条方案均需由你明确选择；按钮不会自动执行平台操作。';
   const container = byId('path-list');
   container.replaceChildren();
-  byId('paths-count').textContent = `${paths.length} 条`;
+  container.dataset.count = String(paths.length);
+  byId('paths-count').textContent = paths.length + ' 条可选行动';
+  const chosen = paths.find((path) => isCurrentSelection(state, path.id));
+  byId('paths-selection-summary').textContent = chosen
+    ? '本轮已选：' + text(chosen.title) + '。查看其他行动不会改选。'
+    : '本轮尚未选择。查看依据不会选路，选择保存成功后才进入下一页。';
   paths.forEach((path) => {
-    const button = element('button', 'path-choice');
-    button.type = 'button';
-    button.dataset.pathId = path.id;
-    button.setAttribute('aria-pressed', String(path.id === viewedPathId));
-    button.setAttribute('aria-controls', 'path-detail');
-    button.setAttribute('aria-label', `查看路径：${text(path.title, '未命名路径')}`);
-    if (path.id === viewedPathId) button.append(element('span', 'path-choice-current', '正在查看'));
-    button.append(element('span', 'path-choice-title', text(path.title, '未命名路径')));
-    button.append(element('span', 'path-choice-action', text(path.action, '具体动作尚未提供')));
-    button.append(element('span', 'path-choice-meta', `${costText(path.cost?.time, '分钟')} · ${costText(path.cost?.money, '元')}`));
-    const risk = list(path.risk)[0];
-    button.append(element('span', 'path-choice-meta', `主要代价：${text(risk?.description, '风险尚待核对')}`));
-    button.addEventListener('click', () => {
-      if (busy) return;
-      viewedPathId = path.id;
-      pendingExport = null;
-      byId('report-consent').checked = false;
-      renderPathList(paths);
-      renderPath(path);
-      setBusy(false);
-      byId('path-title').focus({ preventScroll: true });
+    const isViewed = path.id === viewedPathId;
+    const isSelected = isCurrentSelection(state, path.id);
+    const card = element('article', 'path-card');
+    card.dataset.pathId = path.id;
+    if (path.actionKey) card.dataset.actionKey = path.actionKey;
+    card.dataset.viewed = String(isViewed);
+    card.dataset.selected = String(isSelected);
+    const heading = element('header', 'path-card-heading');
+    if (text(path.optionLabel, '')) heading.append(element('span', 'path-option-label', path.optionLabel));
+    const title = element('h3', '', text(path.title, '未命名行动'));
+    title.id = 'path-card-' + path.id;
+    card.setAttribute('aria-labelledby', title.id);
+    heading.append(title);
+    card.append(heading);
+    card.append(element('p', 'path-card-status', [isViewed ? '当前查看' : '', isSelected ? '本轮已选' : '尚未选择'].filter(Boolean).join(' · ')));
+    const content = element('dl', 'path-card-content');
+    const addRow = (label, value) => {
+      const group = element('div');
+      const dd = element('dd');
+      group.append(element('dt', '', label), dd);
+      if (Array.isArray(value)) {
+        if (value.length === 1) dd.textContent = text(value[0]);
+        else appendList(dd, value, '尚未提供');
+      } else dd.textContent = value;
+      content.append(group);
+      return dd;
+    };
+    addRow('具体做什么', text(path.action, '具体动作尚未提供'));
+    const cost = addRow('成本', costText(path.cost?.money, '元') + '；' + costText(path.cost?.time, '分钟'));
+    const costNotes = [path.cost?.time?.note, path.cost?.money?.note].filter((value) => typeof value === 'string' && value.trim());
+    if (costNotes.length) cost.append(element('span', 'path-card-cost-note', costNotes.join('；')));
+    addRow('风险', list(path.risk).map((entry) => text(entry.description, '风险待核对')));
+    addRow('验证指标', decisionMetricText(path));
+    addRow('本轮保持不变', list(path.experiment?.keepFixed).join('；') || '尚未提供，执行前需核对');
+    card.append(content);
+    const actions = element('div', 'path-card-actions');
+    const view = element('button', 'button button--quiet path-choice', '查看完整依据');
+    view.type = 'button';
+    view.dataset.pathId = path.id;
+    view.setAttribute('aria-pressed', String(isViewed));
+    view.setAttribute('aria-controls', 'path-detail-disclosure');
+    view.setAttribute('aria-label', '查看' + optionText(path) + '：' + text(path.title));
+    view.addEventListener('click', () => viewPath(path.id, true));
+    const select = element('button', 'button path-select', decisionSelectionLabel(path, isSelected));
+    select.type = 'button';
+    select.dataset.pathId = path.id;
+    select.disabled = busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed;
+    select.addEventListener('click', () => {
+      if (viewPath(path.id)) void choosePath();
     });
-    container.append(button);
+    actions.append(view, select);
+    card.append(actions);
+    container.append(card);
   });
 }
 
@@ -383,11 +1271,11 @@ function renderPath(path) {
   pathInvalid = false;
   byId('path-title').textContent = text(path.title, '路径名称未提供');
   byId('path-action').textContent = text(path.action, '具体动作尚未提供');
-  const isSelected = currentAnalysis(state) && state.selection?.analysisId === state.analysis.id && state.selection?.pathId === path.id;
-  byId('path-selection-note').textContent = isSelected ? '此前已明确选定这条路径；执行情况仍以实际反馈为准。' : '当前查看的路径 · 尚未通过本页操作选定';
-  byId('choose-path').textContent = isSelected ? '继续准备这件事' : '就做这件事';
+  const isSelected = isCurrentSelection(state, path.id);
+  byId('path-selection-note').textContent = isSelected ? '当前查看 · 本轮已选；执行情况仍以实际反馈为准。' : '当前查看 · 未选定这条行动；不会改变已有选择。';
+  byId('choose-path').textContent = decisionSelectionLabel(path, isSelected);
   byId('defer-choice').textContent = state.selection ? '暂不改选' : '暂不选';
-  byId('report-consent-row').hidden = state.analysis.mode === 'demo_fixture';
+  byId('report-consent-row').hidden = !reportNeedsConsent(state);
   const costs = byId('path-costs');
   costs.replaceChildren();
   [['资金', path.cost?.money, '元'], ['时间', path.cost?.time, '分钟']].forEach(([label, cost, unit]) => {
@@ -604,18 +1492,22 @@ async function goTo(pageId, options) {
 }
 
 async function choosePath() {
+  if (busy || hasPendingReview() || pathInvalid || subscriptionFailed || !selectedPath()) return;
   const pathId = viewedPathId;
   const viewedIdentity = identity(state, pathId);
+  const origin = decisionScope(state);
   await operate(async () => {
-    const snapshot = await readState();
+    const snapshot = await readDecisionState(origin);
     if (!currentAnalysis(snapshot) || identity(snapshot, pathId) !== viewedIdentity
       || !snapshot.analysis.paths.some((path) => path.id === pathId)) {
       fail({ code: 'stale_input', message: '查看期间资料或分析已变化，请查看当前路径后重新选择。' });
     }
-    const saved = await dispatchIntent(`select:${viewedIdentity}`, 'PATH_SELECT', {
-      analysisId: snapshot.analysis.id, pathId, inputVersion: snapshot.round.inputVersion,
-    }, snapshot);
-    if (saved.selection?.pathId !== pathId || saved.selection.analysisId !== snapshot.analysis.id) {
+    // A valid existing selection continues without issuing PATH_SELECT again.
+    const saved = isCurrentSelection(snapshot, pathId) ? snapshot
+      : await dispatchIntent('select:' + viewedIdentity, 'PATH_SELECT', {
+        analysisId: snapshot.analysis.id, pathId, inputVersion: snapshot.round.inputVersion,
+      }, snapshot, { exactRevision: true, scope: origin });
+    if (!isCurrentSelection(saved, pathId) || saved.selection.analysisId !== snapshot.analysis.id) {
       fail({ message: '选择尚未在共享状态中确认，停留本页以免误跳转。' });
     }
     const result = await api.navigateTo('action');
@@ -676,10 +1568,11 @@ async function boot() {
       import('../shared/demo-data.js'), import('./report.js'),
     ]);
     api = { ...storage, ...navigation, ...shell, ...data, ...report };
-    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree']) {
+    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree']) {
       if (typeof api[name] !== 'function') throw new Error(`共享或报告模块缺少 ${name}，未创建替代实现。`);
     }
     await api.mountShell('decisions');
+    registerReviewNavigationGuard();
     subscribe();
     await refreshSession();
   } catch (error) {
@@ -691,11 +1584,23 @@ async function boot() {
   }
 }
 
+// Page wiring; helpers above remain pure or explicit render functions.
+bindReviewControls();
 document.querySelectorAll('[data-action="return"]').forEach((button) => button.addEventListener('click', () => goTo('intake')));
 byId('retry-load').addEventListener('click', () => api ? refreshSession() : window.location.reload());
 byId('refresh-analysis').addEventListener('click', () => operate(generateAnalysis));
 byId('choose-path').addEventListener('click', choosePath);
 byId('download-report').addEventListener('click', downloadReport);
+byId('calculation-return').addEventListener('click', () => {
+  byId('funnel-calculations').open = false;
+  byId('funnel-calculations').querySelector('summary').focus({ preventScroll: true });
+  byId('funnel-stages').scrollIntoView({ block: 'center' });
+});
+byId('return-paths').addEventListener('click', () => {
+  byId('path-detail-disclosure').open = false;
+  byId('path-list').querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+  byId('path-workspace').scrollIntoView({ block: 'start' });
+});
 byId('defer-choice').addEventListener('click', () => message(state?.selection
   ? '没有新增或替换选择，已有选择及材料继续保留。可以继续比较，或返回补充。'
   : '本轮暂不选择，资料和当前结果继续保留。可以继续比较，或返回补充。'));
@@ -709,6 +1614,10 @@ for (const id of ['evidence-disclosure', 'experiment-disclosure', 'tree-disclosu
     }
   });
 }
-window.addEventListener('pagehide', () => { unsubscribe?.(); unsubscribe = null; });
-window.addEventListener('pageshow', (event) => { if (event.persisted && api) { subscribe(); void refreshSession(false); } });
+window.addEventListener('pagehide', () => { unsubscribe?.(); unsubscribe = null; unregisterReviewGuard?.(); unregisterReviewGuard = null; });
+window.addEventListener('pageshow', (event) => { if (event.persisted && api) { registerReviewNavigationGuard(); subscribe(); void refreshSession(false); } });
+// Cosmetic only: a missing or late title enhancement cannot block shared state.
+void import('../shared/title-motion.js')
+  .then(({ enhanceFoldTitle }) => enhanceFoldTitle(byId('decisions-title')))
+  .catch(() => {});
 void boot();

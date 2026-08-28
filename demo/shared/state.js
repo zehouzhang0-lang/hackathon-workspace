@@ -1,5 +1,8 @@
+import { matchesAcceptedExperimentPayload } from './experiment-round.js';
+export { getAcceptedExperimentRound } from './experiment-round.js';
+export { buildExperimentReview } from './experiment-memory.js';
 import { assertState, createEmptyState, fail, getMaterialCapability, ID_PATTERN, MATERIAL_LIMITS, normalizeSessionState, reduceCommand, stable } from './model.js';
-export { getMaterialCapability, MATERIAL_CAPABILITIES, MATERIAL_CATEGORIES, MATERIAL_LIMITS } from './model.js';
+export { getMaterialCapability, MATERIAL_CAPABILITIES, MATERIAL_CATEGORIES, MATERIAL_LIMITS, FEEDBACK_DETAILS_VERSION } from './model.js';
 import { takeTestFault } from './test-hooks.js';
 
 const DB_NAME = 'douyin-experiment-demo';
@@ -159,13 +162,18 @@ async function execute(command) {
             try {
               if (receipt.result) {
                 if (receipt.result.fingerprint !== fingerprint) fail('invalid_transition', '同一操作标识不能换成另一份内容。');
+                if (command.type === 'EXPERIMENT_ACCEPT') {
+                  const accepted = matchesAcceptedExperimentPayload(state, command.payload);
+                  if (!accepted.ok) fail(accepted.code, accepted.message);
+                }
                 outcome = { ok: true, state: copy(state) };
                 return;
               }
               const apply = (existingRound) => {
                 try {
                   if (existingRound) { outcome = { ok: true, state: copy(state) }; return; }
-                  if (command.expectedRevision !== state.revision) fail('conflict', '其他操作已更新资料，请重读后保留并核对你的草稿。');
+                  if (command.expectedRevision !== state.revision
+                    && !(command.type === 'EXPERIMENT_ACCEPT' && matchesAcceptedExperimentPayload(state, command.payload).ok)) fail('conflict', '其他操作已更新资料，请重读后保留并核对你的草稿。');
                   const next = reduceCommand(state, command, { ...context(), preparedMaterial });
                   const prefix = state.sessionId + ':';
                   if (next.effects.clearSession) {
@@ -176,7 +184,7 @@ async function execute(command) {
                   for (const materialId of next.effects.deleteBlobs) transaction.objectStore('blobs').delete(prefix + materialId);
                   for (const entry of next.effects.putBlobs) transaction.objectStore('blobs').put({ key: prefix + entry.materialId, blob: entry.file });
                   if (next.changed) transaction.objectStore('sessions').put({ key: 'active', state: next.state });
-                  if (next.roundLink) transaction.objectStore('rounds').put({ key: prefix + next.roundLink.feedbackId, roundId: next.roundLink.roundId });
+                  if (next.roundLink) transaction.objectStore('rounds').put({ key: prefix + next.roundLink.feedbackId, ...next.roundLink });
                   const savedReceipt = transaction.objectStore('commands').put({ key, fingerprint });
                   savedReceipt.onsuccess = () => { if (takeTestFault('before_commit', command.type)) abort(Object.assign(new Error('测试：事务在提交前中止，正式记录未保存。'), { code: 'write_failed' })); };
                   didChange = next.changed;

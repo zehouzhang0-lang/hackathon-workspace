@@ -283,6 +283,37 @@ body[data-page="action"] .action-warning { margin-block: 12px 0; padding: 10px 1
 body[data-page="action"] ul.action-warning { padding-inline-start: 32px; }
 body[data-page="action"] .action-warning li + li { margin-block-start: 6px; }
 
+/* C5: saved checklist stays in the taking area, separate from publishable copy. */
+body[data-page="action"] .action-path-note { margin-block-start: 8px; font-size: 17px; line-height: 1.75; }
+body[data-page="action"] .takeaway-checklist { min-width: 0; padding: 20px 24px; border-block-start: 1px solid var(--color-line); }
+body[data-page="action"] .takeaway-checklist h3 { font-size: 21px; line-height: 1.5; }
+body[data-page="action"] .takeaway-checklist-note { margin-block: 8px 16px; font-size: 17px; line-height: 1.75; }
+body[data-page="action"] .takeaway-checklist-item { min-width: 0; }
+body[data-page="action"] .takeaway-checklist-item + .takeaway-checklist-item { margin-block-start: 20px; padding-block-start: 16px; border-block-start: 1px solid var(--color-line); }
+body[data-page="action"] .takeaway-checklist-item h4 { margin: 0; font-size: 18px; line-height: 1.6; }
+body[data-page="action"] .takeaway-checklist-item > p { margin-block: 6px 10px; font-size: 16px; line-height: 1.75; }
+body[data-page="action"] .takeaway-checklist-body { max-height: 16rem; min-width: 0; max-width: 100%; margin-block: 10px 14px; padding: 14px 16px; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; border: 1px solid var(--color-line); border-radius: var(--radius-control); background: var(--color-bg); color: var(--color-text); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-sans); font-size: 17px; line-height: 1.75; }
+
+/* PRD v1: adoption and execution stay separate; optional observations follow taking. */
+body[data-page="action"] .feedback-state-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 22px 32px; }
+body[data-page="action"] .feedback-choice-section { min-width: 0; }
+body[data-page="action"] .feedback-choice-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-block-end: 8px; }
+body[data-page="action"] .feedback-choice-heading h3 { margin: 0; font-size: 19px; line-height: 1.6; }
+body[data-page="action"] .feedback-choice-section .action-field-note { margin-block-start: 8px; }
+body[data-page="action"] .feedback-choice-section .execution-options { gap: 10px; }
+body[data-page="action"] #action-main .feedback-choice-section .execution-option { padding-inline: 10px; font-size: 18px; }
+body[data-page="action"] .feedback-reason-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); align-items: start; gap: 16px 24px; }
+body[data-page="action"] .feedback-reason-row textarea[rows="2"] { min-height: 84px; }
+body[data-page="action"] .feedback-metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px 24px; padding-block-start: 8px; }
+body[data-page="action"] #feedback-metric-note { margin-block: 10px 14px; }
+body[data-page="action"] .feedback-attachment-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px 24px; margin-block-start: 18px; }
+body[data-page="action"] .feedback-attachment-row .attachment-upload { min-height: 96px; }
+body[data-page="action"] #feedback-details-status { margin: 0 0 4px !important; padding: 10px 14px; border-inline-start: 3px solid var(--color-line); background: var(--color-bg); }
+body[data-page="action"] .feedback-save-row { padding-block-start: 4px; }
+body[data-page="action"] .feedback-save-row #discard-feedback { margin-inline-start: auto; }
+body[data-page="action"] .saved-feedback-details > summary { font-size: 17px; line-height: 1.7; }
+body[data-page="action"] .saved-feedback-details .experiment-facts { margin-block: 10px; }
+
 /* Existing narrow-screen fallbacks stay protective; this batch is PC-first. */
 @media (max-width: 1280px) {
   body[data-page="action"] #action-main { width: calc(100% - 64px); }

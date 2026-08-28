@@ -126,6 +126,49 @@ function checkWindow(window, withDescription = true) {
     && (!withDescription || nullableText(window.description)), '观察窗口结构或日期无效。');
 }
 
+// Compare the complete stored input; never infer a fixture from its name or contents.
+function sameSnapshotValue(left, right) {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length && left.every((value, index) => sameSnapshotValue(value, right[index]));
+  if (!object(left) || !object(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && sameSnapshotValue(left[key], right[key]));
+}
+
+// FEEDBACK_SAVE clears the session fixture marker without changing the saved analysis.
+// This proves only the retained analysis/feedback link, not that new feedback is synthetic.
+function hasFeedbackForSnapshot(state, analysis) {
+  if (!object(analysis.inputSnapshot) || !sameSnapshotValue(analysis.inputSnapshot, state.input)
+    || !Array.isArray(state.artifacts)) return false;
+  const sameScope = item => object(item) && item.analysisId === analysis.id
+    && item.roundId === state.round.id && item.inputVersion === state.round.inputVersion
+    && validId(item.pathId) && analysis.paths.some(path => object(path) && path.id === item.pathId);
+  const records = [...(Array.isArray(state.feedbackRecords) ? state.feedbackRecords : []),
+    ...(Array.isArray(state.executionRecords) ? state.executionRecords : [])];
+  return records.some(record => sameScope(record) && validId(record.id)
+    && validId(record.artifactId) && positiveInt(record.artifactVersion)
+    && utcTimestamp(record.savedAt) !== null && utcTimestamp(record.reportedAt) !== null
+    && state.artifacts.some(artifact => sameScope(artifact) && artifact.id === record.artifactId
+      && artifact.version === record.artifactVersion && artifact.pathId === record.pathId
+      && artifact.mode === analysis.mode && ['current', 'stale'].includes(artifact.status)
+      && utcTimestamp(artifact.savedAt) !== null));
+}
+
+// The analysis snapshot is authoritative. Only legacy analyses lacking that field
+// use the same currently validated round; never search another round's questions.
+function questionIdsForAnalysis(state, analysis) {
+  const clarification = Object.hasOwn(analysis, 'clarificationSnapshot')
+    ? analysis.clarificationSnapshot : state.round.clarification;
+  if (!object(clarification)) return new Set();
+  const questions = Object.hasOwn(clarification, 'questions')
+    ? Array.isArray(clarification.questions) ? clarification.questions : [] : [clarification];
+  return new Set(questions.filter(question => object(question) && validId(question.questionId)
+    && ['asked', 'answered', 'skipped'].includes(question.status) && nonempty(question.questionText))
+    .map(question => question.questionId));
+}
+
 function checkSnapshot(state, pathId) {
   check(object(state) && state.contractVersion === 'demo.v1' && object(state.round)
     && object(state.input), '无法读取受支持的会话结构。');
@@ -143,7 +186,8 @@ function checkSnapshot(state, pathId) {
     && utcTimestamp(analysis.savedAt) !== null && Array.isArray(analysis.paths)
     && nullableText(analysis.summary) && arrayOfText(analysis.limitations), '分析结构、来源模式或保存版本无效。');
   check(state.fixtureId === null || validId(state.fixtureId), '演示来源标识无效。');
-  check(analysis.mode !== 'demo_fixture' || validId(state.fixtureId), '合成分析缺少显式演示来源标识。');
+  check(analysis.mode !== 'demo_fixture' || validId(state.fixtureId) || hasFeedbackForSnapshot(state, analysis),
+    '合成分析缺少显式演示来源标识或可核对的同版本反馈快照。');
   check(validId(pathId), '路径标识无效。');
   const paths = analysis.paths.filter(path => object(path) && path.id === pathId);
   check(paths.length === 1, '当前分析中没有唯一对应的路径。', 'invalid_transition');
@@ -333,7 +377,8 @@ export function buildPathReport(state, pathId, { exportId, generatedAt, allowSum
       roundId: state.round.id, roundIndex: state.round.index, inputVersion: state.round.inputVersion,
       analysisId: analysis.id, pathId: path.id, mode: analysis.mode, fixtureId: state.fixtureId,
     };
-    const allowed = analysis.mode === 'demo_fixture' || allowSummaries;
+    // A cleared marker never carries the original demo's automatic summary permission.
+    const allowed = allowSummaries || (analysis.mode === 'demo_fixture' && validId(state.fixtureId));
     const render = makeTextRenderer(state, allowed);
     const list = (items, fallback = '未提供，保持未知') => items.length
       ? `<ul>${items.map(item => `<li class="multiline">${render(item)}</li>`).join('')}</ul>` : `<p>${escapeHTML(fallback)}</p>`;
@@ -347,10 +392,11 @@ export function buildPathReport(state, pathId, { exportId, generatedAt, allowSum
       : `${render(item.text)}<br>${refs(item.sourceFactIds, item.assumptionIds)}`;
     const target = item => `<dl><dt>指标 / 单位</dt><dd>${render(item.metric)} / ${render(item.unit)}</dd><dt>对象</dt><dd>${render(item.subject)}</dd><dt>渠道 / 群体</dt><dd>${render(item.channel)} / ${render(item.cohort)}</dd></dl>`;
     const window = item => `${render(item.description)}；${render(item.start)} 至 ${render(item.end)}`;
+    const questionIds = questionIdsForAnalysis(state, analysis);
     const sourceLabel = sourceId => {
       const [kind, id] = sourceId.split(':');
       const missing = kind === 'material' && !state.input.materials.some(item => object(item) && item.id === id)
-        || kind === 'question' && state.round.clarification?.questionId !== id;
+        || kind === 'question' && !questionIds.has(id);
       return `${escapeHTML(sourceId)}${missing ? '（来源已更新 / 原件已移除）' : ''}`;
     };
     const evidence = items => items.length ? items.map(item => `<article><h3>${escapeHTML(EVIDENCE_KINDS[item.kind])} <code>${escapeHTML(item.id)}</code></h3><p class="multiline">${render(item.summary)}</p>${item.calculation === null ? '' : `<p class="multiline">计算：${render(item.calculation)}</p>`}<p>${refs(item.factIds)}</p><p>来源定位：${item.sourceIds.length ? item.sourceIds.map(sourceLabel).join('、') : '未提供 / 不可核对'}</p></article>`).join('') : '<p>未提供，不能据此推定不存在反面线索。</p>';
@@ -374,7 +420,9 @@ export function buildPathReport(state, pathId, { exportId, generatedAt, allowSum
     const focus = nonempty(state.input.focus) ? state.input.focus : textValue(state.input.description) ? state.input.description : null;
     const excerpt = textValue(focus) && focus.length > 600 ? `${focus.slice(0, 600)}（节选；完整问题请在页面核对）` : focus;
     const metadataHTML = Object.entries(metadata).map(([key, value]) => `<dt>${escapeHTML(key)}</dt><dd><code>${value === null ? '未知 / 未使用' : escapeHTML(value)}</code></dd>`).join('');
-    const provenance = analysis.mode === 'demo_fixture' ? '合成演示' : '本机有限整理 / 参考稿';
+    const provenance = analysis.mode === 'demo_fixture'
+      ? state.fixtureId === null ? '原分析标记为合成演示；本轮新反馈不因此视为合成' : '合成演示'
+      : '本机有限整理 / 参考稿';
     const privacy = allowed ? '仅纳入本次允许的必要摘要。来源核对不等于商家数据已被证实真实。'
       : '本次未确认真实材料摘要的导出许可，相关业务内容显示“摘要未获确认”；树的结构和内部标识保留。';
     const html = `<!doctype html>

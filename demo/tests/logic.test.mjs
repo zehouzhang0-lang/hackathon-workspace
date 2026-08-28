@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createEmptyState, getMaterialCapability, normalizeSessionState, reduceCommand, validSourceId } from '../shared/model.js';
+import { createEmptyState, getMaterialCapability, normalizeSessionState, reduceCommand, validSourceId, FEEDBACK_DETAILS_VERSION } from '../shared/model.js';
 import { buildDemoAnalysis, buildDemoArtifact } from '../shared/demo-data.js';
 import { FIXTURE_IDS } from '../shared/seeds.js';
 import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
@@ -204,6 +204,305 @@ test('a normal merchant input named juicer never loads the synthetic fixture or 
   assert.equal(h.state.analysis.mode, 'local_limited');
   assert.equal(h.state.analysis.status, 'limited');
   assert.equal(h.state.analysis.paths[0].estimate.kind, 'unavailable');
+});
+
+
+test('juicer analysis keeps a sourced five-stage funnel separate from its verification priority', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const result = buildDemoAnalysis(h.state);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.analysis.paths.map((path) => path.title), ['补全首屏购买判断', '制作真实问题验证内容']);
+  assert.equal(result.analysis.funnel.status, 'comparable');
+  assert.deepEqual(result.analysis.funnel.stages.map((stage) => stage.value), [58000, 1450, 96, 54, 42]);
+  assert.equal(result.analysis.funnel.transitions[0].conversionRate, 1450 / 58000);
+  assert.equal(result.analysis.funnel.transitions[1].conversionRate, 96 / 1450);
+  assert.equal(result.analysis.funnel.transitions[0].lossCount, 56550);
+  assert.equal(result.analysis.funnel.transitions[1].lossCount, 1354);
+  assert.equal(result.analysis.funnel.maximumLoss.byCount.fromKey, 'video_views');
+  assert.equal(result.analysis.priority.fromKey, 'product_clicks');
+  assert.equal(result.analysis.priority.rootCauseConfirmed, false);
+  assert(result.analysis.paths.every((path) => path.estimate.kind === 'unavailable' && path.estimate.values.length === 0));
+  h.send('ANALYSIS_SET', { analysis: result.analysis });
+  assert.equal(h.state.selection, null);
+  assert.deepEqual(h.state.executionRecords, []);
+});
+
+
+test('five-stage quality refuses ambiguous, hypothetical, invalid or unmatched observations', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const mutations = [
+    (s) => { s.input.facts = s.input.facts.filter((f) => f.key !== 'video_views'); },
+    (s) => { s.input.facts.push({ ...s.input.facts.find((f) => f.key === 'product_clicks'), id: 'duplicate_clicks' }); },
+    (s) => { const f = s.input.facts.find((f) => f.key === 'add_to_carts'); f.value = null; f.availability = 'unknown'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').evidenceStatus = 'owner_hypothesis'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').verification = 'conflicting'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').source.kind = 'scenario_assumption'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').source.kind = 'public_reference'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').unit = '人'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').channel = '另一渠道'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').cohort = null; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').window.start = '2026-02-30'; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').window.end = '2026-08-01'; },
+    (s) => { s.input.facts.find((f) => f.key === 'add_to_carts').value = 2000; },
+    (s) => { s.input.facts.find((f) => f.key === 'product_clicks').value = -1; },
+    (s) => { s.input.facts.find((f) => f.key === 'video_views').value = Number.MAX_SAFE_INTEGER + 1; },
+    (s) => { s.fixtureId = null; }
+  ];
+  for (const mutate of mutations) {
+    const state = structuredClone(h.state);
+    mutate(state);
+    const result = buildDemoAnalysis(state);
+    assert.equal(result.ok, true);
+    assert.equal(result.analysis.funnel.status, 'unavailable');
+    assert(result.analysis.funnel.transitions.every((edge) => edge.conversionRate === null && edge.lossRate === null));
+    assert(result.analysis.paths.every((path) => !path.actionKey));
+  }
+  const zero = structuredClone(h.state);
+  zero.input.facts.filter((fact) => ['video_views', 'product_clicks', 'add_to_carts', 'created_orders', 'paid_orders'].includes(fact.key)).forEach((fact) => { fact.value = 0; });
+  const result = buildDemoAnalysis(zero);
+  assert.deepEqual(result.analysis.funnel.stages.map((stage) => stage.value), [0, 0, 0, 0, 0]);
+  assert(result.analysis.funnel.transitions.every((edge) => edge.conversionRate === null && edge.lossRate === null && edge.lossCount === 0));
+  assert.equal(result.analysis.priority.status, 'unavailable');
+});
+
+test('shared analysis validation rejects forged funnel arithmetic and unresolved experiment references', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const draft = buildDemoAnalysis(h.state).analysis;
+  const before = structuredClone(h.state);
+  const mutations = [
+    (a) => { a.funnel.transitions[1].conversionRate = 0.9; },
+    (a) => { a.funnel.stages[1].factIds = [...a.funnel.stages[0].factIds]; },
+    (a) => { a.priority.rootCauseConfirmed = true; },
+    (a) => { a.processing[0].kind = 'moneyai'; },
+    (a) => { a.paths[0].experiment.guardrails[0].sourceFactIds = ['missing_fact']; },
+    (a) => { a.paths[0].experiment.restoreSteps = null; },
+    (a) => { a.paths[0].experiment.minSampleUnit = null; },
+    (a) => { a.paths[0].experiment.minSample = -1; }
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(draft); mutate(changed);
+    assert.throws(() => h.send('ANALYSIS_SET', { analysis: changed }), { code: 'invalid_structure' });
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('analysis agreement and uncertainty record feelings without confirming facts or selecting an action', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  const beforeInput = structuredClone(h.state.input);
+  const beforeQuestions = structuredClone(h.state.round.clarification);
+  const oldDraft = buildDemoAnalysis(h.state).analysis;
+  const base = { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, analysisId: h.state.analysis.id };
+  h.send('ANALYSIS_REVIEW_SAVE', { ...base, stance: 'agree', reason: null });
+  const reviews = () => h.state.history.filter((entry) => entry.type === 'analysis_review');
+  assert.equal(reviews().length, 1);
+  assert.equal(h.send('ANALYSIS_REVIEW_SAVE', { ...base, stance: 'agree', reason: '' }).changed, false);
+  h.send('ANALYSIS_REVIEW_SAVE', { ...base, stance: 'uncertain', reason: '还不能确认原因' });
+  assert.equal(reviews().length, 2);
+  assert.deepEqual(h.state.input, beforeInput);
+  assert.deepEqual(h.state.round.clarification, beforeQuestions);
+  assert.equal(h.state.selection, null);
+  assert.deepEqual(h.state.executionRecords, []);
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: oldDraft }), { code: 'stale_input' });
+  const draft = buildDemoAnalysis(h.state).analysis;
+  assert.equal(draft.reviewId, reviews().at(-1).id);
+  assert.equal(draft.priority.rootCauseConfirmed, false);
+  h.send('ANALYSIS_SET', { analysis: draft });
+  assert.equal(reviews().length, 2);
+});
+
+test('analysis disagreement revokes downstream choices but preserves the confirmed input and original reason', () => {
+  const h = harness('juicer_cup_v1'); analyze(h); selectAndSave(h);
+  const beforeInput = structuredClone(h.state.input), beforeVersion = h.state.round.inputVersion;
+  const previous = structuredClone(h.state.analysis);
+  const payload = { roundId: h.state.round.id, inputVersion: beforeVersion, analysisId: previous.id, stance: 'disagree', reason: '实际情况不是这个原因' };
+  h.send('ANALYSIS_REVIEW_SAVE', payload);
+  assert.deepEqual(h.state.input, beforeInput);
+  assert.equal(h.state.round.inputVersion, beforeVersion);
+  assert.equal(h.state.analysis.status, 'stale');
+  assert.equal(h.state.selection, null);
+  assert(h.state.artifacts.every((artifact) => artifact.status === 'stale'));
+  assert.equal(h.send('ANALYSIS_REVIEW_SAVE', payload).changed, false);
+  assert.throws(() => h.send('PATH_SELECT', { analysisId: previous.id, pathId: previous.paths[0].id, inputVersion: beforeVersion }), { code: 'stale_input' });
+  assert.equal(buildDemoArtifact(h.state).ok, false);
+  const draft = buildDemoAnalysis(h.state).analysis;
+  assert.deepEqual(draft.paths, []);
+  assert.equal(draft.priority.status, 'unavailable');
+  h.send('ANALYSIS_SET', { analysis: draft });
+  assert.equal(h.state.history.filter((entry) => entry.type === 'analysis_review').length, 1);
+  assert.deepEqual(h.state.feedbackRecords, []);
+  assert.deepEqual(h.state.executionRecords, []);
+});
+
+test('unavailable-action feedback removes only explicitly blocked paths and never chooses a replacement', () => {
+  for (const blockBoth of [false, true]) {
+    const h = harness('juicer_cup_v1'); analyze(h);
+    const pathIds = h.state.analysis.paths.slice(0, blockBoth ? 2 : 1).map((path) => path.id);
+    h.send('ANALYSIS_REVIEW_SAVE', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+      analysisId: h.state.analysis.id, stance: 'not_actionable', reason: blockBoth ? '这两处目前都不能修改' : '详情页首屏目前不能修改', blockedPathIds: pathIds });
+    const draft = buildDemoAnalysis(h.state).analysis;
+    assert.deepEqual(draft.paths.map((path) => path.actionKey), blockBoth ? [] : ['juicer_question_video']);
+    h.send('ANALYSIS_SET', { analysis: draft });
+    assert.equal(h.state.selection, null);
+    assert.deepEqual(h.state.executionRecords, []);
+  }
+});
+
+test('analysis review rejects stale scope, invented path references and missing inability reasons', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  const base = { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, analysisId: h.state.analysis.id, stance: 'agree' };
+  const before = structuredClone(h.state);
+  for (const [patch, code] of [
+    [{ roundId: 'old_round' }, 'stale_input'], [{ inputVersion: 0 }, 'stale_input'], [{ analysisId: 'old_analysis' }, 'stale_input'],
+    [{ stance: 'done' }, 'invalid_payload'], [{ reason: 42 }, 'invalid_payload'],
+    [{ stance: 'not_actionable', reason: '做不了', blockedPathIds: ['missing_path'] }, 'invalid_structure'],
+    [{ stance: 'not_actionable', reason: '', blockedPathIds: [h.state.analysis.paths[0].id] }, 'invalid_payload']
+  ]) {
+    assert.throws(() => h.send('ANALYSIS_REVIEW_SAVE', { ...base, ...patch }), { code });
+    assert.deepEqual(h.state, before);
+  }
+  assert.throws(() => h.send('EVENT_APPEND', { event: { type: 'analysis_review_saved', refs: {} } }), { code: 'invalid_transition' });
+});
+
+test('juicer A and B produce only the selected sourced copy, separate unknowns and the same eight-part plan', () => {
+  for (const pathIndex of [0, 1]) {
+    const h = harness('juicer_cup_v1'); analyze(h);
+    const path = h.state.analysis.paths[pathIndex];
+    h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: path.id, inputVersion: h.state.round.inputVersion });
+    const result = buildDemoArtifact(h.state);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.artifacts.map((artifact) => artifact.kind), ['copy', 'checklist', 'experiment_plan']);
+    const [copy, checklist, plan] = result.artifacts;
+    assert(copy.body.includes('350ml') && copy.body.includes('USB-C'));
+    assert(copy.body.includes('本轮不承诺'));
+    assert(!/可以打冰|保证.*续航|承诺.*次续航/.test(copy.body));
+    assert(checklist.body.includes('冰块') && checklist.body.includes('续航') && checklist.body.includes('清洗') && checklist.body.includes('售后'));
+    assert(copy.body.includes(pathIndex === 0 ? '购买前先确认' : '真实问题验证视频'));
+    assert(copy.body.includes('全国包邮') && copy.body.includes('说明书'));
+    const sourceIds = h.state.input.facts.filter((fact) => ['confirmedProductFacts.0', 'confirmedProductFacts.1', 'confirmedProductFacts.2', 'confirmedProductFacts.3', 'productName', 'targetCustomerHypothesis'].includes(fact.intakeField)).map((fact) => fact.id);
+    assert.deepEqual([...copy.sourceFactIds].sort(), sourceIds.sort());
+    for (const label of ['本轮只改什么', '本轮保持不变', '主要观察', '最小样本', '观察时间', '护栏指标', '停止条件', '回滚方式']) assert(plan.body.includes(label));
+    assert.equal(path.experiment.minSample, 100);
+    assert.equal(path.experiment.minSampleUnit, '次新增商品点击');
+    assert.equal(path.experiment.window.start, null);
+    assert.equal(path.experiment.window.end, null);
+    assert(path.experiment.guardrails.length && path.experiment.restoreSteps.length);
+    result.artifacts.forEach((artifact) => h.send('ARTIFACT_SAVE', { artifact }));
+    const artifact = h.state.artifacts.find((item) => item.kind === 'copy');
+    h.send('FEEDBACK_SAVE', { feedbackRecord: { id: null, artifactId: artifact.id, artifactVersion: artifact.version, observation: 'unknown', rawText: '' } });
+    assert.equal(h.state.fixtureId, null);
+    assert.equal(buildDemoArtifact(h.state).artifacts.find((item) => item.kind === 'copy').body, copy.body);
+    assert.deepEqual(h.state.executionRecords, []);
+  }
+});
+
+test('juicer output does not fill missing product facts or save a candidate for another selected path', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: h.state.analysis.paths[0].id, inputVersion: h.state.round.inputVersion });
+  const snapshot = structuredClone(h.state);
+  snapshot.analysis.inputSnapshot.facts.find((fact) => fact.intakeField === 'confirmedProductFacts.0').evidenceStatus = 'owner_hypothesis';
+  const result = buildDemoArtifact(snapshot);
+  assert.equal(result.ok, true);
+  assert(!result.artifacts.some((artifact) => artifact.kind === 'copy'));
+  assert(result.limitations.some((line) => line.includes('未生成')));
+  const draft = buildDemoArtifact(h.state).artifacts[0];
+  assert.throws(() => h.send('ARTIFACT_SAVE', { artifact: { ...draft, pathId: h.state.analysis.paths[1].id } }), { code: 'stale_input' });
+  assert.throws(() => h.send('ARTIFACT_SAVE', { artifact: { ...draft, usage: { ...draft.usage, risks: '不能用字符串替代列表' } } }), { code: 'invalid_structure' });
+  assert.deepEqual(h.state.artifacts, []);
+});
+
+
+test('analysis restrictions accumulate through later reviews instead of restoring rejected actions', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  const review = (stance, blockedPathIds = []) => h.send('ANALYSIS_REVIEW_SAVE', {
+    roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, analysisId: h.state.analysis.id,
+    stance, reason: '合成测试：保留本轮明确限制', blockedPathIds
+  });
+  const reconsider = () => h.send('ANALYSIS_SET', { analysis: buildDemoAnalysis(h.state).analysis });
+  review('not_actionable', [h.state.analysis.paths[0].id]); reconsider();
+  assert.deepEqual(h.state.analysis.paths.map((path) => path.actionKey), ['juicer_question_video']);
+  review('agree'); reconsider();
+  assert.deepEqual(h.state.analysis.paths.map((path) => path.actionKey), ['juicer_question_video']);
+  review('not_actionable', [h.state.analysis.paths[0].id]); reconsider();
+  assert.deepEqual(h.state.analysis.paths, []);
+  review('agree'); reconsider();
+  assert.deepEqual(h.state.analysis.paths, []);
+  const other = harness('juicer_cup_v1'); analyze(other);
+  for (const stance of ['disagree', 'agree', 'uncertain']) {
+    other.send('ANALYSIS_REVIEW_SAVE', { roundId: other.state.round.id, inputVersion: other.state.round.inputVersion,
+      analysisId: other.state.analysis.id, stance, reason: '合成测试：不是该原因' });
+    other.send('ANALYSIS_SET', { analysis: buildDemoAnalysis(other.state).analysis });
+    assert.deepEqual(other.state.analysis.paths, []);
+    assert.equal(other.state.analysis.priority.status, 'unavailable');
+  }
+});
+
+test('a stale analysis cannot bypass saved restrictions by copying the latest review ID', () => {
+  for (const stance of ['disagree', 'not_actionable']) for (const omitActionKey of [false, true]) {
+    const h = harness('juicer_cup_v1'); analyze(h);
+    const oldDraft = buildDemoAnalysis(h.state).analysis;
+    h.send('ANALYSIS_REVIEW_SAVE', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+      analysisId: h.state.analysis.id, stance, reason: '合成测试限制',
+      blockedPathIds: stance === 'not_actionable' ? [h.state.analysis.paths[0].id] : [] });
+    const reviewIds = h.state.history.filter((entry) => entry.type === 'analysis_review').map((entry) => entry.id);
+    oldDraft.reviewId = reviewIds.at(-1);
+    oldDraft.reviewIds = reviewIds;
+    if (omitActionKey) delete oldDraft.paths[0].actionKey;
+    assert.throws(() => h.send('ANALYSIS_SET', { analysis: oldDraft }), { code: 'invalid_structure' },
+      stance + ': omitting an optional action key cannot restore an excluded action');
+    assert.equal(h.state.analysis.status, 'stale');
+  }
+});
+
+test('priority observation references cannot hide hypotheses in sourceIds or omit evidence', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  h.state.input.facts.push({ id: 'synthetic_owner_hypothesis', key: 'synthetic_hypothesis', value: '老板猜测',
+    availability: 'known', evidenceStatus: 'owner_hypothesis', verification: 'unreviewed',
+    source: { kind: 'merchant_statement', materialId: null, materialVersion: null, locator: { type: 'input', field: 'description' }, note: '合成反例' } });
+  for (const sourceIds of [['fact:synthetic_owner_hypothesis'], ['input:description'], []]) {
+    const draft = buildDemoAnalysis(h.state).analysis;
+    draft.priority.facts = [{ text: '伪装成观测的老板猜测', sourceFactIds: [], sourceIds }];
+    assert.throws(() => h.send('ANALYSIS_SET', { analysis: draft }), { code: 'invalid_structure' });
+  }
+});
+
+test('juicer copy requires a unique product source and does not treat capacity as processing yield', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: h.state.analysis.paths[0].id, inputVersion: h.state.round.inputVersion });
+  const validCopy = buildDemoArtifact(h.state).artifacts.find((artifact) => artifact.kind === 'copy');
+  assert(validCopy.body.includes('容量为350ml'));
+  assert(!validCopy.body.includes('一次能榨'));
+  for (const value of ['容量为350ml', '容量为500ml']) {
+    const snapshot = structuredClone(h.state);
+    const original = snapshot.analysis.inputSnapshot.facts.find((fact) => fact.intakeField === 'confirmedProductFacts.0');
+    snapshot.analysis.inputSnapshot.facts.push({ ...original, id: 'another_capacity_source', value });
+    const result = buildDemoArtifact(snapshot);
+    assert(!result.artifacts.some((artifact) => artifact.kind === 'copy'));
+    assert(result.limitations.some((line) => line.includes('未生成')));
+  }
+});
+
+test('legacy C5 plan optional fields still degrade without inventing a rollback', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const draft = buildDemoAnalysis(h.state).analysis;
+  // Simulate an already saved legacy action; do not rename it to the PRD first-screen action.
+  draft.paths[0].actionKey = 'juicer_faq';
+  draft.paths[0].title = '补全商品购买问答区';
+  draft.paths[0].experiment.change = '商品购买问答区';
+  delete draft.paths[0].experiment.guardrails;
+  delete draft.paths[0].experiment.restoreSteps;
+  delete draft.paths[0].experiment.minSampleUnit;
+  h.send('ANALYSIS_SET', { analysis: draft });
+  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: h.state.analysis.paths[0].id, inputVersion: h.state.round.inputVersion });
+  const result = buildDemoArtifact(h.state);
+  assert.equal(result.ok, true);
+  const plan = result.artifacts.find((artifact) => artifact.kind === 'experiment_plan');
+  assert(plan.body.includes('护栏指标：尚未提供'));
+  assert(plan.body.includes('回滚方式：尚未提供'));
 });
 
 test('full synthetic flow creates valid trees and maps draft IDs before selection', () => {
@@ -1485,3 +1784,544 @@ test('MoneyAI cancellation and timeout distinguish never posted from an uncertai
     assert.equal(result.sentToMoneyAI, waitAt === 'status' ? false : null);
   }
 });
+
+
+test('PRD V1 seed keeps four sourced product facts and the target audience as a hypothesis', () => {
+  const h = harness('juicer_cup_v1');
+  const draft = h.state.input.intake.draft;
+  assert.equal(draft.merchantName, '轻活电器旗舰店');
+  assert.deepEqual(draft.confirmedProductFacts, ['容量为350ml', '充电接口为USB-C', '全国包邮', '清洗方式以商品说明书为准']);
+  const audience = h.state.input.facts.find((fact) => fact.intakeField === 'targetCustomerHypothesis');
+  assert.equal(audience.evidenceStatus, 'owner_hypothesis');
+  assert.match(audience.value, /租房上班族/);
+  assert(draft.customerQuestions.length === 0);
+  assert(!draft.confirmedProductFacts.some((fact) => /打冰|续航/.test(fact)));
+  assert.equal(h.state.analysis, null);
+});
+
+test('PRD V1 strict 8 percent route uses comparable data and never fabricates A/B for missing scope', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  for (const [carts, count] of [[115, 2], [116, 0], [117, 0], [0, 2]]) {
+    const state = structuredClone(h.state);
+    state.input.facts.find((fact) => fact.key === 'add_to_carts').value = carts;
+    if (carts === 0) state.input.facts.filter((fact) => ['created_orders', 'paid_orders'].includes(fact.key)).forEach((fact) => { fact.value = 0; });
+    const result = buildDemoAnalysis(state).analysis;
+    assert.equal(result.paths.filter((path) => path.actionKey).length, count);
+    assert.equal(result.routing.rule.threshold, 0.08);
+    assert.equal(result.routing.rule.operator, 'lt');
+    assert.match(result.routing.rule.description, /不是抖音官方或行业标准/);
+    assert.equal(result.routing.expert?.status ?? 'not_called', 'not_called');
+  }
+  for (const mutate of [
+    (state) => { state.input.facts.find((fact) => fact.key === 'product_clicks').window.end = '2026-08-26'; },
+    (state) => { const fact = state.input.facts.find((fact) => fact.key === 'add_to_carts'); fact.value = null; fact.availability = 'unknown'; },
+    (state) => { state.input.facts.filter((fact) => ['product_clicks', 'add_to_carts', 'created_orders', 'paid_orders'].includes(fact.key)).forEach((fact) => { fact.value = 0; }); },
+    (state) => { state.fixtureId = null; }
+  ]) {
+    const state = structuredClone(h.state); mutate(state);
+    const result = buildDemoAnalysis(state).analysis;
+    assert.equal(result.priority.status, 'unavailable');
+    assert.equal(result.routing.stage, null);
+    assert(result.paths.every((path) => !path.actionKey));
+  }
+});
+
+test('PRD V1 first-round A/B have stable experiment IDs and independently sourced hypotheses', () => {
+  const h = harness('juicer_cup_v1'); analyze(h);
+  assert.equal(h.state.analysis.prdVersion, '1.0');
+  assert.equal(h.state.analysis.analysisSource, 'local_fallback');
+  assert.equal(h.state.analysis.dataQuality.score, 100);
+  assert.match(h.state.analysis.dataQuality.meaning, /不代表数据真实性/);
+  assert.deepEqual(h.state.analysis.paths.map((path) => path.actionKey), ['juicer_first_screen', 'juicer_question_video']);
+  for (const [index, label] of ['A', 'B'].entries()) {
+    const path = h.state.analysis.paths[index];
+    assert.equal(path.optionLabel, label);
+    assert.equal(path.experiment.experimentId, 'EXP-JUICER01-click_cart-' + label + '-R1');
+    assert.equal(path.experiment.round, 1);
+    assert.equal(path.experiment.change, index === 0 ? '商品详情页首屏' : '一条真实问题验证视频');
+    assert.match(path.validationMetric, /加购次数/);
+    const assumption = path.estimate.assumptions.find((entry) => path.experiment.assumptionIds.includes(entry.id) && entry.note === path.experiment.hypothesis);
+    assert(assumption);
+    assert.equal(assumption.value, null);
+    assert(assumption.sourceFactIds.length > 0);
+    assert.equal(path.cost.money.value, null);
+    assert.equal(path.cost.time.value, null);
+  }
+  assert.equal(h.state.selection, null);
+});
+
+test('PRD V1 rejects forged route, data quality, strategy identity and incomplete experiment cards atomically', () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const draft = buildDemoAnalysis(h.state).analysis;
+  for (const mutate of [
+    (analysis) => { analysis.routing.rule.threshold = 0.5; },
+    (analysis) => { analysis.routing.expert.status = 'done'; },
+    (analysis) => { analysis.dataQuality.score = 99; },
+    (analysis) => { analysis.paths[0].optionLabel = 'B'; },
+    (analysis) => { analysis.paths[0].experiment.experimentId = 'EXP-JUICER01-click_cart-A-R2'; },
+    (analysis) => { analysis.paths[0].experiment.hypothesis = '已证实信任不足'; },
+    (analysis) => { analysis.paths[0].experiment.change = '同时改标题和价格'; },
+    (analysis) => { analysis.paths[0].experiment.guardrails = []; },
+    (analysis) => { delete analysis.paths[0].experiment.restoreSteps; },
+    (analysis) => { analysis.paths[0].experiment.minSample = 0; }
+  ]) {
+    const before = structuredClone(h.state), changed = structuredClone(draft); mutate(changed);
+    assert.throws(() => h.send('ANALYSIS_SET', { analysis: changed }), { code: 'invalid_structure' });
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('PRD V1 does not rename historical juicer action keys or generate first-screen copy for them', () => {
+  for (const [key, title, copyTitle] of [
+    ['juicer_faq', '补全商品购买问答区', '购买问答区已确认文案'],
+    ['juicer_video_intro', '调整视频前几秒的信任表达', '视频开头字幕参考稿']
+  ]) {
+    const h = harness('juicer_cup_v1'); analyze(h);
+    h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: h.state.analysis.paths[0].id, inputVersion: h.state.round.inputVersion });
+    const old = structuredClone(h.state);
+    old.analysis.paths[0].actionKey = key;
+    old.analysis.paths[0].title = title;
+    delete old.analysis.sourceFixtureId;
+    const read = normalizeSessionState(old);
+    assert.equal(read.analysis.paths[0].actionKey, key);
+    assert.equal(read.analysis.paths[0].title, title);
+    const result = buildDemoArtifact(read);
+    assert.equal(result.artifacts.find((artifact) => artifact.kind === 'copy').title, copyTitle);
+    assert.equal(result.artifacts.some((artifact) => artifact.title === '商品详情页首屏替换稿'), false);
+  }
+});
+
+test('analysis sourceFixtureId is captured from state, survives feedback, and cannot be claimed by a draft', () => {
+  const h = harness('juicer_cup_v1'); analyze(h); selectAndSave(h);
+  assert.equal(h.state.analysis.sourceFixtureId, 'juicer_cup_v1');
+  const artifact = h.state.artifacts[0];
+  h.send('FEEDBACK_SAVE', { feedbackRecord: { artifactId: artifact.id, artifactVersion: artifact.version, rawText: '' } });
+  assert.equal(h.state.fixtureId, null);
+  assert.equal(h.state.analysis.sourceFixtureId, 'juicer_cup_v1');
+  const normal = harness();
+  normal.send('INPUT_EDIT', { description: '普通资料，没有合成来源' });
+  normal.send('FOCUS_CONFIRM', { inputVersion: normal.state.round.inputVersion });
+  const draft = buildDemoAnalysis(normal.state).analysis;
+  draft.sourceFixtureId = 'juicer_cup_v1';
+  normal.send('ANALYSIS_SET', { analysis: draft });
+  assert.equal(normal.state.analysis.sourceFixtureId, null);
+});
+
+test('feedback details v1 preserve explicit null and zero without inferring execution or an outcome', () => {
+  assert.equal(FEEDBACK_DETAILS_VERSION, 1);
+  const h = harness('juicer_cup_v1'); analyze(h); selectAndSave(h);
+  const artifact = h.state.artifacts[0];
+  const details = { detailsVersion: 1, reason: '原话与空值保留', sampleSize: 0, sampleUnit: 'product_clicks',
+    metricBefore: 0, metricAfter: null, constraintsLearned: [' 商品标题不能修改 '], guardrailStatus: 'unknown' };
+  h.send('FEEDBACK_SAVE', {
+    executionRecord: { artifactId: artifact.id, artifactVersion: artifact.version, adoption: 'adopted', scope: '只改了首屏' },
+    feedbackRecord: { artifactId: artifact.id, artifactVersion: artifact.version, observation: 'unknown', rawText: '感觉没效果', ...details }
+  });
+  const record = normalizeSessionState(h.state).feedbackRecords.at(-1);
+  for (const [key, value] of Object.entries(details)) assert.deepEqual(record[key], value);
+  assert.equal(h.state.executionRecords.at(-1).adoption, 'adopted');
+  assert.equal(h.state.executionRecords.at(-1).execution, 'unknown');
+  assert.equal(h.state.executionRecords.at(-1).executedAt, null);
+  assert.equal(record.observation, 'unknown');
+  assert.equal(h.state.events.some((event) => event.type === 'execution_reported'), false);
+});
+
+test('feedback details v1 accept null sample values and boundary-length text as exact merchant input', () => {
+  const h = harness('juicer_cup_v1'); analyze(h); selectAndSave(h);
+  const artifact = h.state.artifacts[0];
+  const details = { detailsVersion: 1, reason: '原'.repeat(1000), sampleSize: null, sampleUnit: null,
+    metricBefore: null, metricAfter: 1, constraintsLearned: Array.from({length:20}, () => '限'.repeat(300)), guardrailStatus: 'clear' };
+  h.send('FEEDBACK_SAVE', { feedbackRecord: { artifactId: artifact.id, artifactVersion: artifact.version, rawText: '话'.repeat(500), ...details } });
+  const saved = h.state.feedbackRecords.at(-1);
+  for (const [key, value] of Object.entries(details)) assert.deepEqual(saved[key], value);
+  assert.equal(saved.rawText.length, 500);
+});
+
+test('invalid new feedback fields and missing version reject the whole save without changing legacy state', () => {
+  const h = harness('juicer_cup_v1'); analyze(h); selectAndSave(h);
+  const artifact = h.state.artifacts[0];
+  const base = { artifactId: artifact.id, artifactVersion: artifact.version, detailsVersion: 1, reason: null,
+    sampleSize: null, sampleUnit: null, metricBefore: null, metricAfter: null, constraintsLearned: [], guardrailStatus: 'unknown', rawText: '' };
+  for (const patch of [
+    { detailsVersion: undefined }, { detailsVersion: 2 }, { detailsVersion: '1' },
+    { reason: false }, { reason: 'a'.repeat(1001) }, { sampleSize: -1 }, { sampleSize: 0.1 },
+    { sampleSize: Number.MAX_SAFE_INTEGER + 1 }, { sampleSize: '0' }, { sampleSize: Infinity },
+    { sampleUnit: 'people' }, { sampleUnit: 0 }, { metricBefore: -0.1 }, { metricAfter: 1.01 },
+    { metricAfter: '0' }, { metricBefore: NaN }, { constraintsLearned: null }, { constraintsLearned: [''] },
+    { constraintsLearned: ['a'.repeat(301)] }, { constraintsLearned: Array(21).fill('限制') },
+    { guardrailStatus: 'safe' }, { rawText: 'a'.repeat(501) }
+  ]) {
+    const before = structuredClone(h.state);
+    assert.throws(() => h.send('FEEDBACK_SAVE', {
+      executionRecord: { artifactId: artifact.id, artifactVersion: artifact.version, adoption: 'adopted', execution: 'unknown' },
+      feedbackRecord: { ...base, ...patch }
+    }), { code: 'invalid_payload' });
+    assert.deepEqual(h.state, before);
+  }
+  const missingVersion = { ...base }; delete missingVersion.detailsVersion;
+  assert.throws(() => h.send('FEEDBACK_SAVE', { feedbackRecord: missingVersion }), { code: 'invalid_payload' });
+});
+
+test('legacy feedback payload and intended adoption stay compatible; details version is exported by state', async () => {
+  const h = harness('underbed_complete_v1'); analyze(h); selectAndSave(h);
+  const artifact = h.state.artifacts[0];
+  h.send('FEEDBACK_SAVE', {
+    executionRecord: { artifactId: artifact.id, artifactVersion: artifact.version, adoption: 'intended', execution: 'not_started' },
+    feedbackRecord: { artifactId: artifact.id, artifactVersion: artifact.version, observation: 'unchanged', rawText: '旧版自述' }
+  });
+  assert.equal(h.state.executionRecords.at(-1).adoption, 'intended');
+  assert.equal(h.state.executionRecords.at(-1).execution, 'not_started');
+  assert.equal(h.state.feedbackRecords.at(-1).detailsVersion, undefined);
+  assert.equal(h.state.feedbackRecords.at(-1).sampleSize, undefined);
+  const stateSource = await readFile(new URL('../shared/state.js', import.meta.url), 'utf8');
+  assert.match(stateSource, /export \{[^}]*FEEDBACK_DETAILS_VERSION[^}]*\} from '\.\/model\.js'/);
+});
+
+
+// C8: acceptance regression coverage. The preceding 90 tests are the frozen PRD V1 suite, unchanged.
+import { validateAnalysis as validateAnalysisForC8 } from '../shared/model.js';
+import { buildExperimentReview as buildExperimentReviewForC8 } from '../shared/experiment-memory.js';
+import { prepareExperimentAcceptance as prepareExperimentAcceptanceForC8,
+  getAcceptedExperimentRound as getAcceptedExperimentRoundForC8,
+  matchesAcceptedExperimentPayload as matchesAcceptedExperimentPayloadForC8 } from '../shared/experiment-round.js';
+
+// Keep the C8 harness local: it needs explicit command IDs and the real reducer context.
+{
+const validateAnalysis = validateAnalysisForC8;
+const buildExperimentReview = buildExperimentReviewForC8;
+const prepareExperimentAcceptance = prepareExperimentAcceptanceForC8;
+const getAcceptedExperimentRound = getAcceptedExperimentRoundForC8;
+const matchesAcceptedExperimentPayload = matchesAcceptedExperimentPayloadForC8;
+const clone = structuredClone;
+function harness() {
+  let counter = 0;
+  const context = { newId: () => 'c8_' + (++counter), now: '2026-08-28T15:30:00.000Z' };
+  let state = createEmptyState(context);
+  const send = (type, payload, commandId = 'cmd_' + (++counter)) => {
+    const result = reduceCommand(state, { type, payload, commandId, expectedRevision: state.revision }, context);
+    state = result.state; return result;
+  };
+  send('LOAD_FIXTURE', { fixtureId: 'juicer_cup_v1' });
+  send('FOCUS_CONFIRM', { inputVersion: state.round.inputVersion });
+  const analysis = buildDemoAnalysis(state); assert.equal(analysis.ok, true, analysis.message);
+  send('ANALYSIS_SET', { analysis: analysis.analysis });
+  send('PATH_SELECT', { analysisId: state.analysis.id, pathId: state.analysis.paths.find((path) => path.optionLabel === 'A').id,
+    inputVersion: state.round.inputVersion });
+  const artifacts = buildDemoArtifact(state); assert.equal(artifacts.ok, true, artifacts.message);
+  for (const artifact of artifacts.artifacts) send('ARTIFACT_SAVE', { artifact });
+  const artifact = state.artifacts.find((entry) => entry.kind === 'copy');
+  const feedback = (detail = {}, execution = {}) => {
+    send('FEEDBACK_SAVE', {
+      executionRecord: { artifactId: artifact.id, artifactVersion: artifact.version,
+        adoption: 'adopted', execution: 'done', scope: '只替换详情页首屏文字层', executedAt: '2026-08-28', ...execution },
+      feedbackRecord: { artifactId: artifact.id, artifactVersion: artifact.version, detailsVersion: 1,
+        observation: 'unchanged', rawText: '首屏已调整，新增100次商品点击，自述没有明显变化，商品标题不能修改',
+        reason: '保持价格、投流及其他内容不变', sampleSize: 100, sampleUnit: 'product_clicks', metricBefore: null, metricAfter: null,
+        constraintsLearned: ['商品标题不能修改', '没有打冰与续航测试数据'], guardrailStatus: 'clear', ...detail },
+    });
+    return state.feedbackRecords.at(-1).id;
+  };
+  return { context, send, feedback, artifact, get state() { return state; } };
+}
+
+function preview(h, detail, execution) {
+  const feedbackId = h.feedback(detail, execution);
+  const result = buildExperimentReview(h.state, feedbackId);
+  assert.equal(result.ok, true, result.message);
+  return { review: result.review, payload: { feedbackId, reviewFingerprint: result.review.fingerprint,
+    roundId: result.review.roundId, inputVersion: result.review.inputVersion } };
+}
+
+test('C7 preview is read-only and yields A/R2 FAQ without creating a round or selection', () => {
+  const h = harness(), p = preview(h), before = clone(h.state);
+  const again = buildExperimentReview(h.state, p.payload.feedbackId);
+  assert.equal(again.review.decision, 'change_variable');
+  assert.equal(again.review.nextAction.status, 'candidate');
+  assert.equal(again.review.nextAction.optionLabel, 'A');
+  assert.equal(again.review.nextAction.experimentId, 'EXP-JUICER01-click_cart-A-R2');
+  assert.deepEqual(h.state, before); assert.equal(h.state.round.index, 1);
+  assert.equal(getAcceptedExperimentRound(h.state, p.payload.feedbackId).ok, false);
+});
+
+test('EXPERIMENT_ACCEPT atomically creates one valid selected FAQ R2 without fixture/execution defaults', () => {
+  const h = harness(), p = preview(h), before = clone(h.state), originalObject = h.state;
+  const result = h.send('EXPERIMENT_ACCEPT', p.payload);
+  assert.equal(result.changed, true); assert.equal(h.state.revision, before.revision + 1);
+  assert.deepEqual(originalObject, before, 'reducer never mutates its input on success');
+  assert.equal(h.state.round.index, 2); assert.notEqual(h.state.round.id, before.round.id);
+  assert.equal(h.state.round.inputVersion, before.round.inputVersion + 1);
+  assert.equal(h.state.fixtureId, null); assert.equal(h.state.analysis.sourceFixtureId, null);
+  assert.equal(h.state.analysis.mode, 'local_limited'); assert.equal(h.state.analysis.analysisSource, 'local_fallback');
+  assert.equal(h.state.analysis.paths.length, 1);
+  const path = h.state.analysis.paths[0];
+  assert.equal(path.actionKey, 'juicer_faq'); assert.equal(path.optionLabel, 'A');
+  assert.equal(path.experiment.experimentId, 'EXP-JUICER01-click_cart-A-R2');
+  assert.equal(path.experiment.change, '购买问答区');
+  assert.equal(h.state.selection.pathId, path.id); assert.equal(h.state.selection.analysisId, h.state.analysis.id);
+  assert.equal(h.state.round.sourceFeedbackId, p.payload.feedbackId);
+  assert.deepEqual(h.state.analysis.funnel, before.analysis.funnel);
+  assert.equal(h.state.analysis.funnelSource.analysisId, before.analysis.id);
+  assert.equal(h.state.analysis.funnelSource.roundId, before.round.id);
+  assert.equal(h.state.selection.sourceFeedbackId, p.payload.feedbackId);
+  assert.equal(h.state.executionRecords.filter((entry) => entry.roundId === h.state.round.id).length, 0);
+  assert.equal(h.state.feedbackRecords.filter((entry) => entry.roundId === h.state.round.id).length, 0);
+  assert.equal(result.roundLink.kind, 'experiment_acceptance');
+  assert.equal(getAcceptedExperimentRound(h.state, p.payload.feedbackId, p.payload.reviewFingerprint).ok, true);
+  assert.doesNotThrow(() => validateAnalysis(h.state.analysis, h.state));
+});
+
+test('same command or same feedback replays only the complete accepted result, never a third round', () => {
+  const h = harness(), p = preview(h);
+  h.send('EXPERIMENT_ACCEPT', p.payload, 'explicit_accept');
+  const complete = clone(h.state), revision = complete.revision;
+  for (const commandId of ['explicit_accept', 'other_accept_command']) {
+    const result = h.send('EXPERIMENT_ACCEPT', p.payload, commandId);
+    assert.equal(result.changed, false); assert.deepEqual(h.state, complete); assert.equal(h.state.revision, revision);
+  }
+  assert.equal(h.state.history.filter((entry) => entry.type === 'experiment_acceptance').length, 1);
+});
+
+test('ordinary ROUND_START empty new round cannot be mistaken for C8 accepted success', () => {
+  const h = harness(), p = preview(h);
+  h.send('ROUND_START', { feedbackId: p.payload.feedbackId });
+  const before = clone(h.state);
+  assert.equal(h.state.analysis, null); assert.equal(h.state.selection, null);
+  assert.equal(getAcceptedExperimentRound(h.state, p.payload.feedbackId).ok, false);
+  assert.throws(() => h.send('EXPERIMENT_ACCEPT', p.payload));
+  assert.deepEqual(h.state, before);
+});
+
+test('fingerprint, extra payload or fresh input changes reject without modifying old records', () => {
+  for (const mode of ['fingerprint', 'payload', 'input', 'unversioned-input']) {
+    const h = harness(), p = preview(h);
+    if (mode === 'fingerprint') p.payload.reviewFingerprint = 'sha256:' + '0'.repeat(64);
+    if (mode === 'payload') p.payload.analysis = {};
+    if (mode === 'input') h.send('INPUT_EDIT', { description: h.state.input.description + ' 补充一项' });
+    const source = mode === 'unversioned-input' ? clone(h.state) : h.state;
+    if (mode === 'unversioned-input') source.input.description += ' 非原快照';
+    const before = clone(source);
+    assert.throws(() => reduceCommand(source, { type: 'EXPERIMENT_ACCEPT', payload: p.payload, commandId: 'try_stale', expectedRevision: source.revision }, h.context));
+    assert.deepEqual(source, before);
+  }
+});
+
+test('different current analysis, selection or session cannot accept an old candidate', () => {
+  for (const mode of ['analysis', 'selection', 'session']) {
+    const h = harness(), p = preview(h), source = clone(h.state);
+    if (mode === 'analysis') source.analysis.id = 'other_analysis';
+    if (mode === 'selection') source.selection.pathId = source.analysis.paths.find((path) => path.optionLabel === 'B').id;
+    if (mode === 'session') source.sessionId = 'other_session';
+    const before = clone(source);
+    assert.equal(prepareExperimentAcceptance(source, p.payload).ok, false);
+    assert.deepEqual(source, before);
+  }
+});
+
+test('a newer related feedback or execution blocks the previously displayed candidate', () => {
+  for (const mode of ['feedback', 'execution']) {
+    const h = harness(), p = preview(h);
+    if (mode === 'feedback') h.feedback({ sampleSize: 101 });
+    else h.send('FEEDBACK_SAVE', { executionRecord: { artifactId: h.artifact.id, artifactVersion: h.artifact.version,
+      adoption: 'adopted', execution: 'partial', scope: '更正执行范围', executedAt: null } });
+    const before = clone(h.state);
+    assert.throws(() => h.send('EXPERIMENT_ACCEPT', p.payload));
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('a read-only view event does not invalidate candidate business identity', () => {
+  const h = harness(), p = preview(h), beforeRevision = h.state.revision;
+  h.send('EVENT_APPEND', { event: { type: 'path_viewed', refs: { pageId: 'action', analysisId: h.state.analysis.id,
+    pathId: h.state.selection.pathId, inputVersion: h.state.round.inputVersion } } });
+  assert.equal(h.state.revision, beforeRevision + 1);
+  assert.equal(buildExperimentReview(h.state, p.payload.feedbackId).review.fingerprint, p.payload.reviewFingerprint);
+  assert.equal(h.send('EXPERIMENT_ACCEPT', p.payload).changed, true);
+});
+
+test('not executed, insufficient sample, missing result and risk never create R2', () => {
+  const variants = [
+    [{}, { execution: 'unknown' }], [{}, { execution: 'not_started' }], [{}, { execution: 'partial' }],
+    [{}, { adoption: 'declined' }], [{ sampleSize: null }, {}], [{ sampleSize: 0 }, {}],
+    [{ sampleSize: 99 }, {}], [{ sampleUnit: null }, {}], [{ observation: 'unknown' }, {}],
+    [{ observation: 'worse' }, {}], [{ guardrailStatus: 'triggered' }, {}],
+  ];
+  for (const [detail, execution] of variants) {
+    const h = harness(), p = preview(h, detail, execution), before = clone(h.state);
+    assert.notEqual(p.review.decision, 'change_variable');
+    assert.throws(() => h.send('EXPERIMENT_ACCEPT', p.payload));
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('R2 artifacts use original four confirmed facts and keep title/unknown performance restrictions', () => {
+  const h = harness(), p = preview(h); h.send('EXPERIMENT_ACCEPT', p.payload);
+  const generated = buildDemoArtifact(h.state); assert.equal(generated.ok, true, generated.message);
+  const copy = generated.artifacts.find((artifact) => artifact.kind === 'copy');
+  assert.match(copy.title, /购买问答区/); assert.match(copy.body, /容量350ml|350ml/);
+  assert.match(copy.body, /USB-C/); assert.match(copy.body, /全国包邮/); assert.match(copy.body, /清洗方式以商品说明书为准/);
+  assert.match(copy.body, /不修改商品标题/); assert.match(copy.body, /无测试资料不作承诺/);
+  assert.doesNotMatch(copy.body, /可以打冰|一次能榨350|续航\d+|测试成功/);
+  const checklist = generated.artifacts.find((artifact) => artifact.kind === 'checklist');
+  for (const constraint of p.review.nextAction.constraints) assert.ok(checklist.body.includes(constraint), constraint);
+  assert.deepEqual(h.state.analysis.paths[0].experiment.constraintsLearned, p.review.constraintsLearned);
+  assert.ok(generated.artifacts.every((artifact) => artifact.pathId === h.state.selection.pathId
+    && artifact.experimentId === 'EXP-JUICER01-click_cart-A-R2'));
+  for (const artifact of generated.artifacts) h.send('ARTIFACT_SAVE', { artifact });
+  assert.equal(getAcceptedExperimentRound(h.state, p.payload.feedbackId).ok, true);
+  assert.equal(h.state.executionRecords.some((entry) => entry.roundId === h.state.round.id), false);
+  assert.equal(buildDemoAnalysis(h.state).ok, false, 'refresh cannot silently replace accepted experiment');
+});
+
+test('ordinary ANALYSIS_SET cannot inject a fake memory FAQ or overwrite accepted R2', () => {
+  const h = harness(), p = preview(h);
+  const fake = clone(h.state.analysis); fake.paths = [fake.paths[0]];
+  fake.paths[0].actionKey = 'juicer_faq'; fake.mode = 'local_limited'; fake.sourceFixtureId = null;
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: fake }));
+  fake.experimentReview = { version: 1, sourceFeedbackId: p.payload.feedbackId, reviewFingerprint: p.payload.reviewFingerprint };
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: fake }));
+  h.send('EXPERIMENT_ACCEPT', p.payload);
+  const before = clone(h.state);
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: clone(h.state.analysis) }));
+  assert.deepEqual(h.state, before);
+});
+
+test('an explicit new restriction against changing the FAQ prevents acceptance rather than being dropped', () => {
+  const h = harness(), p = preview(h, { constraintsLearned: ['商品标题不能修改', '购买问答区不能修改'] });
+  const before = clone(h.state);
+  assert.equal(p.review.decision, 'change_variable', 'C7 only projects a candidate; acceptance still checks feasibility');
+  assert.throws(() => h.send('EXPERIMENT_ACCEPT', p.payload), /禁止调整购买问答区/);
+  assert.deepEqual(h.state, before);
+});
+
+test('incomplete/tampered destination or source proof never counts as idempotent accepted success', () => {
+  const h = harness(), p = preview(h); h.send('EXPERIMENT_ACCEPT', p.payload);
+  for (const mode of ['selection', 'analysis', 'source', 'archive', 'duplicate']) {
+    const source = clone(h.state);
+    if (mode === 'selection') source.selection = null;
+    if (mode === 'analysis') source.analysis.paths[0].experiment.change = '重改首屏';
+    if (mode === 'source') source.feedbackRecords[0].rawText += ' 新的限制';
+    if (mode === 'archive') source.history.find((entry) => entry.type === 'round').input.description += ' 改写';
+    if (mode === 'duplicate') source.history.push(clone(source.history.find((entry) => entry.type === 'experiment_acceptance')));
+    const before = clone(source);
+    assert.equal(matchesAcceptedExperimentPayload(source, p.payload).ok, false);
+    assert.throws(() => reduceCommand(source, { type: 'EXPERIMENT_ACCEPT', payload: p.payload, commandId: 'replay', expectedRevision: source.revision }, h.context));
+    assert.deepEqual(source, before);
+  }
+});
+
+test('original input, feedback, execution and previous history stay unchanged after acceptance', () => {
+  const h = harness(), p = preview(h), before = clone(h.state); h.send('EXPERIMENT_ACCEPT', p.payload);
+  assert.deepEqual(h.state.feedbackRecords, before.feedbackRecords);
+  assert.deepEqual(h.state.executionRecords, before.executionRecords);
+  assert.deepEqual(h.state.history.slice(0, before.history.length), before.history);
+  const archive = h.state.history.find((entry) => entry.type === 'round' && entry.sourceFeedbackId === p.payload.feedbackId);
+  assert.deepEqual(archive.input, before.input); assert.deepEqual(archive.analysis, before.analysis);
+  assert.deepEqual(archive.selection, before.selection); assert.deepEqual(archive.round, before.round);
+  assert.deepEqual(h.state.input.facts, before.input.facts);
+  for (const old of before.artifacts) {
+    const current = h.state.artifacts.find((entry) => entry.id === old.id);
+    assert.deepEqual({ ...current, status: old.status }, old); assert.equal(current.status, 'stale');
+  }
+});
+
+test('synthetic before-commit rollback and lost after-commit reply retry one real reducer transaction', () => {
+  for (const failure of ['before', 'after']) {
+    const h = harness(), p = preview(h), before = clone(h.state);
+    let stored = clone(before), receipt = false, commitCount = 0, failOnce = true;
+    const command = { type: 'EXPERIMENT_ACCEPT', payload: p.payload, commandId: 'one_accept', expectedRevision: before.revision };
+    const dispatch = () => {
+      if (receipt) {
+        assert.equal(matchesAcceptedExperimentPayload(stored, command.payload).ok, true);
+        return { ok: true, state: clone(stored) };
+      }
+      assert.equal(stored.revision, command.expectedRevision);
+      const next = reduceCommand(stored, command, h.context);
+      if (failure === 'before' && failOnce) { failOnce = false; return { ok: false, code: 'write_failed' }; }
+      stored = next.state; receipt = true; commitCount++;
+      if (failure === 'after' && failOnce) { failOnce = false; return { ok: false, code: 'read_failed' }; }
+      return { ok: true, state: clone(stored) };
+    };
+    assert.equal(dispatch().ok, false);
+    if (failure === 'before') assert.deepEqual(stored, before);
+    const reply = dispatch(); assert.equal(reply.ok, true);
+    assert.equal(commitCount, 1); assert.equal(stored.round.index, 2); assert.equal(stored.revision, before.revision + 1);
+    assert.equal(stored.history.filter((entry) => entry.type === 'experiment_acceptance').length, 1);
+  }
+});
+
+test('read failure never supplies a state for acceptance; state adapter guards repeated receipt completeness', async () => {
+  const h = harness(), p = preview(h), before = clone(h.state);
+  const failedRead = { ok: false, code: 'storage_unavailable' };
+  let dispatches = 0;
+  if (failedRead.ok) { dispatches++; h.send('EXPERIMENT_ACCEPT', p.payload); }
+  assert.equal(dispatches, 0); assert.deepEqual(h.state, before);
+  const stateSource = await readFile(new URL('../shared/state.js', import.meta.url), 'utf8');
+  assert.match(stateSource, /if \(command\.type === 'EXPERIMENT_ACCEPT'\) \{\s+const accepted = matchesAcceptedExperimentPayload/);
+  assert.match(stateSource, /export \{ getAcceptedExperimentRound \}/);
+  assert.match(stateSource, /export \{ buildExperimentReview \}/);
+  assert.match(stateSource, /command\.expectedRevision !== state\.revision/);
+});
+
+
+function rejectIncompleteC8Acceptance(source, payload, context) {
+  const before = clone(source);
+  assert.equal(getAcceptedExperimentRound(source, payload.feedbackId, payload.reviewFingerprint).ok, false);
+  assert.equal(matchesAcceptedExperimentPayload(source, payload).ok, false);
+  assert.throws(() => reduceCommand(source, { type: 'EXPERIMENT_ACCEPT', payload,
+    commandId: 'retry_incomplete_acceptance', expectedRevision: source.revision }, context));
+  assert.deepEqual(source, before);
+}
+
+test('C8 completeness rejects missing or invalid acceptance identity and timestamp', () => {
+  const h = harness(), p = preview(h); h.send('EXPERIMENT_ACCEPT', p.payload);
+  for (const mode of ['missing-id', 'invalid-id', 'missing-time', 'invalid-time', 'invalid-calendar']) {
+    const source = clone(h.state);
+    const record = source.history.find((entry) => entry.type === 'experiment_acceptance');
+    if (mode === 'missing-id') delete record.id;
+    if (mode === 'invalid-id') record.id = 'draft_not_a_saved_id';
+    if (mode === 'missing-time') delete record.at;
+    if (mode === 'invalid-time') record.at = 'not-a-time';
+    if (mode === 'invalid-calendar') record.at = '2026-02-30T15:30:00.000Z';
+    if (mode.includes('time') || mode === 'invalid-calendar') source.selection.selectedAt = record.at;
+    rejectIncompleteC8Acceptance(source, p.payload, h.context);
+  }
+});
+
+test('C8 completeness requires the saved structured review for repeated acceptance', () => {
+  const h = harness(), p = preview(h); h.send('EXPERIMENT_ACCEPT', p.payload);
+  for (const mode of ['missing', 'null', 'array', 'empty', 'missing-revision', 'negative-revision', 'future-revision']) {
+    const source = clone(h.state);
+    const record = source.history.find((entry) => entry.type === 'experiment_acceptance');
+    if (mode === 'missing') delete record.review;
+    if (mode === 'null') record.review = null;
+    if (mode === 'array') record.review = [];
+    if (mode === 'empty') record.review = {};
+    if (mode === 'missing-revision') delete record.review.sourceRevision;
+    if (mode === 'negative-revision') record.review.sourceRevision = -1;
+    if (mode === 'future-revision') record.review.sourceRevision = source.revision + 1;
+    rejectIncompleteC8Acceptance(source, p.payload, h.context);
+  }
+});
+
+test('C8 saved review matches recomputed business content while view-event revisions may advance', () => {
+  const h = harness(), p = preview(h); h.send('EXPERIMENT_ACCEPT', p.payload);
+  const savedRevision = h.state.history.find((entry) => entry.type === 'experiment_acceptance').review.sourceRevision;
+  h.send('EVENT_APPEND', { event: { type: 'path_viewed', refs: { pageId: 'action', analysisId: h.state.analysis.id,
+    pathId: h.state.selection.pathId, inputVersion: h.state.round.inputVersion } } });
+  assert.ok(h.state.revision > savedRevision);
+  assert.equal(getAcceptedExperimentRound(h.state, p.payload.feedbackId, p.payload.reviewFingerprint).ok, true);
+  assert.equal(h.send('EXPERIMENT_ACCEPT', p.payload).changed, false);
+  for (const mode of ['learned-constraint', 'candidate-constraint', 'observation', 'missing-evidence']) {
+    const source = clone(h.state);
+    const review = source.history.find((entry) => entry.type === 'experiment_acceptance').review;
+    if (mode === 'learned-constraint') review.constraintsLearned.push('篡改保存的限制');
+    if (mode === 'candidate-constraint') review.nextAction.constraints = [];
+    if (mode === 'observation') review.reason = '未经来源支持的实验结论';
+    if (mode === 'missing-evidence') delete review.evidence;
+    rejectIncompleteC8Acceptance(source, p.payload, h.context);
+  }
+});
+
+}

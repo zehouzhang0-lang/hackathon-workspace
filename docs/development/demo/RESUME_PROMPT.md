@@ -2,6 +2,8 @@
 
 更新：2026-08-28，用户明确要求再次接续，避免当前任务上下文过长。本提示词恢复项目状态、边界与下一步，不保证转移旧任务逐字历史或工具会话。
 
+最新执行覆盖为[REQ-30四图功能锁定](WIREFRAME_FUNCTION_LOCK.md)，实际任务路由与签收见第10节；下文早期停写及检查是各历史批次，不代表新功能完成。
+
 本次接任任务为**路芽开发统筹接续**（`01a0476a-6049-70d2-9bb0-95af778428eb`），已通过只读接管验收。上一任为`黑客松 Demo 统筹接续`（`01a04697-8ecd-7663-8d03-a5d59511abdd`）；正式责任、迁移状态和Git锚点以[接续记录](COORDINATOR_HANDOFF.md)及正式移交通知为准。已经正式接任的本任务不需要反复等旧统筹授权；若未来再创建其他任务，先只读并明确转交，不能与现任同时写入。
 
 ```text
@@ -9,7 +11,7 @@
 
 直接使用 C:/Users/Administrator/Documents/ChatGPT/大战黑客松，与现有任务共享工作区，不另建工程或工作树。先实际读取根AGENTS.md、docs/development/README.md、CURRENT_BRIEF.md、inbox/README.md，再读docs/development/demo/COORDINATOR_HANDOFF.md、RESUME_PROMPT.md、README.md、IMPLEMENTATION_QUEUE.md、SHARED_CONTRACT.md、CONTRACT_DETAILS.md、DESIGN_BRIEF.md、QA_MATRIX.md、QA_INTEGRATION.md及QA_AGENT_1/2/3.md。实现前按需读SHARED_BUILD_PLAN、MONEYAI_INTEGRATION、各页PROMPT及已有品牌/视觉反馈记录；不再拆原始私人ZIP、读凭据或私有聊天。
 
-已确认范围：原生HTML/CSS/ES modules、三页隔离、共享状态。REQ-25最高优先：首页语音主入口，TXT/CSV/JSON材料次入口，手动默认折叠，九组理解确认，最多3问、一次1问、跨页额度不重置。原始transcript与编辑description、来源账本和更正由INTAKE_SET一起保存；回答只QUESTION_SET，不暗中再提取或二次INTAKE_SET。新图片入口关闭，旧原件/历史保留。第二页看清并选择下一步，第三页先拿内容复制/下载，再自愿反馈。新需求冲突处优先，但不换栈、不扩展云服务授权。
+最新已确认范围：先完整读docs/development/demo/WIREFRAME_FUNCTION_LOCK.md。用户已明确要求严格按四张新草稿对应功能实施，REQ-30最高优先；图1=P1三块并列输入（截图、Excel/CSV、语音及可见文字）和六组确认，图4=P2五阶段链路、依据、三种感受反馈、A/B显式选路，图3=P3执行稿/实验卡/反馈，图2=P3反馈后改判状态。覆盖旧REQ-25入口层级、手动折叠、九组主展示和关闭新图片的规则；九组底层字段、原始transcript/编辑description、INTAKE_SET来源及更正、最多3问一次1问继续。三页原生与共享状态不变，P3只展示共享再判断；统筹提供C1—C9，不由页面自建解析/保存/诊断/历史。只确认四图功能，未自动接受此前会议全文；不换栈、不授权真实材料外发或费用。
 
 最新视觉：PC主验收1920×1080，先网页基础稿/实际主流程，再手机或手机Figma；过程应实际查看并展示图像。产品名“路芽”、现版IP和理念“把下一步看清楚，把每一次选择接起来”已定，不重新选名或重画。REQ-28已撤回NotebookLM三栏专业工作台主布局，保留三页渐进、清楚功能区和具名可返回的信息入口；不能退回Word平铺，也不隐藏关键风险、重要未知或来源。具体色值、最终UI仍未批准；IP原图入Git许可未定。REQ-23固定单标题FoldText已授权并由共享原生实现，第一/三页已接入，动效实看未验，不再重复求开工许可或安装React/GSAP。
 

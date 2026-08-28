@@ -1,5 +1,9 @@
 # 本轮可解析格式与合成样例
 
+## REQ-30 样本与格式变更目标
+
+[四图功能锁定](../../docs/development/demo/WIREFRAME_FUNCTION_LOCK.md)要求新增显式载入的榨汁杯合成案例、截图与Excel/CSV能力；旧“禁止新图片”不再是产品限制。下面的文件与解析范围仍是现存实现，不代表新样本或解析器已交付。旧床底案例保留回归，不改名冒充榨汁杯；目标新种子只含初始资料，不预设选择、执行或未来反馈。
+
 仅供本地测试，所有数字均为合成。文件最多6份，单份5MiB，总计20MiB；不支持PDF/XLSX/HTML/SVG/视频。按REQ-25关闭新图片接收，不宣称已具备图片理解；已有历史图片原件仍保留、可查看。TXT真实读取，不自动当成结构化经营事实。
 
 - [CSV样例](metrics.csv)：UTF-8，可带BOM。表头为metric,value,unit,subject,window_start,window_end,channel,cohort；支持双引号、转义引号与引号内换行，未知值留空。

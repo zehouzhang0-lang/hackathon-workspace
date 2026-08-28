@@ -2,7 +2,7 @@
 
 这里负责把对话、队友资料和产品决定整理成可以交接的开发任务。**它是仓库文档区，不是已上线的网页、自动知识库或 Agent 调度系统。**
 
-更新：2026-08-28。当前可准备和下发文档类任务；没有开始应用实现。
+更新：2026-08-28。当前进入[三页Demo并行指令准备](demo/README.md)，统一视觉、状态与文件归属；尚未开始应用实现。
 
 ## 三分钟了解项目
 
@@ -16,7 +16,8 @@
 | --- | --- |
 | 第一次接手仓库 | [Agent 工作约定](../../AGENTS.md) → [当前需求基线](CURRENT_BRIEF.md) |
 | 给项目补资料、商家反馈或新想法 | [资料收件区](inbox/README.md)，也可以直接发给当前协作 Agent 整理 |
-| 把下一步工作交给开发 Agent | [DEV-001：需求核对与最小数据契约草案](NEXT_TASK.md) |
+| 把三页工作交给开发 Agent | [三页Demo入口与三个prompt](demo/README.md)；先检查READY |
+| 查旧文档整理任务 | [DEV-001](NEXT_TASK.md)，已由三页指令包取代当前入口，未执行 |
 | 针对新需求生成一个后续任务 | [单任务模板](TASK_TEMPLATE.md)，先确认范围再下发 |
 | 查某页的详细讨论 | [第一页](../PAGE_ONE_SPEC.md)、[第二页](../PAGE_TWO_DISCUSSION.md)、[第三页](../PAGE_THREE_DISCUSSION.md) |
 | 查进展或切换设备 | [项目进度](../../PROGRESS.md)、[同步指南](../SYNC.md) |
@@ -24,14 +25,14 @@
 ## 可以直接复制给开发 Agent
 
 ```text
-请先阅读根目录 AGENTS.md、docs/development/README.md 和
-docs/development/CURRENT_BRIEF.md，再执行 docs/development/NEXT_TASK.md。
-先核对新资料与已确认需求是否冲突，只在该任务明确允许的范围内工作。
-目前这份任务只产出文档草案，不写页面、不安装依赖、不接真实商家接口。
-完成后汇报产物、验证结果和待确认项，不自动进入下一任务。
+请先阅读根目录 AGENTS.md、docs/development/CURRENT_BRIEF.md 和
+docs/development/demo/README.md，检查READY、共享契约和文件归属。
+再按本次明确下发的 PROMPT_AGENT_1、2 或 3 执行对应页面任务。
+先验证21st、React Bits MCP，沿用共同视觉母版和状态模块。
+只修改自己负责的文件；未满足启动条件时报告缺项，不另造一套工程。
 ```
 
-这段话用于显式下发当前 DEV-001；本次建立入口时没有执行它。其他任务须用具体任务文件替换路径，不能把模板占位内容当成命令。
+各页完整可复制指令在[Demo入口](demo/README.md)。本轮只准备任务；实际下发时选择对应页面，不把“1、2或3”占位内容当成三个任务同时执行。
 
 ## 队友投喂资料后如何形成开发指令
 

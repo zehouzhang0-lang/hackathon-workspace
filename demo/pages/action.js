@@ -476,6 +476,8 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
 let shared;
 let state;
 let pageMode = 'action';
+let activeWorkspaceTab = typeof window !== 'undefined' && /^#(?:feedback|review=)/.test(window.location.hash || '') ? 'feedback' : 'work';
+let initialHashApplied = false;
 let reviewFeedbackId = null;
 let activeReview = null;
 let accepting = false;
@@ -560,6 +562,7 @@ function acceptState(next) {
     reviewFeedbackId = null;
     activeReview = null;
     pageMode = 'action';
+    activeWorkspaceTab = 'work';
     readEventLogged = false;
   }
   if (activeReview && !reviewSnapshotMatches(next, activeReview.review)) {
@@ -721,7 +724,8 @@ function logPreviewView() {
   const artifact = selectPreviewArtifact(previewItems, previewKey);
   const context = activeSelection(state);
   if (!artifact?.id || artifact.version < 1 || previewStale || !sameReference(artifact, context) ||
-      pageMode !== 'action' || $('action-content').hidden || $('artifact-preview').hidden || document.visibilityState === 'hidden') return;
+      pageMode !== 'action' || activeWorkspaceTab !== 'work' || $('action-content').hidden ||
+      $('artifact-preview').hidden || document.visibilityState === 'hidden') return;
   void logEvent('artifact_viewed', contextRefs(context, artifact), context.roundId, `artifact:${artifact.id}:${artifact.version}`);
 }
 
@@ -928,6 +932,56 @@ function renderHistory() {
       node('p', record.rawText || '未填写观察原话。'), node('p', `实际执行时间：${execution?.executedAt || '未知'}；保存时间：${readableTime(record.savedAt)}`, 'muted'));
     container.append(article);
   }
+}
+
+function writeActionHash(hash) {
+  try { window.history.replaceState(window.history.state, '', hash); }
+  catch { /* Blocked URL updates must not change business state or discard a draft. */ }
+}
+
+function renderActionTabs() {
+  const hasContext = Boolean(shownContext);
+  const reviewing = pageMode === 'review' && !$('review-content').hidden;
+  $('action-view-tabs').hidden = !hasContext && !reviewing;
+  const busy = accepting || saving || readingReview || Boolean(pendingAcceptance);
+  for (const [name, control] of [['work', 'action-work-tab'], ['feedback', 'action-feedback-tab']]) {
+    const selected = name === (reviewing ? 'feedback' : activeWorkspaceTab);
+    $(control).setAttribute('aria-selected', String(selected));
+    $(control).tabIndex = selected ? 0 : -1;
+    $(control).disabled = busy || (name === 'work' && !hasContext);
+  }
+  $('action-feedback-tab').setAttribute('aria-controls', reviewing ? 'review-content' : 'feedback-panel');
+  $('work-panel').hidden = !hasContext || reviewing || activeWorkspaceTab !== 'work';
+  $('feedback-panel').hidden = !hasContext || reviewing || activeWorkspaceTab !== 'feedback';
+}
+
+function setWorkspaceTab(tab, { updateHash = true, focus = false } = {}) {
+  if (!['work', 'feedback'].includes(tab)) return;
+  if (accepting || saving || readingReview || pendingAcceptance) {
+    status('operation-status', '正在保存或核对本机记录，请完成后再切换。');
+    return;
+  }
+  invalidateViewRead();
+  pageMode = 'action';
+  activeWorkspaceTab = tab;
+  if (updateHash) writeActionHash(tab === 'feedback' ? '#feedback' : '#work');
+  render();
+  if (focus) $(tab === 'work' ? (activeSelection(state) ? 'action-title' : 'action-main') : 'action-feedback-tab').focus();
+  if (tab === 'work') logPreviewView();
+}
+
+async function applyActionHash() {
+  if (!state || accepting) return;
+  const hash = window.location.hash || '';
+  if (hash === '#history') { openProject(); return; }
+  if (hash.startsWith('#review=')) {
+    const feedbackId = hash.slice('#review='.length);
+    if (/^[A-Za-z0-9_-]{1,80}$/.test(feedbackId) && resolveFeedbackRecord(state, feedbackId)) {
+      if (reviewFeedbackId !== feedbackId || pageMode !== 'review') await openReview(feedbackId);
+    } else status('operation-status', '这条档案链接没有完整的本机记录，请在活动档案中重新选择。', true);
+    return;
+  }
+  setWorkspaceTab(hash === '#feedback' ? 'feedback' : 'work', { updateHash: false });
 }
 
 function render() {
@@ -1340,6 +1394,8 @@ async function openReview(feedbackId) {
     acceptanceRecheckId = null;
     reviewFeedbackId = feedbackId;
     pageMode = 'review';
+    activeWorkspaceTab = 'feedback';
+    writeActionHash('#review=' + feedbackId);
     render();
     $('review-title').focus();
     status('round-status', '');
@@ -1360,6 +1416,8 @@ function returnToAction() {
   invalidateViewRead();
   if (wasReading) status('round-status', '已取消查看；记录保持不变。');
   pageMode = 'action';
+  activeWorkspaceTab = 'work';
+  writeActionHash('#work');
   render();
   (activeSelection(state) ? $('action-title') : $('action-main')).focus();
 }
@@ -1382,6 +1440,9 @@ function closeDialog(dialogId) {
   const dialog = $(dialogId);
   if (typeof dialog.close === 'function') dialog.close();
   else dialog.removeAttribute('open');
+  if (dialogId === 'project-dialog' && window.location.hash === '#history') {
+    writeActionHash(pageMode === 'review' && reviewFeedbackId ? '#review=' + reviewFeedbackId : '#' + activeWorkspaceTab);
+  }
   if (wasReading) render();
   dialogOpeners.get(dialogId)?.focus?.();
   dialogOpeners.delete(dialogId);
@@ -1430,6 +1491,8 @@ async function completeAcceptedExperiment(snapshot, review, receipt, token) {
   pendingAcceptance = null;
   acceptanceRecheckId = null;
   pageMode = 'action';
+  activeWorkspaceTab = 'work';
+  writeActionHash('#work');
   if (acceptanceBusyOwner === token) accepting = false;
   render();
   status('acceptance-status', '已接受并重新读取完整建轮记录：' + receipt.experimentId +
@@ -1585,6 +1648,7 @@ function renderReview() {
       pageMode = 'action';
       status('operation-status', '原复盘记录或来源已变化，请重新读取对应记录后再判断。', true);
     }
+    renderActionTabs();
     return;
   }
   $('action-content').hidden = true;
@@ -1698,6 +1762,7 @@ function renderReview() {
   $('generate-candidate').disabled = blocked || !alreadyRead;
   $('show-change-list').disabled = blocked || !alreadyRead;
   renderMemoryList($('review-memory-list'));
+  renderActionTabs();
 }
 
 function renderMemoryList(container) {
@@ -1820,6 +1885,7 @@ function openProject() {
     container.append(button);
   }
   showDialog('project-dialog');
+  writeActionHash('#history');
 }
 
 function syncFeedbackControls() {
@@ -1844,7 +1910,7 @@ function syncFeedbackControls() {
 }
 
 function postponeFeedback() {
-  $('feedback-panel').open = false;
+  setWorkspaceTab('work');
   status('operation-status', dirty ? '填写仍留在本页，尚未保存；离开前会提示处理。稍后不等于没有执行。'
     : '可以先取用内容，稍后再补充；没有新增执行或反馈记录。');
   ($('copy-all').disabled ? $('action-title') : $('copy-all')).focus();
@@ -1867,6 +1933,7 @@ async function refresh() {
     return;
   }
   render();
+  if (!initialHashApplied) { initialHashApplied = true; await applyActionHash(); }
   if (state.savedAt && !readEventLogged) {
     readEventLogged = true;
     await logEvent('session_read', { pageId: 'action', stateRevision: state.revision });
@@ -1907,7 +1974,7 @@ async function boot() {
 }
 
 function handlePreviewTabKey(event, container, orientation) {
-  const tabs = [...container.querySelectorAll('[role="tab"]')];
+  const tabs = [...container.querySelectorAll('[role="tab"]')].filter((tab) => !tab.disabled);
   const current = tabs.indexOf(event.target.closest('[role="tab"]'));
   if (current < 0) return;
   const previous = orientation === 'vertical' ? 'ArrowUp' : 'ArrowLeft';
@@ -1929,6 +1996,10 @@ function connectPage() {
   try { titleMotion = enhanceFoldTitle($('delivery-title')); }
   catch { /* Optional presentation must leave the static title and business startup usable. */ }
   $('retry-load').addEventListener('click', boot);
+  $('action-work-tab').addEventListener('click', () => setWorkspaceTab('work'));
+  $('action-feedback-tab').addEventListener('click', () => setWorkspaceTab('feedback'));
+  $('action-view-tabs').addEventListener('keydown', (event) => handlePreviewTabKey(event, $('action-view-tabs'), 'horizontal'));
+  $('go-feedback').addEventListener('click', () => setWorkspaceTab('feedback', { focus: true }));
   $('go-decisions-empty').addEventListener('click', () => navigate(state?.input.confirmedVersion === state?.round.inputVersion ? 'decisions' : 'intake'));
   document.querySelectorAll('[data-nav="decisions"]').forEach((button) => button.addEventListener('click', () => navigate('decisions')));
   $('artifact-retry').addEventListener('click', async () => { const result = await readState(); if (result.ok) await ensureArtifacts(); else status('artifact-status', errorText(result), true); });
@@ -2006,6 +2077,7 @@ function connectPage() {
     finally { $('event-retry').disabled = false; }
   });
   window.addEventListener('pageshow', (event) => { if (event.persisted && shared) void refresh(); });
+  window.addEventListener('hashchange', () => { void applyActionHash(); });
   window.addEventListener('pagehide', (event) => {
     acceptanceToken += 1;
     invalidateViewRead();

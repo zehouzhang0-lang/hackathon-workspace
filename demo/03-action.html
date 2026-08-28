@@ -21,6 +21,13 @@
         <button id="open-review" class="button button--quiet" type="button" disabled>反馈后改判</button>
       </nav>
 
+      <div data-workflow-steps></div>
+      <div id="action-view-tabs" class="action-view-tabs" role="tablist" aria-label="执行与复盘" hidden>
+        <button id="action-work-tab" type="button" role="tab" aria-controls="work-panel" aria-selected="true">操作与成品</button>
+        <button id="action-feedback-tab" type="button" role="tab" aria-controls="feedback-panel" aria-selected="false" tabindex="-1">反馈与复盘</button>
+        <span>本机记录 · 实际执行由你确认</span>
+      </div>
+
       <section id="load-state" class="action-state" aria-labelledby="load-title">
         <h1 id="load-title">读取当前行动</h1>
         <p id="load-message" role="status" aria-live="polite">正在读取本机浏览器中的选择与记录。</p>
@@ -34,6 +41,7 @@
       </section>
 
       <div id="action-content" hidden>
+        <section id="work-panel" role="tabpanel" aria-labelledby="action-work-tab" tabindex="0">
         <header class="action-heading">
           <p id="selected-plan-label" class="selected-plan-label">已选方案</p>
           <div class="action-heading-copy">
@@ -151,11 +159,14 @@
           </aside>
         </div>
 
-        <details id="feedback-panel" class="action-feedback action-disclosure" open>
-          <summary>
-            <span class="action-feedback-title">准备好以后，记录采用与执行</span>
-            <span class="action-feedback-hint">选填，不影响取用</span>
-          </summary>
+        <button id="go-feedback" class="button" type="button">记录实际执行与反馈 →</button>
+        </section>
+
+        <section id="feedback-panel" class="action-feedback" role="tabpanel" aria-labelledby="action-feedback-tab" tabindex="0" hidden>
+          <header class="action-feedback-heading">
+            <h2 class="action-feedback-title">准备好以后，记录采用与执行</h2>
+            <p class="action-feedback-hint">选填，不影响取用；未填写保持未知</p>
+          </header>
 
           <div class="action-feedback-body">
             <form id="feedback-form">
@@ -318,7 +329,7 @@
               <p id="round-status" class="status" role="status" aria-live="polite"></p>
             </div>
           </div>
-        </details>
+        </section>
       </div>
 
       <section id="review-content" class="action-review" aria-labelledby="review-title" hidden>

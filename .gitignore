@@ -9,6 +9,9 @@
 *.p12
 *.pfx
 
+# Unreviewed teammate/merchant materials stay local
+.local-inbox/
+
 # Dependencies and generated files
 node_modules/
 dist/

@@ -239,15 +239,22 @@ def validate_content(demo=None, acceptance=None):
                     "Held-out memory check cannot reuse authored answers")
     require(len(demo["memory_counterfactuals"]) >= 2, "Need a memory counterfactual")
 
-    for relative in ("README.md", "PROGRESS.md", "docs/MVP_SPEC.md", "docs/DEMO_ACCEPTANCE.md"):
-        file_path = ROOT / relative
+    document_paths = [ROOT / "README.md", ROOT / "PROGRESS.md", ROOT / "AGENTS.md"]
+    document_paths.extend(sorted((ROOT / "docs").rglob("*.md")))
+    for file_path in document_paths:
+        relative = file_path.relative_to(ROOT)
         text = file_path.read_text(encoding="utf-8")
         require("\ufffd" not in text, f"Unicode replacement character in {relative}")
         for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
-            if target.startswith(("https://", "http://", "#")):
+            if target.startswith(("https://", "http://", "mailto:", "#")):
                 continue
             destination = target.split("#", 1)[0]
-            require((file_path.parent / destination).resolve().exists(), f"Broken link in {relative}: {target}")
+            require(not re.match(r"^(?:[A-Za-z]:|[/\\])", destination),
+                    f"Use a portable relative link in {relative}: {target}")
+            resolved = (file_path.parent / destination).resolve()
+            require(resolved == ROOT.resolve() or ROOT.resolve() in resolved.parents,
+                    f"Link leaves repository in {relative}: {target}")
+            require(resolved.exists(), f"Broken link in {relative}: {target}")
     return len(cases)
 
 

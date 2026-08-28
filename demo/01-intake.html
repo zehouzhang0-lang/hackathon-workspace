@@ -25,34 +25,24 @@
           <section id="screenshot-section" class="input-panel screenshot-section" aria-labelledby="screenshot-heading">
             <h2 id="screenshot-heading" class="input-heading">上传抖音后台截图</h2>
             <p class="input-panel-note">内容、商品、成交或投流页面</p>
-            <div id="image-drop-zone" class="material-drop-zone capability-pending" role="group" aria-label="截图上传区域，待接线" aria-describedby="image-note" aria-disabled="true">
+            <div id="image-drop-zone" class="material-drop-zone" role="group" aria-label="截图上传区域" aria-describedby="image-note">
               <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
               <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
               <path d="M14 2v5a1 1 0 0 0 1 1h5" />
               <path d="M12 12v6" />
               <path d="m15 15-3-3-3 3" />
             </svg>
-              <button id="choose-images" class="button button--secondary choose-files" type="button" disabled>上传截图</button>
-              <p>PNG / JPEG · 待接线</p>
+              <button id="choose-images" class="button button--secondary choose-files" type="button">上传截图</button>
+              <p>PNG / JPEG / WebP · 也可以拖入文件或直接粘贴截图</p>
             </div>
-            <div class="image-category-field">
-              <label for="image-category">来源类别</label>
-              <select id="image-category" class="field" aria-describedby="image-note" disabled>
-                <option value="">待接线，尚未标注</option>
-                <option value="content">内容</option>
-                <option value="product">商品</option>
-                <option value="transaction">成交</option>
-                <option value="advertising">投流</option>
-                <option value="unknown">暂不确定</option>
-              </select>
-            </div>
-            <p id="image-note" class="input-panel-note">截图接收、缩略图和来源标注待共享能力接线；当前不会保存新图或自动识别。已有图片原件仍可查看。</p>
+            <input id="image-file-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple hidden>
+            <p id="image-note" class="input-panel-note">截图会真实接收并按原始字节保存在本机浏览器，可查看原件、缩略图和来源类别标注；未接通文字识别，内容仍待核对，不会自动生成数据。</p>
             <div id="image-materials-list" class="materials-list" hidden></div>
           </section>
 
           <section id="upload-section" class="input-panel materials-section" aria-labelledby="materials-heading">
             <h2 id="materials-heading" class="input-heading">上传数据表</h2>
-            <p id="table-capability-note" class="input-panel-note">当前可接收 CSV；Excel 解析待接线</p>
+            <p id="table-capability-note" class="input-panel-note">CSV 自动读取指标；XLSX/XLS 先收原件保存，解析待接通</p>
             <div id="drop-zone" class="material-drop-zone" role="group" aria-labelledby="drop-zone-title" aria-describedby="table-capability-note" tabindex="0">
               <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
               <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
@@ -61,15 +51,15 @@
               <path d="m15 15-3-3-3 3" />
             </svg>
               <button id="choose-files" class="button button--secondary choose-files" type="button">上传Excel或CSV</button>
-              <p id="drop-zone-title">拖入 CSV，或点击选择文件</p>
+              <p id="drop-zone-title">拖入 CSV 或 Excel，或点击选择文件</p>
             </div>
-            <input id="file-input" type="file" accept="text/csv,.csv" multiple hidden>
-            <input id="replacement-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" hidden>
+            <input id="file-input" type="file" accept="text/csv,.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
+            <input id="replacement-input" type="file" accept="image/png,image/jpeg,image/webp,text/plain,text/csv,application/json,.png,.jpg,.jpeg,.webp,.txt,.csv,.json,.xlsx,.xls" hidden>
             <details class="file-details">
               <summary>格式、限额与历史文件</summary>
               <div class="file-details-content">
-                <p>CSV、TXT、JSON 须为 UTF-8。Excel（.xlsx / .xls）待共享解析接线。</p>
-                <p>当前最多 6 份、每份 5 MiB、总计 20 MiB；每份 10 MB 的新限额待共享统一实施。</p>
+                <p>CSV、TXT、JSON 须为 UTF-8。Excel（.xlsx / .xls）会接收并保存原件，解析待共享接线，内容待核对。</p>
+                <p>当前最多 6 份、单份不超过 10,000,000 字节、总计 20 MiB。</p>
                 <button id="choose-legacy" class="button button--quiet" type="button">上传 TXT 或 JSON</button>
                 <input id="legacy-file-input" type="file" accept="text/plain,application/json,.txt,.json" multiple hidden>
               </div>

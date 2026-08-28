@@ -205,6 +205,9 @@ export async function readSupportedMaterial(blob, material) {
   if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
     return { status: "needs_review", facts: [], error: "图片已接收，内容待核对；未进行文字识别。" };
   }
+  if (["xlsx", "xls"].includes(fileExtension(material.name))) {
+    return { status: "needs_review", facts: [], error: "Excel 原件已接收并保存在本机；解析尚未接通，内容待核对。可在原应用导出 UTF-8 CSV 后重新上传以自动读取指标。" };
+  }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
     return parseMetricText(text, material);
@@ -836,23 +839,24 @@ export function createVoiceSession({
 
 async function validateFile(file, replacing = false) {
   const extension = fileExtension(file.name);
-  if (Object.hasOwn(IMAGE_TYPES, extension)) {
-    throw errorWithCode("截图接收与来源标注待共享能力接线，本次未保存新图；已有原件保留。当前可用 CSV、TXT、JSON 或文字。", "unsupported_type");
+  const family = Object.hasOwn(IMAGE_TYPES, extension) ? "image" :
+    ["xlsx", "xls"].includes(extension) ? "sheet" :
+    ["txt", "csv", "json"].includes(extension) ? "text" : null;
+  if (!family) {
+    throw errorWithCode("本轮支持 PNG/JPEG/WebP 截图、XLSX/XLS/CSV/TXT/JSON，或直接粘贴文字。", "unsupported_type");
   }
-  if (["xlsx", "xls"].includes(extension)) {
-    throw errorWithCode("Excel 解析待共享能力接线，本次未保存该表格；可先导出 UTF-8 CSV。原有材料未替换。", "unsupported_type");
-  }
-  if (!["txt", "csv", "json"].includes(extension)) {
-    throw errorWithCode("本轮只支持 TXT、CSV、JSON，或直接粘贴文字。", "unsupported_type");
-  }
-  if (file.size > 5 * 1024 * 1024) throw errorWithCode("单份材料不能超过 5 MiB。", "file_limit");
+  if (file.size > 10_000_000) throw errorWithCode("单份材料不能超过 10,000,000 字节。", "file_limit");
   const generic = ["", "application/octet-stream"];
-  const accepted = extension === "csv" ? ["text/csv", "text/plain", "application/vnd.ms-excel"] :
-    extension === "json" ? ["application/json", "text/plain"] : ["text/plain"];
+  const accepted = family === "image" ? Object.values(IMAGE_TYPES) :
+    family === "sheet" ? (extension === "xlsx" ?
+      ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/x-zip-compressed"] :
+      ["application/vnd.ms-excel"]) :
+    extension === "csv" ? ["text/csv", "text/plain", "application/vnd.ms-excel"] :
+      extension === "json" ? ["application/json", "text/plain"] : ["text/plain"];
   if (!generic.includes(file.type) && !accepted.includes(file.type)) {
     throw errorWithCode("文件类型与扩展名不一致，请选择原始文件。", "unsupported_type");
   }
-  if (replacing) {
+  if (replacing && family === "text") {
     try {
       const text = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
       if (text.includes("\0")) throw new Error("binary");
@@ -871,6 +875,7 @@ function startIntakePage() {
     form: byId("intake-form"), description: byId("description"), organize: byId("organize-button"),
     manual: byId("manual-entry"), upload: byId("upload-section"),
     imageDrop: byId("image-drop-zone"), imageMaterials: byId("image-materials-list"),
+    chooseImages: byId("choose-images"), imageFiles: byId("image-file-input"),
     chooseLegacy: byId("choose-legacy"), legacyFiles: byId("legacy-file-input"),
     descriptionCount: byId("description-count"), descriptionLimitNote: byId("description-limit-note"),
     demoNotice: byId("demo-notice"), fullUnderstanding: byId("full-understanding-grid"),
@@ -908,6 +913,7 @@ function startIntakePage() {
   let api = null, state = null, busy = false, composing = false, lastCompositionAt = -Infinity;
   let descriptionDirty = false, focusDirty = false, organizedVersion = null, organizationVisible = false;
   let pending = null, uploadQueue = [], replaceTarget = null, correctionTarget = null;
+  const thumbnailUrls = new Map();
   let previewUrl = null, previewMaterialId = null, previewMaterialVersion = null, previewRequest = 0;
   let previewTrigger = null, correctionTrigger = null, correctionContext = null, correctionDirty = false;
   let allowNavigation = false, unsubscribe = null, unregisterGuard = null, connectInProgress = false;
@@ -967,6 +973,8 @@ function startIntakePage() {
     ui.organize.disabled = blockedForSubmission || !inputReady();
     ui.choose.disabled = blocked;
     ui.chooseLegacy.disabled = blocked;
+    ui.chooseImages.disabled = blocked;
+    ui.imageDrop.setAttribute("aria-disabled", String(blocked));
     ui.description.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
     ui.focus.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
     ui.confirm.disabled = blockedForSubmission || correctionDirty || contextEdit?.dirty || (questionDirty && !intakeApi) || uploadQueue.length > 0 ||
@@ -1004,7 +1012,7 @@ function startIntakePage() {
     ui.questionDiscard.hidden = !questionDirty || contextMatches(questionContext);
     ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" : "确认，开始分析";
     for (const list of [ui.materials, ui.imageMaterials]) {
-      for (const node of list.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
+      for (const node of list.querySelectorAll("[data-mutates]")) node.disabled = blocked;
     }
     for (const node of ui.facts.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
     for (const node of ui.correctionForm.querySelectorAll("button[type=submit]")) node.disabled = blocked;
@@ -1106,17 +1114,19 @@ function startIntakePage() {
     }
   }
 
-  function voiceIssueMessage(issue) {
+  function voiceIssueMessage(issue, run = null) {
     const messages = {
       "not-allowed": "还没有拿到麦克风权限，可以改用文字。",
       "service-not-allowed": "浏览器未允许这项识别服务，可以改用文字。",
       "audio-capture": "无法使用麦克风，请检查设备或改用文字。",
       "no-speech": "识别服务没有取得可用语音，可以直接输入或粘贴文字。",
-      "network": "语音服务连接中断，已返回的文字仍保留。",
+      // Chrome sends recognition audio to its own online service; an unreachable
+      // network surfaces here as "network" even though the mic itself works.
+      "network": "语音识别服务连接中断：浏览器的语音识别依赖其在线服务，当前网络可能访问不到；已返回的文字仍保留。可换 Microsoft Edge 重试，或直接输入文字。",
       "language-not-supported": "当前服务不支持中文转写，请改用文字。",
       "no-match": "本次没有获得明确的识别结果，可以改用文字。",
       "no-result": "本次未获得转写文字，可以重新开始或直接输入。",
-      "start-timeout": "尚未开始采集音频，已请求取消；可以改用文字。",
+      "start-timeout": "尚未开始采集音频，已请求取消；若浏览器弹出麦克风授权，请先允许再重新按住；也可以改用文字。",
       "end-timeout": "尚未收到识别服务结束确认，已再次请求停止。文字可继续编辑，暂不启动第二个语音会话。",
       "scope-changed": "本轮资料已经变化，旧语音已请求停止，返回的文字保留待核对。",
       "page-hidden": "页面已离开前台，已请求停止语音，返回的文字仍保留。",
@@ -1124,7 +1134,38 @@ function startIntakePage() {
       "start-failed": "语音服务未能启动，可以改用文字。",
       "stop-failed": "未能确认识别停止，已请求取消；可以改用文字。"
     };
+    // A tap on a hold-to-talk button cancels before any audio was captured;
+    // say so explicitly instead of a generic "cancelled" line.
+    if (issue === "cancelled" && run && run.captureMs === 0 && !run.audioActive) {
+      return "这次按下后很快松开，录音尚未开始就已停止：请按住“按住说话”不放，开始后再说话，松开结束。";
+    }
     return messages[issue] || "语音识别未完成，已返回的文字仍保留，可以改用文字。";
+  }
+
+  const micProbeRuns = new Set();
+  async function probeMicrophoneAfterFailure(runId, issue) {
+    // One transient capture check per failed run, only after the recognition
+    // end: it distinguishes who blocked the microphone (system, browser, or
+    // nobody). This page records and keeps no audio from the probe.
+    if (micProbeRuns.has(runId) || voiceSnapshot?.active || !navigator.mediaDevices?.getUserMedia) return;
+    micProbeRuns.add(runId);
+    let outcome = "probe-failed";
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      outcome = "granted";
+    } catch (error) { outcome = error?.name || "probe-failed"; }
+    const hints = {
+      granted: issue === "service-not-allowed" ?
+        "麦克风权限正常，是浏览器未放行这项识别服务；请刷新页面重试，或换 Chrome／Edge。" :
+        "现在能访问麦克风了：权限可能刚刚生效，请再按住“按住说话”试一次；若仍失败，建议换 Chrome／Edge。",
+      NotAllowedError: "麦克风被系统或浏览器拦截：请检查 Windows 设置→隐私和安全性→麦克风（打开“麦克风访问”和“允许桌面应用访问麦克风”），并确认地址栏的网站麦克风权限为“允许”，然后刷新重试。",
+      NotFoundError: "没有检测到可用的麦克风设备，请接入或启用麦克风后重试。",
+      NotReadableError: "麦克风当前被其他应用占用，请关闭后重试。"
+    };
+    if (voiceSnapshot?.active) return;
+    const hint = hints[outcome];
+    if (hint) setIntakeStage("idle", hint);
   }
 
   function onVoiceChange(snapshot) {
@@ -1146,6 +1187,9 @@ function startIntakePage() {
     if (run.phase === "starting") setIntakeStage("listening", "正在等待浏览器开始采集，尚未开始听取。");
     if (run.phase === "listening") setIntakeStage("listening", "正在听取，松开结束，也可以点“停止语音”。");
     if (run.phase === "stopping") setIntakeStage("transcribing", "正在等待这段话的最终转写。");
+    if (run.endObserved && ["not-allowed", "service-not-allowed", "audio-capture"].includes(run.issue)) {
+      probeMicrophoneAfterFailure(run.id, run.issue);
+    }
     if ((run.endObserved || run.phase === "fallback") && !appliedVoiceRuns.has(run.id)) {
       appliedVoiceRuns.add(run.id);
       if (returnedText) {
@@ -1157,12 +1201,12 @@ function startIntakePage() {
         organizedVersion = null;
       }
       showManual(focusWasOnVoice);
-      setIntakeStage("idle", run.issue ? voiceIssueMessage(run.issue) :
+      setIntakeStage("idle", run.issue ? voiceIssueMessage(run.issue, run) :
         "识别文字已保留。你可以先修改，再整理核对。");
       if (run.interimText) status("有尚未定稿的识别文字，请核对后再使用。");
-    } else if (run.phase === "fallback") setIntakeStage("idle", voiceIssueMessage(run.issue));
+    } else if (run.phase === "fallback") setIntakeStage("idle", voiceIssueMessage(run.issue, run));
     if (snapshot.active && run.phase === "fallback") {
-      setIntakeStage("idle", voiceIssueMessage(run.issue) +
+      setIntakeStage("idle", voiceIssueMessage(run.issue, run) +
         " 仍在等待识别服务确认结束；可先编辑文字，结束确认前暂不能整理或提交。");
     }
     updateControls();
@@ -1642,10 +1686,52 @@ function startIntakePage() {
     }, readyToAnalyze ? "正在确认本轮输入…" : "正在保存核对内容…");
   }
 
+  function purgeThumbnails() {
+    for (const [id, entry] of thumbnailUrls) {
+      if (!state.input.materials.some((item) => item.id === id && item.version === entry.version)) {
+        URL.revokeObjectURL(entry.url);
+        thumbnailUrls.delete(id);
+      }
+    }
+  }
+
+  async function loadThumbnail(material) {
+    const cached = thumbnailUrls.get(material.id);
+    if (cached?.version === material.version) return;
+    try {
+      const blob = await api.getMaterialBlob(material.id);
+      if (!blob) return;
+      const current = state?.input.materials.find((item) => item.id === material.id);
+      if (!current || current.version !== material.version) return;
+      const url = URL.createObjectURL(blob);
+      const previous = thumbnailUrls.get(material.id);
+      if (previous) URL.revokeObjectURL(previous.url);
+      thumbnailUrls.set(material.id, { version: material.version, url });
+      const img = ui.imageMaterials.querySelector('img[data-thumb-for="' + material.id + '"]');
+      if (img) img.src = url;
+    } catch { /* 缩略图读取失败时卡片仍显示文件名与状态；不冒充原件已丢失或已解析。 */ }
+  }
+
+  function categorySelect(material) {
+    const labels = { unknown: "暂不确定", content: "内容", product: "商品", transactions: "成交", ads: "投流" };
+    const select = element("select", undefined, "material-category");
+    select.dataset.mutates = "true";
+    select.dataset.categoryFor = material.id;
+    select.setAttribute("aria-label", "材料来源类别：" + material.name);
+    for (const value of (api?.MATERIAL_CATEGORIES || ["unknown"])) {
+      const option = element("option", labels[value] || value);
+      option.value = value;
+      select.append(option);
+    }
+    select.value = material.userCategory || "unknown";
+    return select;
+  }
+
   function render() {
     if (!state) { updateControls(); return; }
     ui.materials.replaceChildren();
     ui.imageMaterials.replaceChildren();
+    purgeThumbnails();
     ui.materials.hidden = !state.input.materials.some((material) => !material.mime.startsWith("image/"));
     ui.imageMaterials.hidden = !state.input.materials.some((material) => material.mime.startsWith("image/"));
     ui.demoNotice.hidden = !state.fixtureId;
@@ -1653,13 +1739,24 @@ function startIntakePage() {
       const card = element("article", undefined, "material-card");
       card.dataset.materialId = material.id;
       card.tabIndex = -1;
+      const isImage = material.mime.startsWith("image/");
       const main = element("div");
+      if (isImage) {
+        const thumb = element("img", undefined, "material-thumb");
+        thumb.alt = "";
+        thumb.loading = "lazy";
+        thumb.decoding = "async";
+        thumb.dataset.thumbFor = material.id;
+        main.append(thumb);
+        loadThumbnail(material);
+      }
       main.append(element("h3", material.name, "material-name"));
       const names = { received: "已接收，待整理", parsed: "已读取结构化数据", needs_review: "内容待核对", failed: "读取未完成" };
       const size = material.size < 1024 * 1024 ? Math.ceil(material.size / 1024) + " KiB" :
         (material.size / 1024 / 1024).toFixed(2) + " MiB";
       main.append(element("p", size + " · " + (names[material.status] || "内容待核对"), "material-meta"));
       if (material.error) main.append(element("p", material.error, "material-meta"));
+      if (isImage) main.append(categorySelect(material));
       const actions = element("div", undefined, "material-actions");
       actions.append(button("查看原件", "preview"));
       for (const [label, action] of [["替换", "replace"], ["删除", "remove"]]) {
@@ -1668,7 +1765,7 @@ function startIntakePage() {
         actions.append(item);
       }
       card.append(main, actions);
-      (material.mime.startsWith("image/") ? ui.imageMaterials : ui.materials).append(card);
+      (isImage ? ui.imageMaterials : ui.materials).append(card);
     }
     ui.organization.hidden = !(organizationVisible || state.input.focus);
     ui.understandingNote.textContent = intakeApi ?
@@ -2012,6 +2109,8 @@ function startIntakePage() {
         image.alt = "材料原件：" + material.name;
         image.src = previewUrl;
         fragment.append(image);
+      } else if (["xlsx", "xls"].includes(fileExtension(material.name))) {
+        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。Excel 解析尚未接通，内容待核对；可在原应用中打开核对，或导出 UTF-8 CSV 后重新上传以自动读取指标。", "material-meta"));
       } else {
         let text;
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer()); }
@@ -2427,6 +2526,12 @@ function startIntakePage() {
   });
   ui.choose.addEventListener("click", () => { if (!ui.choose.disabled) ui.files.click(); });
   ui.chooseLegacy.addEventListener("click", () => { if (!ui.chooseLegacy.disabled) ui.legacyFiles.click(); });
+  ui.chooseImages.addEventListener("click", () => { if (!ui.chooseImages.disabled) ui.imageFiles.click(); });
+  ui.imageFiles.addEventListener("change", () => {
+    const files = Array.from(ui.imageFiles.files);
+    ui.imageFiles.value = "";
+    receiveFiles(files);
+  });
   ui.legacyFiles.addEventListener("change", () => {
     const files = Array.from(ui.legacyFiles.files);
     ui.legacyFiles.value = "";
@@ -2468,13 +2573,17 @@ function startIntakePage() {
     ui.imageDrop.addEventListener(type, (event) => {
       if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = "none";
+      if (!ui.chooseImages.disabled) { event.dataTransfer.dropEffect = "copy"; ui.imageDrop.classList.add("is-dragging"); }
     });
   }
+  ui.imageDrop.addEventListener("dragleave", (event) => {
+    if (!ui.imageDrop.contains(event.relatedTarget)) ui.imageDrop.classList.remove("is-dragging");
+  });
   ui.imageDrop.addEventListener("drop", (event) => {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
-    showError("截图接收、缩略图及来源标注待共享能力接线，本次未保存新图；已有材料不变。");
+    ui.imageDrop.classList.remove("is-dragging");
+    receiveFiles(Array.from(event.dataTransfer.files));
   });
 
   ui.form.addEventListener("paste", (event) => {
@@ -2484,7 +2593,22 @@ function startIntakePage() {
     if (event.target === ui.description && event.clipboardData?.getData("text/plain")) inputSources.add("paste");
     if (!images.length) return;
     if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
-    showError("截图接收待共享能力接线，本次未保存新图。可以粘贴文字或上传 CSV、TXT、JSON；已有图片仍保留。");
+    receiveFiles(images);
+  });
+  for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("change", async (event) => {
+    const select = event.target.closest("select[data-category-for]");
+    if (!select || !state) return;
+    const material = state.input.materials.find((item) => item.id === select.dataset.categoryFor);
+    if (!material || material.userCategory === select.value) return;
+    if (busy || voiceEditingLocked() || pending || pendingRead) { render(); return; }
+    await exclusive(async () => {
+      await send("MATERIAL_CATEGORY_SET", {
+        materialId: material.id, materialVersion: material.version,
+        roundId: state.round.id, inputVersion: state.round.inputVersion,
+        userCategory: select.value
+      });
+      status("来源类别已标注；这是你的标注，不代表来源已核验。");
+    }, "正在保存来源类别…");
   });
   for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("click", async (event) => {
     const action = event.target.closest("button[data-action]");

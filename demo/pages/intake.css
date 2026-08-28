@@ -1089,25 +1089,19 @@ body[data-page="intake"] .choose-files {
   font-size: 18px;
 }
 
-body[data-page="intake"] .capability-pending {
-  border-style: solid;
-  background: var(--color-bg);
+body[data-page="intake"] .material-thumb {
+  width: 100%;
+  max-height: 150px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: var(--color-bg, #f6f7f5);
+  display: block;
 }
 
-body[data-page="intake"] .image-category-field {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 14px;
-  font-size: 14px;
-}
-
-body[data-page="intake"] .image-category-field label {
-  flex: 0 0 auto;
-}
-
-body[data-page="intake"] .image-category-field select {
-  min-width: 0;
+body[data-page="intake"] .material-category {
+  margin-top: 10px;
+  max-width: 220px;
   padding: 8px 12px;
   font-size: 14px;
 }

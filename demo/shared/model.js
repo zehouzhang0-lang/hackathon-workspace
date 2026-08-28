@@ -14,8 +14,8 @@ export const MATERIAL_CAPABILITIES = Object.freeze(Object.fromEntries([
   ['txt', 'text/plain', true, 'text', 'text_only', '只读取UTF-8原文，不自动提取业务事实。'],
   ['csv', 'text/csv', true, 'text', 'metric_csv', '仅支持UTF-8约定指标表头；其他结构保留原文待核对。'],
   ['json', 'application/json', true, 'text', 'metric_json', '仅支持UTF-8的demo.metrics.v1结构；不执行导入内容。'],
-  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', false, null, 'none', 'Excel接收和解析尚未接通，请先导出UTF-8 CSV。'],
-  ['xls', 'application/vnd.ms-excel', false, null, 'none', 'Excel接收和解析尚未接通，请先导出UTF-8 CSV。']
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, null, 'none', 'Excel原件可接收并保存在本机；解析尚未接通，内容仍待核对，可先导出UTF-8 CSV。'],
+  ['xls', 'application/vnd.ms-excel', true, null, 'none', 'Excel原件可接收并保存在本机；解析尚未接通，内容仍待核对，可先导出UTF-8 CSV。']
 ].map(([extension, mime, receive, preview, parse, reason]) => [extension, Object.freeze({ extension, mime, receive, preview, parse, reason })])));
 
 // Declared capability only: dispatch still checks bytes, MIME, quota and decoding.

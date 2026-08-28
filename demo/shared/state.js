@@ -91,15 +91,17 @@ async function prepareMaterial(file, replacement = false) {
   if (!file.size || file.size > MATERIAL_LIMITS.maxFileBytes) fail('file_limit', '单份文件需大于0且不超过10,000,000字节。');
   const ext = file.name.toLowerCase().split('.').at(-1);
   const capability = getMaterialCapability(file.name);
-  if (!capability?.receive) fail('unsupported_type', capability?.reason || '本轮支持PNG/JPEG/WebP、TXT、CSV和约定JSON。');
+  if (!capability?.receive) fail('unsupported_type', capability?.reason || '本轮支持PNG/JPEG/WebP、TXT、CSV、约定JSON和XLSX/XLS原件。');
   const mime = capability.mime;
   const bytes = new Uint8Array(await file.arrayBuffer());
   const ascii = (start, length) => String.fromCharCode(...bytes.slice(start, start + length));
   if (ext === 'png' && !(bytes[0] === 137 && ascii(1, 3) === 'PNG')) fail('unsupported_type', '文件内容不是有效PNG。');
   if (['jpg', 'jpeg'].includes(ext) && !(bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)) fail('unsupported_type', '文件内容不是JPEG。');
   if (ext === 'webp' && !(ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP')) fail('unsupported_type', '文件内容不是WebP。');
+  if (ext === 'xlsx' && ascii(0, 4) !== 'PK\u0003\u0004') fail('unsupported_type', '文件内容不是有效的XLSX容器，请选择原始下载文件。');
+  if (ext === 'xls' && ascii(0, 8) !== '\u00D0\u00CF\u0011\u00E0\u00A1\u00B1\u001A\u00E1') fail('unsupported_type', '文件内容不是有效的XLS文档，请选择原始下载文件。');
   if (file.type && file.type !== 'application/octet-stream') {
-    const compatible = file.type === mime || (ext === 'csv' && ['text/plain', 'application/vnd.ms-excel'].includes(file.type)) || (ext === 'json' && file.type === 'text/plain');
+    const compatible = file.type === mime || (ext === 'csv' && ['text/plain', 'application/vnd.ms-excel'].includes(file.type)) || (ext === 'json' && file.type === 'text/plain') || (ext === 'xlsx' && file.type === 'application/x-zip-compressed');
     if (!compatible) fail('unsupported_type', '文件扩展名与类型不匹配。');
   }
   if (mime.startsWith('image/')) {
@@ -114,7 +116,7 @@ async function prepareMaterial(file, replacement = false) {
         finally { URL.revokeObjectURL(url); }
       }
     } catch { fail('unsupported_type', '图片无法解码，原材料未被替换。'); }
-  } else if (replacement) {
+  } else if (replacement && !['xlsx', 'xls'].includes(ext)) {
     try {
       const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       if (text.includes('\0')) throw new Error('binary');

@@ -1,5 +1,6 @@
 import { enhanceFoldTitle } from "../shared/title-motion.js";
 import { findIntakeFieldFact } from "../shared/intake-draft.js";
+import { parseWorkbookFacts } from "../shared/table-facts.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -12,7 +13,12 @@ const METRIC_FIELDS = [
 const TEXT_FIELDS = METRIC_FIELDS.filter((field) => field !== "value");
 const METRIC_LABELS = {
   paid_orders: "支付订单", detail_visitors: "商品详情访客", product_visitors: "商品访客",
-  views: "观看次数", inquiries: "咨询数", price: "价格"
+  views: "观看次数", inquiries: "咨询数", price: "价格",
+  video_views: "视频播放量", product_clicks: "商品点击数", add_to_carts: "加购数", created_orders: "创建订单数",
+  followers: "粉丝总量", followers_growth: "粉丝增量", total_likes: "获赞总量",
+  live_sessions: "直播场次", avg_live_viewers: "场均场观", avg_products_per_session: "场均带货数",
+  estimated_settlement: "预估结算金额", live_viewers: "单场观看人次", live_product_count: "直播货盘商品数",
+  sales_estimate: "销量（平台估算）", likes: "点赞量", comments: "评论量", collects: "收藏量", shares: "分享量"
 };
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
 const NO_METRICS = "暂无可核对的业务指标；本次仅按描述和材料状态整理。";
@@ -130,6 +136,42 @@ function metricFact(record, material, locator, id, warnings, origin) {
   };
 }
 
+// XLSX materials saved before the shared parser existed carry needs_review with
+// no extracted facts; they are re-read with the current parser on the next
+// 整理 instead of staying stuck with the outdated "解析尚未接通" result.
+export function materialsNeedingRead(state) {
+  return (state?.input?.materials || []).filter((item) => item.status === "received" ||
+    (fileExtension(item.name) === "xlsx" && ["needs_review", "failed"].includes(item.status) &&
+      !(state?.input?.facts || []).some((fact) => fact.source?.materialId === item.id &&
+        fact.source?.materialVersion === item.version && fact.source?.locator?.type === "xlsx")));
+}
+
+// Presentation only. A review status may mean no recognized columns, and XLS
+// never gains XLSX capabilities. Count only records bound to this exact file
+// version; an explicit correction keeps its original extraction provenance.
+export function describeWorkbookPreview(material, facts = [], history = []) {
+  if (fileExtension(material.name) === "xls") {
+    return "XLS旧格式目前仅接收并保存原件，未解析内容。请在原应用中核对，或另存为XLSX、导出UTF-8 CSV后重新上传。";
+  }
+  if (material.status === "failed") {
+    return "XLSX自动读取未完成，未将本次读取当作解析成功。原件已保留；请核对材料卡片说明，或另存为XLSX后重试。";
+  }
+  const matchesSource = (source) => source?.kind === "file_extract" &&
+    source.materialId === material.id && source.materialVersion === material.version &&
+    source.locator?.type === "xlsx";
+  const count = facts.filter((fact) => matchesSource(fact.source) || history.some((entry) =>
+    entry.type === "fact_correction" && entry.factId === fact.id && matchesSource(entry.before?.source))).length;
+  if (count) {
+    return "本机已从已知列整理 " + count + " 项记录，可在“已读取数据”核对取值与来源单元格。" +
+      "记录可能含未知值或手工更正；文件提取不等于业务真实性已核验。" +
+      (material.status === "needs_review" ? "仍有待人工核对的内容，详见材料卡片说明。" : "");
+  }
+  if (material.status === "needs_review" || material.status === "parsed") {
+    return "XLSX原件已接收，但当前没有对应的可核对指标记录；不代表已识别出有效指标。请查看材料卡片说明，手动核对或重新整理。";
+  }
+  return "XLSX原件已接收，内容尚未读取；请点击“开始整理”读取已知指标列。未识别的内容会保留为待核对。";
+}
+
 // This is a page-local parser, not a second session or persistence layer.
 export function parseMetricText(rawText, material) {
   const text = rawText.replace(/^\uFEFF/, "");
@@ -205,8 +247,17 @@ export async function readSupportedMaterial(blob, material) {
   if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
     return { status: "needs_review", facts: [], error: "图片已接收，内容待核对；未进行文字识别。" };
   }
-  if (["xlsx", "xls"].includes(fileExtension(material.name))) {
-    return { status: "needs_review", facts: [], error: "Excel 原件已接收并保存在本机；解析尚未接通，内容待核对。可在原应用导出 UTF-8 CSV 后重新上传以自动读取指标。" };
+  if (fileExtension(material.name) === "xlsx") {
+    // XLSX在本机解析；解析只读已知指标列，不执行公式、宏或外部链接。
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      return await parseWorkbookFacts(bytes, material);
+    } catch {
+      return { status: "failed", facts: [], error: "Excel读取过程失败，未保存部分结果；原件已保留，可重试或另存为XLSX。" };
+    }
+  }
+  if (fileExtension(material.name) === "xls") {
+    return { status: "needs_review", facts: [], error: "XLS旧格式仅接收保存；解析未支持，可另存为XLSX或导出UTF-8 CSV后重新上传以自动读取指标。" };
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
@@ -258,8 +309,12 @@ export function buildOrganization(snapshot, focusText, ownedUnknowns = new Map()
     if (!fact.window?.start || !fact.window?.end) missing.push("时间范围");
     if (!fact.channel) missing.push("渠道");
     if (!fact.cohort) missing.push("群体口径");
-    if (missing.length) add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
-      "not_provided", "fact:" + fact.id);
+    if (missing.length) {
+      // 同一指标在同口径下缺同一维度的行（例如整份导出都无时间范围）合并为一条
+      // 缺口，按指标聚合展示；逐行事实的取值仍保留在“已读取数据”可核对。
+      add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
+        "not_provided", "input:focus");
+    }
     if (fact.window?.start && fact.window?.end && fact.window.start > fact.window.end) {
       add("指标“" + labelFor(fact.key) + "”的起止日期存在冲突，未调换原值。",
         "conflicting", "fact:" + fact.id);
@@ -370,7 +425,7 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
   ].map((group) => ({ ...group, items: [] }));
   const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
   const sourceNames = { voice: "语音自述", manual: "商家填写", paste: "粘贴文字",
-    txt: "TXT提取", csv: "CSV提取", json: "JSON提取" };
+    txt: "TXT提取", csv: "CSV提取", json: "JSON提取", xlsx: "Excel提取" };
   const add = (id, item) => {
     if (!byId[id].items.some((entry) => entry.text === item.text && entry.note === item.note &&
       entry.factId === item.factId && entry.materialId === item.materialId && entry.field === item.field)) byId[id].items.push(item);
@@ -1431,13 +1486,13 @@ function startIntakePage() {
     }
     if (result.draft) { contextDraft = result.draft; contextBindings = result.sourceBindings; }
     reviewMessage = result.ok ? "结构化内容已返回，请逐项核对；确认不等于外部核验。" :
-      "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
-    if (skipped.length) reviewMessage += " 部分材料未进入提取请求，原件与已有解析仍保留。";
+      "文字讲述的自动整理尚不可用，原文已保留。表格仅按已支持的本机格式规则读取，结果见“已读取数据”；请手动核对卡片，未识别的信息保持未知。";
+    if (skipped.length) reviewMessage += " 部分材料未进入文字结构化提取请求，原件与既有本机解析结果仍保留。";
     organizationVisible = true; readyToAnalyze = false;
     setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
-      "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");
+      "文字自动整理尚不可用，请手动核对卡片；表格读取结果见“已读取数据”，不代表已理解全部内容。");
     render();
-    status(result.ok ? "请先核对经营情况，再继续。" : result.message);
+    status(result.ok ? "请先核对经营情况，再继续。" : "文字结构化提取：" + (result.message || "当前不可用，请手动核对。"));
   }
 
   function contextMatches(origin) {
@@ -2002,10 +2057,16 @@ function startIntakePage() {
   }
 
   async function processReceived() {
-    const ids = state.input.materials.filter((item) => item.status === "received").map((item) => item.id);
-    for (const id of ids) {
-      const material = state.input.materials.find((item) => item.id === id);
-      if (material?.status === "received") await processMaterial(material);
+    const attempted = new Set();
+    let targets = materialsNeedingRead(state);
+    while (targets.length) {
+      const next = targets.find((item) => !attempted.has(item.id));
+      if (!next) break;
+      attempted.add(next.id);
+      const material = state.input.materials.find((item) => item.id === next.id);
+      if (!material) { targets = materialsNeedingRead(state); continue; }
+      await processMaterial(material);
+      targets = materialsNeedingRead(state);
     }
   }
 
@@ -2102,7 +2163,7 @@ function startIntakePage() {
         throw new Error("还没有有效描述或已接收材料，请核对接收提示。");
       }
       if (intakeApi) {
-        setIntakeStage("extracting", "正在核对可用的整理能力，原文仍保留。");
+        setIntakeStage("extracting", "正在核对文字讲述的自动整理能力，原文仍保留。");
         await prepareUnderstanding();
       } else await saveOrganization(focus);
       ui.organization.focus({ preventScroll: true });
@@ -2186,7 +2247,8 @@ function startIntakePage() {
       const fragment = document.createDocumentFragment();
       if (locator) {
         const location = locator.type === "csv" ? "原件第 " + locator.lineStart + "—" + locator.lineEnd + " 行，字段 " + locator.column :
-          locator.type === "json" ? "原件字段 " + locator.pointer : "原文来源";
+          locator.type === "json" ? "原件字段 " + locator.pointer :
+            locator.type === "xlsx" ? "原件工作表“" + locator.sheet + "”，单元格 " + locator.cell : "原文来源";
         fragment.append(element("p", location, "fact-meta"));
       }
       if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
@@ -2196,7 +2258,10 @@ function startIntakePage() {
         image.src = previewUrl;
         fragment.append(image);
       } else if (["xlsx", "xls"].includes(fileExtension(material.name))) {
-        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。Excel 解析尚未接通，内容待核对；可在原应用中打开核对，或导出 UTF-8 CSV 后重新上传以自动读取指标。", "material-meta"));
+        const latestMaterial = state.input.materials.find((item) => item.id === material.id && item.version === material.version) || material;
+        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。" +
+          describeWorkbookPreview(latestMaterial, state.input.facts, state.history), "material-meta"));
+        if (latestMaterial.error) fragment.append(element("p", latestMaterial.error, "material-meta"));
       } else {
         let text;
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer()); }

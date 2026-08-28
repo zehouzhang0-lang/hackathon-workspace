@@ -77,7 +77,7 @@
                 </div>
                 <input id="file-input" type="file" accept="text/csv,.csv,.xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
                 <input id="replacement-input" type="file" accept="image/png,image/jpeg,image/webp,text/plain,text/csv,application/json,.png,.jpg,.jpeg,.webp,.txt,.csv,.json,.xlsx,.xls" hidden>
-                <p id="table-capability-note" class="input-panel-note">CSV 可读取约定指标；Excel 仅保存原件，解析待接通。</p>
+                <p id="table-capability-note" class="input-panel-note">CSV 读取约定指标，XLSX 在本机读取已知列；XLS 仅保存原件。</p>
               </section>
             </div>
 
@@ -86,7 +86,7 @@
             <details class="file-details">
               <summary>其他格式与上传限额</summary>
               <div class="file-details-content">
-                <p>CSV、TXT、JSON 须为 UTF-8。最多 6 份、单份不超过 10,000,000 字节、总计 20 MiB。截图与 Excel 保存原件，内容仍待核对。</p>
+                <p>CSV、TXT、JSON 须为 UTF-8。最多 6 份、单份不超过 10,000,000 字节、总计 20 MiB。截图与 XLS 仅保存原件；XLSX 只在本机解析已知指标列，内容仍须核对。</p>
                 <button id="choose-legacy" class="button button--quiet" type="button">上传 TXT 或 JSON</button>
                 <input id="legacy-file-input" type="file" accept="text/plain,application/json,.txt,.json" multiple hidden>
               </div>

@@ -18,8 +18,8 @@ export const MATERIAL_CAPABILITIES = Object.freeze(Object.fromEntries([
   ['txt', 'text/plain', true, 'text', 'text_only', '只读取UTF-8原文，不自动提取业务事实。'],
   ['csv', 'text/csv', true, 'text', 'metric_csv', '仅支持UTF-8约定指标表头；其他结构保留原文待核对。'],
   ['json', 'application/json', true, 'text', 'metric_json', '仅支持UTF-8的demo.metrics.v1结构；不执行导入内容。'],
-  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, null, 'none', 'Excel原件可接收并保存在本机；解析尚未接通，内容仍待核对，可先导出UTF-8 CSV。'],
-  ['xls', 'application/vnd.ms-excel', true, null, 'none', 'Excel原件可接收并保存在本机；解析尚未接通，内容仍待核对，可先导出UTF-8 CSV。']
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, null, 'table_xlsx', 'Excel原件可接收并在本机解析已知指标列（抖音作品导出、榜单快照、metric约定表）；无法识别的列保留待核对。'],
+  ['xls', 'application/vnd.ms-excel', true, null, 'none', 'XLS旧格式仅接收保存；解析未支持，请另存为XLSX或导出UTF-8 CSV后再上传以自动读取指标。']
 ].map(([extension, mime, receive, preview, parse, reason]) => [extension, Object.freeze({ extension, mime, receive, preview, parse, reason })])));
 
 // Declared capability only: dispatch still checks bytes, MIME, quota and decoding.

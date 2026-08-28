@@ -376,7 +376,7 @@
             </article>
             <article class="review-summary-item">
               <h3>当前结论</h3>
-              <div id="review-last-conclusion"><p>等待共享再判断，尚无结论。</p></div>
+              <div id="review-last-conclusion"><p>先重新读取并核对原记录，再呈现本机判断。</p></div>
             </article>
           </div>
           <p class="action-field-note">执行自述不等于平台核验；没有变化或证据不足，都不能单独证明行动无效。</p>
@@ -387,27 +387,27 @@
           <div class="review-judgement-grid">
             <article class="review-treatment">
               <h3>原行动如何处理</h3>
-              <div id="review-old-treatment"><p>等待共享层结合已保存反馈判断。</p></div>
+              <div id="review-old-treatment"><p>重新读取并核对原记录后，展示本次处理建议。</p></div>
             </article>
             <article class="review-suggestion">
               <h3>下一步建议</h3>
               <div id="review-next-suggestion"><p>尚无候选建议，不会自动改选另一条路径。</p></div>
             </article>
           </div>
-          <div id="review-reason" class="review-reason">再判断尚未接通（C7）。保留现有记录，待取得实际依据后再决定继续观察、补数据、暂停或换实验。</div>
+          <div id="review-reason" class="review-reason">先重新读取已保存记录并核对来源，再显示本机判断与依据；没有调用 MoneyAI，也没有创建下一轮。</div>
         </section>
 
-        <div class="review-plan-grid">
+        <div id="review-candidate-region" class="review-plan-grid" hidden>
           <section class="review-section" aria-labelledby="review-candidate-title">
             <h2 id="review-candidate-title">下一轮候选行动</h2>
             <div id="review-candidate-preview" class="review-candidate-preview">
               <p>尚无候选执行稿。共享层需先返回适用方案；预览不会覆盖当前稿件。</p>
             </div>
             <div class="action-form-actions">
-              <button id="generate-candidate" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>重新核对候选</button>
-              <button id="show-change-list" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>查看修改清单</button>
+              <button id="generate-candidate" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>打开本轮完整稿</button>
+              <button id="show-change-list" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>打开本轮修改清单</button>
             </div>
-            <p id="candidate-dependency" class="action-dependency-note">候选再判断待接通（C7），不会按 A→B 固定切换；未确认的产品事实不能写成承诺。</p>
+            <p id="candidate-dependency" class="action-dependency-note">当前只展示候选方向。明确接受并完整读回新轮后，再按新轮已选方案准备完整稿与修改清单，不覆盖原稿。</p>
           </section>
 
           <section class="review-section" aria-labelledby="review-rules-title">
@@ -425,8 +425,7 @@
               <button id="start-candidate" class="button" type="button" aria-describedby="candidate-start-dependency" disabled>明确接受，开始下一轮</button>
               <button id="pause-review" class="button button--secondary" type="button">暂时不继续</button>
             </div>
-            <p id="candidate-start-dependency" class="action-dependency-note">下一轮创建待接通（C8）。只有明确接受候选并成功建轮，才会形成正式记录；缺少退款等数据不能视为风险未触发。</p>
-            <p id="candidate-status" class="status" role="status" aria-live="polite" hidden></p>
+            <p id="candidate-start-dependency" class="action-dependency-note">接受前重新读取并核对原记录与候选指纹；完整读回成功后才展示新轮及其稿件，不自动记为采用或执行。</p>
           </section>
         </div>
 
@@ -440,6 +439,8 @@
       <div class="action-operation-area">
         <p id="operation-status" class="status" role="status" aria-live="polite"></p>
         <button id="event-retry" class="button button--secondary" type="button" hidden>重试保存操作记录</button>
+        <p id="acceptance-status" class="status" role="status" aria-live="polite"></p>
+        <button id="acceptance-retry" class="button button--secondary" type="button" aria-describedby="acceptance-status" hidden>核对结果并重试原接受操作</button>
       </div>
 
       <details id="history-panel" class="action-disclosure action-history" hidden>

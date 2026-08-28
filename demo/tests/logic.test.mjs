@@ -672,13 +672,16 @@ test('material capability lookup separates local reception, preview and restrict
   assert.equal(getMaterialCapability('table.csv').parse, 'metric_csv');
   assert.equal(getMaterialCapability('table.json').parse, 'metric_json');
   assert.equal(getMaterialCapability('notes.txt').parse, 'text_only');
-  for (const name of ['table.xlsx', 'table.xls']) {
-    const capability = getMaterialCapability(name);
-    assert.equal(capability.receive, true);
-    assert.equal(capability.preview, null);
-    assert.equal(capability.parse, 'none');
-    assert.match(capability.reason, /解析尚未接通/);
-  }
+  const xlsx = getMaterialCapability('table.xlsx');
+  assert.equal(xlsx.receive, true);
+  assert.equal(xlsx.preview, null);
+  assert.equal(xlsx.parse, 'table_xlsx');
+  assert.match(xlsx.reason, /本机解析已知指标列/);
+  const xls = getMaterialCapability('table.xls');
+  assert.equal(xls.receive, true);
+  assert.equal(xls.preview, null);
+  assert.equal(xls.parse, 'none');
+  assert.match(xls.reason, /解析未支持|另存为XLSX/);
   for (const name of ['script.svg', 'page.html', 'data.csv.exe', 'csv', null, '__proto__']) {
     assert.equal(getMaterialCapability(name), null);
   }
@@ -983,18 +986,20 @@ test('intake parser preserves missing values and physical locations and rejects 
 
 test('screenshots and Excel originals are received for review without fabricating parsed facts', async () => {
   const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // A PK-prefixed but corrupt container must fail honestly; a well-formed XLSX
+  // with no recognizable columns stays needs_review (covered in table-parse tests).
   const xlsxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
   const xlsBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-  for (const [name, bytes, mime] of [
-    ['后台截图.png', pngBytes, 'image/png'],
-    ['数据表.xlsx', xlsxBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-    ['老报表.xls', xlsBytes, 'application/vnd.ms-excel']
+  for (const [name, bytes, mime, expected] of [
+    ['后台截图.png', pngBytes, 'image/png', 'needs_review'],
+    ['数据表.xlsx', xlsxBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'failed'],
+    ['老报表.xls', xlsBytes, 'application/vnd.ms-excel', 'needs_review']
   ]) {
     const h = harness();
     h.send('MATERIAL_ADD', { file: null }, { preparedMaterial: { name, mime, size: bytes.length, sha256: name, file: null } });
     const material = h.state.input.materials[0];
     const parsed = await readSupportedMaterial(new Blob([bytes]), material);
-    assert.equal(parsed.status, 'needs_review');
+    assert.equal(parsed.status, expected);
     assert.deepEqual(parsed.facts, []);
     h.send('MATERIAL_RESULT_SET', { ...parsed, materialId: material.id, materialVersion: material.version, roundId: h.state.round.id, inputVersion: h.state.round.inputVersion });
     h.send('ORGANIZATION_SET', buildOrganization(h.state, '核对原件'));

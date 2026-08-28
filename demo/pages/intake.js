@@ -1,5 +1,6 @@
 import { enhanceFoldTitle } from "../shared/title-motion.js";
 import { findIntakeFieldFact } from "../shared/intake-draft.js";
+import { parseWorkbookFacts } from "../shared/table-facts.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -12,7 +13,12 @@ const METRIC_FIELDS = [
 const TEXT_FIELDS = METRIC_FIELDS.filter((field) => field !== "value");
 const METRIC_LABELS = {
   paid_orders: "支付订单", detail_visitors: "商品详情访客", product_visitors: "商品访客",
-  views: "观看次数", inquiries: "咨询数", price: "价格"
+  views: "观看次数", inquiries: "咨询数", price: "价格",
+  video_views: "视频播放量", product_clicks: "商品点击数", add_to_carts: "加购数", created_orders: "创建订单数",
+  followers: "粉丝总量", followers_growth: "粉丝增量", total_likes: "获赞总量",
+  live_sessions: "直播场次", avg_live_viewers: "场均场观", avg_products_per_session: "场均带货数",
+  estimated_settlement: "预估结算金额", live_viewers: "单场观看人次", live_product_count: "直播货盘商品数",
+  sales_estimate: "销量（平台估算）", likes: "点赞量", comments: "评论量", collects: "收藏量", shares: "分享量"
 };
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
 const NO_METRICS = "暂无可核对的业务指标；本次仅按描述和材料状态整理。";
@@ -130,6 +136,16 @@ function metricFact(record, material, locator, id, warnings, origin) {
   };
 }
 
+// XLSX materials saved before the shared parser existed carry needs_review with
+// no extracted facts; they are re-read with the current parser on the next
+// 整理 instead of staying stuck with the outdated "解析尚未接通" result.
+export function materialsNeedingRead(state) {
+  return (state?.input?.materials || []).filter((item) => item.status === "received" ||
+    (fileExtension(item.name) === "xlsx" && ["needs_review", "failed"].includes(item.status) &&
+      !(state?.input?.facts || []).some((fact) => fact.source?.materialId === item.id &&
+        fact.source?.materialVersion === item.version && fact.source?.locator?.type === "xlsx")));
+}
+
 // This is a page-local parser, not a second session or persistence layer.
 export function parseMetricText(rawText, material) {
   const text = rawText.replace(/^\uFEFF/, "");
@@ -205,8 +221,17 @@ export async function readSupportedMaterial(blob, material) {
   if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
     return { status: "needs_review", facts: [], error: "图片已接收，内容待核对；未进行文字识别。" };
   }
-  if (["xlsx", "xls"].includes(fileExtension(material.name))) {
-    return { status: "needs_review", facts: [], error: "Excel 原件已接收并保存在本机；解析尚未接通，内容待核对。可在原应用导出 UTF-8 CSV 后重新上传以自动读取指标。" };
+  if (fileExtension(material.name) === "xlsx") {
+    // XLSX在本机解析；解析只读已知指标列，不执行公式、宏或外部链接。
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      return await parseWorkbookFacts(bytes, material);
+    } catch {
+      return { status: "failed", facts: [], error: "Excel读取过程失败，未保存部分结果；原件已保留，可重试或另存为XLSX。" };
+    }
+  }
+  if (fileExtension(material.name) === "xls") {
+    return { status: "needs_review", facts: [], error: "XLS旧格式仅接收保存；解析未支持，可另存为XLSX或导出UTF-8 CSV后重新上传以自动读取指标。" };
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
@@ -258,8 +283,12 @@ export function buildOrganization(snapshot, focusText, ownedUnknowns = new Map()
     if (!fact.window?.start || !fact.window?.end) missing.push("时间范围");
     if (!fact.channel) missing.push("渠道");
     if (!fact.cohort) missing.push("群体口径");
-    if (missing.length) add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
-      "not_provided", "fact:" + fact.id);
+    if (missing.length) {
+      // 同一指标在同口径下缺同一维度的行（例如整份导出都无时间范围）合并为一条
+      // 缺口，按指标聚合展示；逐行事实的取值仍保留在“已读取数据”可核对。
+      add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
+        "not_provided", "input:focus");
+    }
     if (fact.window?.start && fact.window?.end && fact.window.start > fact.window.end) {
       add("指标“" + labelFor(fact.key) + "”的起止日期存在冲突，未调换原值。",
         "conflicting", "fact:" + fact.id);
@@ -370,7 +399,7 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
   ].map((group) => ({ ...group, items: [] }));
   const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
   const sourceNames = { voice: "语音自述", manual: "商家填写", paste: "粘贴文字",
-    txt: "TXT提取", csv: "CSV提取", json: "JSON提取" };
+    txt: "TXT提取", csv: "CSV提取", json: "JSON提取", xlsx: "Excel提取" };
   const add = (id, item) => {
     if (!byId[id].items.some((entry) => entry.text === item.text && entry.note === item.note &&
       entry.factId === item.factId && entry.materialId === item.materialId && entry.field === item.field)) byId[id].items.push(item);
@@ -1916,10 +1945,16 @@ function startIntakePage() {
   }
 
   async function processReceived() {
-    const ids = state.input.materials.filter((item) => item.status === "received").map((item) => item.id);
-    for (const id of ids) {
-      const material = state.input.materials.find((item) => item.id === id);
-      if (material?.status === "received") await processMaterial(material);
+    const attempted = new Set();
+    let targets = materialsNeedingRead(state);
+    while (targets.length) {
+      const next = targets.find((item) => !attempted.has(item.id));
+      if (!next) break;
+      attempted.add(next.id);
+      const material = state.input.materials.find((item) => item.id === next.id);
+      if (!material) { targets = materialsNeedingRead(state); continue; }
+      await processMaterial(material);
+      targets = materialsNeedingRead(state);
     }
   }
 
@@ -2110,7 +2145,11 @@ function startIntakePage() {
         image.src = previewUrl;
         fragment.append(image);
       } else if (["xlsx", "xls"].includes(fileExtension(material.name))) {
-        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。Excel 解析尚未接通，内容待核对；可在原应用中打开核对，或导出 UTF-8 CSV 后重新上传以自动读取指标。", "material-meta"));
+        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。" +
+          (material.status === "parsed" ? "已知指标列已在本机读取，下方卡片和“已读取数据”可核对取值与单元格位置。"
+            : material.status === "needs_review" ? "已知指标列已在本机读取；仍有需要人工核对的地方，见材料卡片说明。原件可下载后用Excel/WPS打开核对。"
+              : material.status === "failed" ? "自动读取未完成：" + (material.error || "原因未知") + "原件已保留，可在原应用核对或另存为XLSX后重试。"
+                : "内容尚未读取；请在整理时重新读取，或导出UTF-8 CSV后重新上传。"), "material-meta"));
       } else {
         let text;
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer()); }

@@ -7,7 +7,7 @@
 
 [四图功能锁定](WIREFRAME_FUNCTION_LOCK.md)第8节列出C1—C9：公共壳、截图／Excel能力矩阵、榨汁杯种子与六组投影、分析互动、执行稿／实验卡、反馈附件原子保存、再判断、显式幂等下一轮以及MoneyAI业务通路。统筹逐项实现并追加接口后才由页面调用，不能把目标字段或名字当成已经存在的API。保留demo.v1和现有接口，不重建共享状态。
 
-本批允许新增截图和Excel目标，覆盖下文旧产品限制；共享C2首批已更新能力矩阵、用户分类和单文件限额，首页接线尚待交回。Excel和OCR仍未接通，不以格式入口存在声明解析完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
+本批允许新增截图和Excel目标，覆盖下文旧产品限制；共享C2首批已更新能力矩阵、用户分类和单文件限额，首页接线尚待交回。XLSX解析（C2第二批）与C4首批本机分析已交付并纳入纯逻辑回归，OCR仍未接通；不以格式入口存在声明任意内容理解完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
 
 P1签收后的最小接线依赖按下方C2/C3分批发布：材料能力／限额／类别已提供，榨汁杯fixtureId与草稿投影已提供；C4/C5本批新增如下。Excel解析与C6—C8等仍待交付。页面只能使用实际出口，不猜名称、写私有字段或硬编码榨汁杯数值。
 
@@ -30,10 +30,11 @@ P1签收后的最小接线依赖按下方C2/C3分批发布：材料能力／限�
 | TXT | true／text／text_only | UTF-8原文读取，默认facts为空、needs_review，不声称业务已识别 |
 | CSV | true／text／metric_csv | 原有UTF-8约定指标表头及逐值定位；任意经营报表不保证可解析 |
 | JSON | true／text／metric_json | 原有demo.metrics.v1白名单；不执行文件内指令 |
-| XLSX、XLS | false／null／none | 接收和解析尚未接通，有明确reason；按钮不能假装上传成功，建议先导出UTF-8 CSV |
+| XLSX | true／null／table_xlsx | C2第二批：共享`shared/xlsx-reader.js`+`shared/table-facts.js`在本机解析已知指标列（抖音作品导出、榜单快照、metric约定表）；中文单位（w/万/亿）换算，区间/下限估值与文字值按unknown保留原文、不折算单值，「口径说明」表读为核对警告，未识别工作表如实跳过，整列全0而同表其他列>0按采集缺失处理（缺失≠0）；事实带sheet!单元格定位与材料版本绑定，可走既有更正链。只在用户浏览器本机解析，不进入外发提取白名单 |
+| XLS | true／null／none | 仅接收保存旧格式原件；解析未支持，提示另存为XLSX或导出UTF-8 CSV |
 | HTML、SVG、PDF、视频等 | 查询为null | 不接收，不执行宏、公式、脚本或外部链接 |
 
-既有CSV/JSON/TXT读取函数仍位于首页模块；本批统一存储能力和限额，没有伪造一个共享Excel或OCR解析器。已接收文本读取失败时保留原件并标明失败；坏替换在提交前拒绝，不能破坏旧原件。页面应使用原件类型决定预览，文件名／标签只作文本渲染。
+既有CSV/JSON/TXT读取函数仍位于首页模块；XLSX解析由统筹以`shared/xlsx-reader.js`与`shared/table-facts.js`交付（纯本机、零依赖、不外发），共享层没有伪造OCR，图片仍只接收预览。已接收文本读取失败时保留原件并标明失败；坏替换在提交前拒绝，不能破坏旧原件。页面应使用原件类型决定预览，文件名／标签只作文本渲染。
 
 `MATERIAL_ADD`、`MATERIAL_REPLACE` 的payload新增可选 `userCategory`，默认unknown；仍用既有 `file` 和替换所需 `materialId/inputVersion`。新文件字节替换成功后不自动继承旧类别，除非用户明确提供该类别。同字节替换仍为无变化，即使携带另一类别；纯改类别应使用新命令：
 
@@ -49,7 +50,16 @@ dispatch({
 
 类别仅为用户自述，不改 `sourceKind:'user_file'`、事实、事实verification、channel或cohort，不生成解析值，不改变Blob、blobKey、sha256或material.version。真实变更记录 `material_category_changed` 历史（前后类别、材料版本、旧输入版本），inputVersion+1并失效旧确认／分析／选择；迟到解析必须按原启动版本拒绝，不能偷换成新版本重试。失败保留当前原件与页面草稿。
 
-本批已通过61项Node纯逻辑回归、6项Node实际File预检和独立8项增量复核；前者包含原53项。预检刻意无IndexedDB，**不是保存或浏览器通过**。现有浏览器宿主13组定义中扩展了分类／Blob读回断言，实际运行仍为0。首页尚需移除旧5MiB／新图禁用并接线；P3反馈仍必须等待C6，不能借C2调用MATERIAL_ADD。C3榨汁杯、Excel解析、真实MoneyAI均未由本批交付。
+本批已通过61项Node纯逻辑回归、6项Node实际File预检和独立8项增量复核；前者包含原53项。预检刻意无IndexedDB，**不是保存或浏览器通过**。现有浏览器宿主13组定义中扩展了分类／Blob读回断言，实际运行仍为0。C3榨汁杯与真实MoneyAI之外，C2的XLSX解析与C4首批本机分析已由后续批次交付（见上文C2第二批/C4首批节），浏览器接线与真实UI验收待完成；不把C2整项或“上传Excel”标完成。页面按真实能力完成三块区域和支持流程。P3反馈仍必须等待C6，不能借C2调用MATERIAL_ADD。
+
+### C2 第二批接口：XLSX本机解析与独立分析引擎（已实现，纯逻辑回归通过，浏览器待验）
+
+统筹在`shared/xlsx-reader.js`＋`shared/table-facts.js`交付XLSX本机解析（能力矩阵`table_xlsx`，能力表见上文C2节）。配套交付独立确定性引擎`shared/analysis.js`（`buildLocalAnalysis`）。**它未接入`buildDemoAnalysis`，不改变已发布的PRD V1分析语义**，作为可选投影供后续接线，输出满足既有`validateAnalysis`：
+
+- **五阶段漏斗**：仅当`video_views→product_clicks→add_to_carts→created_orders→paid_orders`五个已知值同对象/渠道/群体口径/同一起止窗口时计算逐段转化与流失；入口流失最大且≥90%时优先验证环节改选后段并在`findings.funnel.priorityNote`说明理由；“数值最大流失”与“本轮优先验证”始终分开记录。
+- **榜单快照（流量层/承接层）**：followers×live_viewers算粉看比，只做同表相对比较；粉丝>1,000,000（本机处理规则，非行业结论）标`head_account`不参与判定；单场观看低于同表中位1/10判`traffic_gap`，同账号场均与单场差10倍以上记口径线索；live_product_count低于同表中位一半判`shallow`。
+- **内容层**：播放量整列采集缺失时如实说明“流量侧无法判断”；全部输出标注“待验证判断/本机规则/非MoneyAI”，不声称根因或因果。
+- 第一页解析出的`file_extract`事实（含xlsx定位、材料版本绑定）与既有CSV/JSON事实同构，可直接被已发布的`analysis-evidence.js`投影与P2分析消费——这是P1→P2的既有承接路径，无需页面改动；浏览器端到端验收待完成。
 
 ### C3 首批接口：榨汁杯首次资料与原样确认
 

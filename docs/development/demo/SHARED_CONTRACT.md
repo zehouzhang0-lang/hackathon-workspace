@@ -115,11 +115,11 @@ getMaterialBlob(materialId) // Promise<Blob|null>；缺原件才null，读取故
 | --- | --- | --- |
 | LOAD_FIXTURE | `fixtureId` | 仅明确的载入示例操作，覆盖现有会话需确认；来源保持合成 |
 | INPUT_EDIT | `description` | 内容真变才递增inputVersion；已有九组理解会标stale；不能只保存description便清除语音原文的未保存状态 |
-| INTAKE_SET | `roundId,inputVersion,draft,description,sourceBindings` | 严格校验v0.5-intake-1及完整合并投影，同事务保存原文/编辑文/来源/更正；实质变化一次inputVersion+1并失效下游；不覆盖外部材料事实或其他未知 |
+| INTAKE_SET | `roundId,inputVersion,draft,description,sourceBindings` | 严格校验v0.5-intake-1及完整合并投影，同事务保存原文/编辑文/来源/更正；实质变化一次inputVersion+1并失效下游；不静默覆盖外部材料事实或其他未知；明确更正保留原ID及来源历史 |
 | MATERIAL_ADD / MATERIAL_REMOVE | `file` / `materialId` | ADD的File只在本机处理并转Blob；metadata与Blob一并保存，REMOVE删除Blob并失效依赖 |
 | MATERIAL_REPLACE | `materialId,file,inputVersion` | 原子替换；取消或失败保留旧Blob与状态，成功才变更输入版本 |
 | MATERIAL_RESULT_SET | `materialId,materialVersion,roundId,inputVersion,status,facts,error` | 保存实际解析结果；核对启动轮次/输入/材料版本，过期/已删除任务拒绝，实质迟到投影按第5节失效，失败不删原件 |
-| FACT_PATCH | `fact,reason` | 保留来源及更正记录；不能替换为无出处“事实” |
+| FACT_PATCH | `fact,reason` | 保留来源及更正记录，关联确认卡标stale；递归派生值退回未知并撤销旧依赖条件，不替换为无出处“事实” |
 | ORGANIZATION_SET | `focus,facts,constraints,unknowns,roundId,inputVersion` | 只接收对应版本的整理结果，不覆盖用户更正；不能把分析结论写成事实 |
 | QUESTION_SET | `roundId,inputVersion,questionId,status,questionText,sourceFactIds,answer` | 新页面带轮次/输入快照；每次新asked传questionId:null，保存后共享层分配ID。当前问回答或跳过后才可问下一题，至多3题；跳过仍占额度，历史回答可主动更正；不把同一答案再自动INTAKE_SET |
 | FOCUS_CONFIRM | `inputVersion` | 确认本轮关注范围和可用资料，不是验证所有提取值 |
@@ -144,7 +144,9 @@ getMaterialBlob(materialId) // Promise<Blob|null>；缺原件才null，读取故
 createMerchantIntakeDraft(overrides = {}) // 补完整空字段；无效覆盖抛带code/errors的TypeError
 validateMerchantIntakeDraft(draft) // {ok:true,draft} 或 {ok:false,code,message,errors}
 mapConfirmedIntakeToAnalysisInput(draft, {state,sourceBindings:[]})
-// {ok:true,projection:{focus,facts,constraints,unknowns}} 或同形失败
+// {ok:true,projection:{focus,facts,constraints,unknowns},factCorrections:[...]} 或同形失败
+// factCorrections仅供共享层同事务保存明确更正历史，不改变INTAKE_SET的payload或状态schema
+findIntakeFieldFact(state, field, bindings = null) // 只读返回当前关联fact或null；不添加intakeField
 
 // 一次用户保存，state取自当前成功load/dispatch，draft来自用户核对
 const command = {
@@ -159,11 +161,11 @@ const saved = await dispatch(command);
 
 sourceBindings为`{field,source,materialId?,materialVersion?,locator?}[]`。TXT/CSV/JSON须绑定当前真实材料版本及定位，不能只有文件名或把无定位的提取值伪装为语音；文本来源的默认定位是`{type:'intake',field,source,quote}`。完整字段/来源/更正规则见细则第3.1节。
 
-已存用户更正受保护；再次明确更正必须从当前值形成连续before/after链并与最终草稿一致。不存在的数组项仅可明确删除，外部引用所需位置保留为未知。自动提取或旧草稿不得恢复被更正的旧值；历史前缀/更正链/来源绑定错误为invalid_intake；保护后草稿与事实不一致为correction_conflict，失败不保存部分确认卡。源文件既有同键/同定位/同值事实复用ID与口径，不重复生成材料事实。
+已存用户更正受保护；再次明确更正必须从当前值形成连续before/after链并与最终草稿一致。不存在的数组项仅可明确删除，外部引用所需位置保留为未知。自动提取或旧草稿不得恢复被更正的旧值；历史前缀/更正链/来源绑定错误为invalid_intake；保护后草稿与事实不一致为correction_conflict，失败不保存部分确认卡。源文件既有同键/同定位/同值事实复用ID与口径，不重复生成材料事实。 对已更正的文件事实，按fact_correction原文件定位识别同一条记录，恢复仍保留原ID、口径及外部归属；当前明确的新材料绑定优先，不回退到旧材料更正。FACT_PATCH和INTAKE_SET都使递归依赖的旧推导退回未知，保留失效前历史与无关事实。
 
-外部FACT_PATCH可能使intake草稿仍为A、同intakeField的当前user_corrected事实已为B。恢复时须先读当前状态并向用户展示旧理解A与当前更正B；只有用户明确重核对该项后，才以B作为本次字段编辑基线。保留已存完整userCorrections前缀及fact_correction历史，新改成C只追加B→C；不伪造A→B、不自动重放旧草稿或更换其输入版本。保存须核对打开时的fact ID/值、round/inputVersion，变化则重新核对；数组对应或类型不明确时显示冲突并拒绝猜测。该恢复仍通过INTAKE_SET一次保存，不新增API或放宽校验。
+外部FACT_PATCH可能使intake草稿仍为A、同intakeField或通过文件定位复用的当前user_corrected事实已为B。恢复时须先读当前状态并向用户展示旧理解A与当前更正B；只有用户明确重核对该项后，才以B作为本次字段编辑基线。保留已存完整userCorrections前缀及fact_correction历史，新改成C只追加B→C；不伪造A→B、不自动重放旧草稿或更换其输入版本。保存须核对打开时的fact ID/值、round/inputVersion，变化则重新核对；数组对应或类型不明确时显示冲突并拒绝猜测。该恢复仍通过INTAKE_SET一次保存，不新增API或放宽校验。
 
-`input.intake.status`表示九组理解是否仍与保存语境相容，不是整轮业务版本。INPUT_EDIT、对intakeField的FACT_PATCH、关联材料删除/替换会标stale；重新核对并INTAKE_SET后才可FOCUS_CONFIRM。补问答案独立保存到questions，变更一次inputVersion，保留已存draft原文；不自动二次INTAKE_SET，也不把答案冒记为draft.sources。分析保存带inputSnapshot及clarificationSnapshot，纯演示生成器不会因此变成真实提取器。
+`input.intake.status`表示九组理解是否仍与保存语境相容，不是整轮业务版本。INPUT_EDIT、对intakeField或关联文件事实的FACT_PATCH、关联材料删除/替换会标stale；重新核对并INTAKE_SET后才可FOCUS_CONFIRM。补问答案独立保存到questions，变更一次inputVersion，保留已存draft原文；不自动二次INTAKE_SET，也不把答案冒记为draft.sources。分析保存带inputSnapshot及clarificationSnapshot，纯演示生成器不会因此变成真实提取器。
 
 ```js
 // shared/intake-extraction.js：项目后端客户端，不是ASR，不编造AI结果

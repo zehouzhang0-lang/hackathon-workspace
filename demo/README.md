@@ -7,7 +7,7 @@
 从仓库根目录运行：
 
 ```powershell
-python -X utf8 server/app.py --port 4188
+python -B -X utf8 server/app.py --port 4188
 ```
 
 打开`http://127.0.0.1:4188/01-intake.html`。当前统筹已启动统一4188服务，其他任务不要重复启动或清理未知进程。服务只提供本目录静态文件与明确的项目API，不服务仓库根目录或私密资料。
@@ -20,7 +20,7 @@ MoneyAI本机服务地址由统筹通过`--moneyai-url`显式指定；端口会�
 
 三页保持渐进：说清情况→选择下一步→拿内容使用；完整依据/假设等有名称的入口，不默认展开成专业三栏。品牌配色与最终UI尚未验收。
 
-1. 第一页REQ-25语音主入口、材料次入口、折叠手动及逐步理解确认已完成本批代码接线；共享INTAKE_SET/最多三问已接入，真实语音与浏览器操作未验。提取未就绪时手动核对，原话和编辑文字都须保存后再确认问题。
+1. 第一页REQ-25语音主入口、材料次入口、折叠手动及逐步理解确认已完成本批代码接线；共享INTAKE_SET/最多三问已接入，真实语音与浏览器操作未验。共享层已修文件事实更正/确认卡失效及同ID恢复，页面恢复入口在原任务限定续修。提取未就绪时手动核对，原话和编辑文字都须保存后再确认问题。
 2. 第二页查看路径、风险、证据、情景或不可估状态；报告下载不自动选路。明确选择后进入第三页。
 3. 第三页先取用只读文案/步骤；复制或下载不记为执行。可不填反馈，也可明确记录执行与观察、保存后再开始新一轮。
 
@@ -34,12 +34,12 @@ MoneyAI本机服务地址由统筹通过`--moneyai-url`显式指定；端口会�
 
 ```powershell
 node --test demo/tests/logic.test.mjs
-python -X utf8 -m unittest discover -s server -p 'test_*.py' -v
-python scripts/verify_demo_content.py
+python -B -X utf8 -m unittest discover -s server -p 'test_*.py' -v
+python -B -X utf8 scripts/verify_demo_content.py
 git diff --check
 ```
 
-45项Node测试与12项后端边界测试已通过；后端测试使用本机临时测试服务及模拟健康响应，不调用MoneyAI业务或读取个人历史。它们不验证浏览器、上传交互、IndexedDB、真实剪贴板、下载落盘或中文输入法。
+53项Node测试与12项后端边界测试已通过；后端测试使用本机临时测试服务及模拟健康响应，不调用MoneyAI业务或读取个人历史。它们不验证浏览器、上传交互、IndexedDB、真实剪贴板、下载落盘或中文输入法。
 
 已提供[共享浏览器测试宿主](tests/shared.html)，有13项用例定义，但实际浏览器执行为0项。仅在独立新浏览器配置中手动开始，发现已有保存记录会拒绝运行；计划实际调用IndexedDB验证INTAKE_SET原子保存/回滚、响应丢失原ID重试、三问历史/额度、Blob与跨轮；旧单问仅内存兼容，不访问MoneyAI。不能在用户正在演示的浏览器配置中运行，也不以此替代产品UI、跨标签和下载验收。
 

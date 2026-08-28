@@ -334,6 +334,60 @@ const sameFileLocation = (left, right) => left?.kind === 'file_extract' && right
   Object.keys(left.locator).length === Object.keys(right.locator).length &&
   Object.keys(left.locator).every((key) => own(right.locator, key) && Object.is(left.locator[key], right.locator[key]));
 
+// File-backed facts keep parser ownership after a merchant correction. Resolve
+// their original location from saved correction history, never from a new value.
+function matchesFileFact(fact, source, state) {
+  return sameFileLocation(fact.source, source) || fact.verification === 'user_corrected' &&
+    (state.history || []).some((entry) => entry.type === 'fact_correction' && entry.factId === fact.id &&
+      entry.before?.key === fact.key && sameFileLocation(entry.before.source, source));
+}
+function intakeBindingGroups(state, bindings) {
+  if (bindings) return [bindings];
+  return [state.input?.intake?.sourceBindings || [], ...(state.history || []).slice().reverse()
+    .filter((entry) => entry.type === 'intake_revision' && entry.intake)
+    .map((entry) => entry.intake.sourceBindings || [])];
+}
+function bindingMatchesFact(binding, fact, state) {
+  return FILE_SOURCES.has(binding.source) && fact.key === fieldKey(binding.field) &&
+    matchesFileFact(fact, { kind: 'file_extract', materialId: binding.materialId,
+      materialVersion: binding.materialVersion, locator: binding.locator }, state);
+}
+
+// Read-only association for the confirmation UI; this never adds intakeField
+// to an externally owned fact or changes its saved provenance.
+export function findIntakeFieldFact(state, field, bindings = null) {
+  const facts = state?.input?.facts || [];
+  const matching = (group) => facts.filter((fact) => group.some((binding) =>
+    binding.field === field && bindingMatchesFact(binding, fact, state)));
+  const explicit = bindings?.filter((binding) => binding.field === field && FILE_SOURCES.has(binding.source));
+  if (explicit?.length) {
+    const matches = matching(explicit);
+    return matches.length === 1 ? matches[0] : null;
+  }
+  const ownedFacts = facts.filter((fact) => fact.intakeField === field);
+  if (ownedFacts.length) return ownedFacts.length === 1 ? ownedFacts[0] : null;
+  const current = (state?.input?.intake?.sourceBindings || [])
+    .filter((binding) => binding.field === field && FILE_SOURCES.has(binding.source));
+  if (current.length) {
+    const matches = matching(current);
+    return matches.length === 1 ? matches[0] : null;
+  }
+  const corrected = facts.filter((fact) => !fact.intakeField && fact.verification === 'user_corrected' &&
+    fact.source?.locator?.type === 'intake' && fact.source.locator.field === field);
+  if (corrected.length) return corrected.length === 1 ? corrected[0] : null;
+  for (const group of intakeBindingGroups(state, bindings)) {
+    const matches = facts.filter((fact) => !fact.intakeField && group.some((binding) =>
+      binding.field === field && bindingMatchesFact(binding, fact, state)));
+    if (matches.length) return matches.length === 1 ? matches[0] : null;
+  }
+  return null;
+}
+export function intakeReferencesFact(state, fact) {
+  if (!state?.input?.intake || !fact) return false;
+  if (fact.intakeField || fact.source?.locator?.type === 'intake') return true;
+  return intakeBindingGroups(state).some((group) => group.some((binding) => bindingMatchesFact(binding, fact, state)));
+}
+
 // Only an append-only, contiguous new correction chain can replace a saved edit.
 function correctionChanges(draft, input, previous, errors) {
   const changed = new Set();
@@ -401,21 +455,32 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
   }
   const bindings = bindingIndex(draft, input, sourceBindings, errors);
   if (errors.length) return invalid(errors);
+  const fields = [...TEXT_FIELDS, ...METRIC_FIELDS.map((field) => `metrics.${field}`),
+    ...ARRAY_FIELDS.flatMap((field) => draft[field].map((_, index) => `${field}.${index}`))];
   const previous = new Map(input.facts.filter((fact) => owned(fact, draft)).map((fact) => [fact.intakeField, fact]));
+  for (const field of fields) {
+    const explicitlyBound = sourceBindings.some((binding) => binding.field === field && FILE_SOURCES.has(binding.source));
+    const fact = explicitlyBound ? findIntakeFieldFact(state, field, sourceBindings) : findIntakeFieldFact(state, field);
+    if (fact && !previous.has(field)) previous.set(field, fact);
+  }
   const changedFields = correctionChanges(draft, input, previous, errors);
   if (errors.length) return invalid(errors);
   // Prior records retain manual provenance; only the validated new tail authorizes replacement.
   const corrections = new Map(draft.userCorrections.map((entry) => [entry.field, entry]));
   const replacesCorrection = (fact) => changedFields.has(fact.intakeField);
-  const protectedFacts = new Map(input.facts.filter((fact) => owned(fact, draft) &&
-    fact.verification === 'user_corrected' && !replacesCorrection(fact)).map((fact) => [fact.intakeField, fact]));
+  const protectedFacts = new Map([...previous].filter(([field, fact]) =>
+    fact.verification === 'user_corrected' && !changedFields.has(field)));
+  for (const [field, fact] of protectedFacts) {
+    if (!owned(fact, draft) && !Object.is(leaf(draft, field, true)?.value ?? null, fact.value)) {
+      issue(errors, field, '关联材料事实已有新的用户更正；请先核对当前值，不恢复旧确认卡。');
+    }
+  }
+  if (errors.length) return invalid(errors);
   const ledger = new Map();
   for (const entry of draft.evidenceLedger) {
     if (!ledger.has(entry.field)) ledger.set(entry.field, []);
     ledger.get(entry.field).push(entry);
   }
-  const fields = [...TEXT_FIELDS, ...METRIC_FIELDS.map((field) => `metrics.${field}`),
-    ...ARRAY_FIELDS.flatMap((field) => draft[field].map((_, index) => `${field}.${index}`))];
   const resolutions = new Map();
   for (const field of fields) {
     const target = leaf(draft, field);
@@ -476,6 +541,7 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
     return invalid([{ field: 'state.input', message: '当前输入包含不可复制的状态。' }]);
   }
   const mapped = new Map(protectedFacts);
+  const factCorrections = [];
   const contextValue = (field) => protectedFacts.has(field) ? protectedFacts.get(field).value :
     resolutions.get(field)?.value ?? null;
   const subject = contextValue('productName');
@@ -491,8 +557,18 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
     if (!resolution.emit || protectedFacts.has(field)) continue;
     const baseKey = fieldKey(field);
     const key = resolution.evidenceStatus === 'owner_hypothesis' && !baseKey.includes('hypothesis') ? `hypothesis_${baseKey}` : baseKey;
+    const prior = previous.get(field);
+    if (prior && !owned(prior, draft) && changedFields.has(field)) {
+      const amended = { ...clone(prior), value: resolution.value,
+        availability: resolution.value === null ? 'unknown' : 'known',
+        evidenceStatus: resolution.evidenceStatus, verification: 'user_corrected', source: clone(resolution.sourceInfo) };
+      facts = facts.map((fact) => fact.id === prior.id ? amended : fact);
+      mapped.set(field, amended);
+      factCorrections.push({ field, factId: prior.id, before: clone(prior) });
+      continue;
+    }
     const parsedMatches = input.facts.filter((fact) => !owned(fact, draft) && fact.key === baseKey &&
-      sameFileLocation(fact.source, resolution.sourceInfo));
+      matchesFileFact(fact, resolution.sourceInfo, state));
     if (parsedMatches.length) {
       if (parsedMatches.length !== 1 || !Object.is(parsedMatches[0].value, resolution.value)) {
         issue(errors, field, '同一文件定位的既有解析值与确认内容不一致；请明确更正，不覆盖原材料事实。');
@@ -558,5 +634,5 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
   const oldProblem = input.intake?.draft?.currentProblem;
   const focus = typeof problem === 'string' && problem.trim() ? problem :
     oldProblem != null && input.focus === oldProblem ? null : input.focus;
-  return { ok: true, projection: { focus, facts, constraints, unknowns } };
+  return { ok: true, projection: { focus, facts, constraints, unknowns }, factCorrections };
 }

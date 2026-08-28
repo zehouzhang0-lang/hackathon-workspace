@@ -1,5 +1,5 @@
 import { makeFixtureInput } from './seeds.js';
-import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft } from './intake-draft.js';
+import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeReferencesFact } from './intake-draft.js';
 
 export const CONTRACT_VERSION = 'demo.v1';
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -168,7 +168,7 @@ function normalizeFact(fact, context) {
   jsonSafe(next);
   return next;
 }
-function prepareProjection(payload, state, context, explicitIntake = false) {
+function prepareProjection(payload, state, context, explicitIntake = false, correctedFactIds = new Set()) {
   const reuse = new Map();
   function previousFact(fact) {
     const direct = state.input.facts.find((item) => item.id === fact.id || sourceSignature(item) === sourceSignature(fact));
@@ -183,7 +183,7 @@ function prepareProjection(payload, state, context, explicitIntake = false) {
   const projected = mapDrafts(payload, context, reuse);
   projected.facts = (projected.facts || []).map((fact) => {
     const previous = previousFact(fact);
-    if (previous?.verification === 'user_corrected' && !(explicitIntake && fact.intakeField)) return clone(previous);
+    if (previous?.verification === 'user_corrected' && !(explicitIntake && (fact.intakeField || correctedFactIds.has(fact.id)))) return clone(previous);
     if (previous) fact.id = previous.id;
     return normalizeFact(fact, context);
   });
@@ -209,7 +209,7 @@ function removeFactsAndDependents(state, ids, context, materialIds = []) {
   state.input.unknowns = state.input.unknowns.filter((entry) => !removed.has((entry.sourceId || '').replace(/^fact:/, '')) && !materialIds.some((id) => entry.sourceId === 'material:' + id));
 }
 // Keep external provenance, but never carry an old calculated value across changed inputs.
-function invalidateIntakeDependents(projected, state, context) {
+function invalidateInputDependents(projected, state, context, reason = 'intake_dependency_changed') {
   const oldFacts = new Map(state.input.facts.map((fact) => [fact.id, fact]));
   const currentFacts = new Map(projected.facts.map((fact) => [fact.id, fact]));
   const roots = new Set(state.input.facts.filter((fact) => !currentFacts.has(fact.id)
@@ -231,7 +231,7 @@ function invalidateIntakeDependents(projected, state, context) {
     && (entry.sourceFactIds || []).some((id) => affected.has(id)));
   if (!invalid.size && !invalidConstraints.length) return;
   state.history.push({ type: 'facts_invalidated', at: context.now,
-    reason: 'intake_dependency_changed', facts: [...invalid].map((id) => clone(oldFacts.get(id) || currentFacts.get(id))),
+    reason, facts: [...invalid].map((id) => clone(oldFacts.get(id) || currentFacts.get(id))),
     constraints: clone(invalidConstraints) });
   projected.facts = projected.facts.map((fact) => !invalid.has(fact.id) ? fact : {
     ...fact, value: null, availability: 'unknown', evidenceStatus: 'unknown', verification: 'unreviewed',
@@ -356,6 +356,7 @@ export function reduceCommand(original, command, context) {
   const events = [];
   let changed = true;
   let inputChanged = false;
+  let patchedIntake = false;
   let roundLink = null;
   const event = (type, refs = {}) => events.push({ id: context.newId(), type, roundId: state.round.id, at: context.now, refs });
   const hasDownstream = original.input.confirmedVersion !== null || (original.analysis && original.analysis.status !== 'stale') || !!original.selection;
@@ -392,8 +393,14 @@ export function reduceCommand(original, command, context) {
         requireValue(!next || !same(previous, next) || same(requested, next.value),
           '这项经营信息已有更新的用户更正，请重读并核对当前值；没有覆盖更正或保存不一致的确认卡。', 'correction_conflict');
       }
-      const projected = prepareProjection(merged.projection, state, context, true);
-      invalidateIntakeDependents(projected, state, context);
+      const projected = prepareProjection(merged.projection, state, context, true,
+        new Set(merged.factCorrections.map((entry) => entry.factId)));
+      for (const entry of merged.factCorrections) {
+        state.history.push({ type: 'fact_correction', factId: entry.factId,
+          inputVersion: state.round.inputVersion + 1, reason: '经营信息确认中的明确更正',
+          before: clone(entry.before), after: clone(projected.facts.find((fact) => fact.id === entry.factId)), at: context.now });
+      }
+      invalidateInputDependents(projected, state, context);
       const intakeContent = (entry) => entry ? { draft: entry.draft, sourceBindings: entry.sourceBindings } : null;
       const previous = { description: state.input.description, focus: state.input.focus,
         projection: semantic({ facts: state.input.facts, constraints: state.input.constraints, unknowns: state.input.unknowns }),
@@ -498,8 +505,13 @@ export function reduceCommand(original, command, context) {
       next.source = { kind: 'merchant_statement', materialId: null, materialVersion: null, locator: { type: 'correction', factId: next.id, inputVersion: state.round.inputVersion + 1 }, note: reason };
       next.verification = 'user_corrected';
       state.history.push({ type: 'fact_correction', factId: next.id, inputVersion: state.round.inputVersion + 1, reason, before: previous ? clone(previous) : null, after: clone(next), at: context.now });
-      state.input.facts = state.input.facts.filter((fact) => fact.id !== next.id);
-      state.input.facts.push(next);
+      patchedIntake = intakeReferencesFact(state, previous);
+      const projected = { facts: [...state.input.facts.filter((fact) => fact.id !== next.id), next],
+        constraints: clone(state.input.constraints), unknowns: clone(state.input.unknowns) };
+      invalidateInputDependents(projected, state, context, 'fact_dependency_changed');
+      state.input.facts = projected.facts;
+      state.input.constraints = projected.constraints;
+      state.input.unknowns = projected.unknowns;
       inputChanged = true;
       break;
     }
@@ -690,7 +702,7 @@ export function reduceCommand(original, command, context) {
     // The original facts retain their source notes; new user input is never relabelled as synthetic.
     state.fixtureId = null;
     if (state.input.intake && (command.type === 'INPUT_EDIT'
-      || command.type === 'FACT_PATCH' && payload.fact?.intakeField
+      || command.type === 'FACT_PATCH' && patchedIntake
       || ['MATERIAL_REMOVE', 'MATERIAL_REPLACE'].includes(command.type)
         && state.input.intake.sourceBindings.some((binding) => binding.materialId === payload.materialId))) {
       state.input.intake.status = 'stale';

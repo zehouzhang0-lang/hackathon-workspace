@@ -35,6 +35,7 @@
 - `/api/moneyai/analysis`、`/api/moneyai/decisions`、`/api/moneyai/history/read`当前均返回409及`sentToMoneyAI:false`。这是未接通的明确边界，不是已完成分析/历史功能。
 - REQ-25提取接口 `/api/intake/extract` 与 `shared/intake-extraction.js` 已落地：状态返回extractionReady=false，真实合成请求返回409/intake_unavailable/editable:true/sentToMoneyAI:false。客户端先查能力，无就绪或无明确模型/费用/材料授权时不POST原文；超时/丢回执不谎称未发送。成功结构必须绑定当前round/inputVersion及本次实际发送材料。
 - 九组草稿/转写确认与MoneyAI提取分离：本机INTAKE_SET保存不等于AI理解或写入记忆，问题历史由QUESTION_SET独立保留；原始语音识别还须浏览器能力、用户主动开始和真实测试。
+- 2026-08-28接任后补齐客户端保护：状态回包严格校验对象/布尔字段并只返回状态白名单；分析公开入口默认无明确发送许可即不发请求，能力未就绪时不POST摘要。纯JSON正文在首次等待前固定，拒绝getter/toJSON/二进制/隐式转换并限制256KiB；拒绝重定向、支持取消及默认8秒超时，区分未发送false、已确认true与回执丢失null。HTTP错误或尚未校验的成功回包都不生成可用分析，不启用real_model。6项内存替身回归通过，未发送真实业务。该入口尚无页面调用者，不表示项目业务协议、专用空间或来源校验已完成。
 - 当前页面仍使用明确标注的本地生成器及IndexedDB。没有模型/记忆成功伪回执，没有把个人活跃对话当项目会话。
 
 ## 启用前还要完成

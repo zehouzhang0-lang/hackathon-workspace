@@ -8,8 +8,9 @@ import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey 
 import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource } from '../pages/action.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
-import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput } from '../shared/intake-draft.js';
+import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput, findIntakeFieldFact } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
+import { getMoneyAIStatus, requestMoneyAIAnalysis } from '../shared/moneyai.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -691,6 +692,90 @@ test('file intake reuses an existing parsed source and a replaced material canno
     { ...binding, locator: { ...binding.locator, recordIndex: 0 } }] }).code, 'invalid_intake');
 });
 
+test('file-bound corrections require fresh intake review and keep one fact through later edits', () => {
+  for (const finalValue of [11, null]) {
+    const h = harness('one_sentence_v1');
+    h.send('MATERIAL_ADD', {}, { preparedMaterial: {
+      name: 'correction.json', mime: 'application/json', size: 20, sha256: 'synthetic_correction', file: null } });
+    const material = h.state.input.materials[0];
+    const locator = { type: 'json', pointer: '/metrics/0/value' };
+    h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
+      roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, status: 'parsed', error: null,
+      facts: [{ id: null, key: 'paid_orders', value: 0, availability: 'known', unit: '笔', subject: '合成商品',
+        source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version, locator } }] });
+    const original = structuredClone(h.state.input.facts[0]);
+    const draft = createMerchantIntakeDraft({ sources: ['json'], metrics: { paidOrders: 0 } });
+    const bindings = [{ field: 'metrics.paidOrders', source: 'json', materialId: material.id,
+      materialVersion: material.version, locator }];
+    saveIntake(h, draft, '核对合成订单数', bindings);
+    h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion, fact: { ...original, value: 5 } });
+    assert.equal(h.state.input.intake.status, 'stale');
+    assert.throws(() => h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion }));
+    const before = structuredClone(h.state);
+    assert.throws(() => saveIntake(h, draft, '不能恢复旧零值', bindings), { code: 'invalid_intake' });
+    assert.deepEqual(h.state, before);
+    let reviewed = { ...draft, metrics: { ...draft.metrics, paidOrders: 5 } };
+    saveIntake(h, reviewed, '明确核对当前五笔', bindings);
+    let current = h.state.input.facts.find((fact) => fact.id === original.id);
+    assert.equal(current.value, 5);
+    assert.equal(current.source.kind, 'merchant_statement');
+    assert.equal(current.intakeField, undefined);
+    assert.equal(h.state.input.facts.filter((fact) => fact.key === 'paid_orders').length, 1);
+    h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion, fact: { ...current, value: 7 } });
+    assert.equal(h.state.input.intake.status, 'stale');
+    reviewed = { ...reviewed, sources: ['json', 'manual'], metrics: { ...reviewed.metrics, paidOrders: finalValue },
+      evidenceLedger: [{ field: 'metrics.paidOrders', value: finalValue,
+        status: finalValue === null ? 'unknown' : 'confirmed_fact', source: 'manual' }],
+      userCorrections: [{ field: 'metrics.paidOrders', before: 7, after: finalValue }] };
+    saveIntake(h, reviewed, '以当前更正为起点再核对', []);
+    current = h.state.input.facts.find((fact) => fact.id === original.id);
+    assert.equal(current.value, finalValue);
+    assert.equal(current.availability, finalValue === null ? 'unknown' : 'known');
+    assert.equal(current.intakeField, undefined);
+    assert.equal(current.unit, original.unit);
+    assert.equal(h.state.input.facts.filter((fact) => fact.key === 'paid_orders').length, 1);
+    analyze(h);
+    assert.equal(h.state.analysis.inputSnapshot.intake.draft.metrics.paidOrders, finalValue);
+    assert.equal(h.state.analysis.inputSnapshot.facts.find((fact) => fact.id === original.id).value, finalValue);
+    assert(h.state.history.some((entry) => entry.type === 'fact_correction'
+      && entry.before?.source.kind === 'file_extract' && entry.before.value === 0));
+  }
+});
+
+test('an explicit new file binding is not captured by an older corrected file fact', () => {
+  const h = harness('one_sentence_v1');
+  function addFile(name, value) {
+    h.send('MATERIAL_ADD', {}, { preparedMaterial: { name, mime: 'application/json', size: 20, sha256: name, file: null } });
+    const material = h.state.input.materials.at(-1), locator = { type: 'json', pointer: '/metrics/0/value' };
+    h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
+      roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, status: 'parsed', error: null,
+      facts: [{ id: null, key: 'paid_orders', value, availability: 'known',
+        source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version, locator } }] });
+    return { fact: h.state.input.facts.find((fact) => fact.source.materialId === material.id),
+      binding: { field: 'metrics.paidOrders', source: 'json', materialId: material.id, materialVersion: material.version, locator } };
+  }
+  const a = addFile('source_a.json', 0);
+  let draft = createMerchantIntakeDraft({ sources: ['json'], metrics: { paidOrders: 0 } });
+  saveIntake(h, draft, '先确认A', [a.binding]);
+  draft = { ...draft, sources: ['json', 'manual'], metrics: { ...draft.metrics, paidOrders: 5 },
+    evidenceLedger: [{ field: 'metrics.paidOrders', value: 5, status: 'confirmed_fact', source: 'manual' }],
+    userCorrections: [{ field: 'metrics.paidOrders', before: 0, after: 5 }] };
+  saveIntake(h, draft, '明确更正A', []);
+  const aCorrected = structuredClone(h.state.input.facts.find((fact) => fact.id === a.fact.id));
+  const b = addFile('source_b.json', 99);
+  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [b.binding]).id, b.fact.id);
+  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [{ ...b.binding, materialVersion: 99 }]), null);
+  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [{ ...b.binding,
+    locator: { type: 'json', pointer: '/another/value' } }]), null);
+  const next = { ...draft, metrics: { ...draft.metrics, paidOrders: 99 },
+    evidenceLedger: [{ field: 'metrics.paidOrders', value: 99, status: 'confirmed_fact', source: 'json' }] };
+  saveIntake(h, next, '明确改为核对B', [b.binding]);
+  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders').id, b.fact.id);
+  assert.equal(h.state.input.intake.draft.metrics.paidOrders, 99);
+  assert.deepEqual(h.state.input.facts.find((fact) => fact.id === a.fact.id), aCorrected);
+  assert.equal(h.state.input.facts.find((fact) => fact.id === b.fact.id).value, 99);
+});
+
 test('answer saving leaves the confirmed intake intact and analysis preserves a question snapshot', () => {
   const h = harness('one_sentence_v1');
   const draft = createMerchantIntakeDraft({ sources: ['manual'], currentProblem: '先核对当前情况' });
@@ -802,39 +887,47 @@ test('intake rejects a broken correction chain without changing the persisted dr
   assert.deepEqual(h.state, before);
 });
 
-test('intake input changes invalidate transitive derived values while preserving unrelated external records', () => {
-  const h = harness('one_sentence_v1');
-  const draft = createMerchantIntakeDraft({ sources: ['manual'], metrics: { productClicks: 10, paidOrders: 2 } });
-  saveIntake(h, draft);
-  const clicks = h.state.input.facts.find((fact) => fact.intakeField === 'metrics.productClicks');
-  const paid = h.state.input.facts.find((fact) => fact.intakeField === 'metrics.paidOrders');
-  h.send('ORGANIZATION_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
-    focus: h.state.input.focus, facts: [...h.state.input.facts,
-      { id: 'calc_rate', key: 'synthetic_ratio', value: 0.2, availability: 'known',
-        source: { kind: 'derived', sourceFactIds: [clicks.id, paid.id] } },
-      { id: 'calc_second', key: 'synthetic_derived_second', value: 20, availability: 'known',
-        source: { kind: 'derived', sourceFactIds: ['calc_rate'] } },
-      { id: 'independent_note', key: 'independent_note', value: '无关原话保留', availability: 'known',
-        source: { kind: 'merchant_statement', locator: { type: 'text', start: 0, end: 6 } } }],
-    constraints: [...h.state.input.constraints, { id: 'old_condition', description: '仅在旧比例成立',
-      value: null, unit: null, scope: 'round', sourceFactIds: ['calc_rate'] }],
-    unknowns: h.state.input.unknowns });
-  const unrelated = structuredClone(h.state.input.facts.find((fact) => fact.id === 'independent_note'));
-  const version = h.state.round.inputVersion;
-  saveIntake(h, { ...draft, metrics: { ...draft.metrics, productClicks: 20 } });
-  assert.equal(h.state.round.inputVersion, version + 1);
-  assert.equal(h.state.input.facts.find((fact) => fact.id === clicks.id).value, 20);
-  assert.equal(h.state.input.facts.find((fact) => fact.id === paid.id).value, 2);
-  for (const id of ['calc_rate', 'calc_second']) {
-    const fact = h.state.input.facts.find((entry) => entry.id === id);
-    assert.equal(fact.value, null);
-    assert.equal(fact.availability, 'unknown');
-    assert(h.state.input.unknowns.some((entry) => entry.sourceId === `fact:${id}`));
+test('intake and fact corrections invalidate transitive derived values while preserving unrelated external records', () => {
+  for (const mode of ['INTAKE_SET', 'FACT_PATCH']) {
+    const h = harness('one_sentence_v1');
+    const draft = createMerchantIntakeDraft({ sources: ['manual'], metrics: { productClicks: 10, paidOrders: 2 } });
+    saveIntake(h, draft);
+    const clicks = h.state.input.facts.find((fact) => fact.intakeField === 'metrics.productClicks');
+    const paid = h.state.input.facts.find((fact) => fact.intakeField === 'metrics.paidOrders');
+    h.send('ORGANIZATION_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+      focus: h.state.input.focus, facts: [...h.state.input.facts,
+        { id: 'calc_rate', key: 'synthetic_ratio', value: 0.2, availability: 'known',
+          source: { kind: 'derived', sourceFactIds: [clicks.id, paid.id] } },
+        { id: 'calc_second', key: 'synthetic_derived_second', value: 20, availability: 'known',
+          source: { kind: 'derived', sourceFactIds: ['calc_rate'] } },
+        { id: 'independent_note', key: 'independent_note', value: '无关原话保留', availability: 'known',
+          source: { kind: 'merchant_statement', locator: { type: 'text', start: 0, end: 6 } } }],
+      constraints: [...h.state.input.constraints, { id: 'old_condition', description: '仅在旧比例成立',
+        value: null, unit: null, scope: 'round', sourceFactIds: ['calc_rate'] }],
+      unknowns: h.state.input.unknowns });
+    const unrelated = structuredClone(h.state.input.facts.find((fact) => fact.id === 'independent_note'));
+    const version = h.state.round.inputVersion;
+    const correctedDraft = { ...draft, metrics: { ...draft.metrics, productClicks: 20 } };
+    if (mode === 'INTAKE_SET') saveIntake(h, correctedDraft);
+    else h.send('FACT_PATCH', { inputVersion: version, fact: { ...clicks, value: 20 } });
+    assert.equal(h.state.round.inputVersion, version + 1);
+    assert.equal(h.state.input.facts.find((fact) => fact.id === clicks.id).value, 20);
+    assert.equal(h.state.input.facts.find((fact) => fact.id === paid.id).value, 2);
+    for (const id of ['calc_rate', 'calc_second']) {
+      const fact = h.state.input.facts.find((entry) => entry.id === id);
+      assert.equal(fact.value, null);
+      assert.equal(fact.availability, 'unknown');
+      assert(h.state.input.unknowns.some((entry) => entry.sourceId === `fact:${id}`));
+    }
+    assert.equal(h.state.input.constraints.some((entry) => entry.id === 'old_condition'), false);
+    assert.deepEqual(h.state.input.facts.find((fact) => fact.id === unrelated.id), unrelated);
+    assert(h.state.history.some((entry) => entry.type === 'facts_invalidated'
+      && entry.facts.some((fact) => fact.id === 'calc_rate' && fact.value === 0.2)));
+    if (mode === 'FACT_PATCH') saveIntake(h, correctedDraft);
+    analyze(h);
+    assert.equal(h.state.analysis.inputSnapshot.facts.find((fact) => fact.id === 'calc_rate').value, null);
+    assert.equal(h.state.analysis.inputSnapshot.constraints.some((entry) => entry.id === 'old_condition'), false);
   }
-  assert.equal(h.state.input.constraints.some((entry) => entry.id === 'old_condition'), false);
-  assert.deepEqual(h.state.input.facts.find((fact) => fact.id === unrelated.id), unrelated);
-  assert(h.state.history.some((entry) => entry.type === 'facts_invalidated'
-    && entry.facts.some((fact) => fact.id === 'calc_rate' && fact.value === 0.2)));
 });
 
 test('extraction response file sources must be in this request, not merely in the saved session', async () => {
@@ -860,4 +953,114 @@ test('extraction response file sources must be in this request, not merely in th
   const accepted = await requestIntakeExtraction(request, { consentToExternalProcessing: true, fetchImpl: simulate(a) });
   assert.equal(accepted.ok, true);
   assert.equal(accepted.draft.metrics.paidOrders, 0);
+});
+
+function syntheticMoneyAIStatus(overrides = {}) {
+  return { provider: 'moneyai', configured: true, serviceReachable: true, analysisReady: true,
+    historyWriteReady: false, historyReadVerified: false, extractionReady: false,
+    reason: '合成状态，仅用于客户端边界测试', ...overrides };
+}
+const jsonResponse = (value, ok = true) => ({ ok, json: async () => value });
+
+test('MoneyAI status rejects malformed flags and exposes only validated status fields', async () => {
+  for (const value of [null, [], {}, syntheticMoneyAIStatus({ serviceReachable: 'false' }),
+    syntheticMoneyAIStatus({ analysisReady: 1 }), syntheticMoneyAIStatus({ configured: false })]) {
+    const result = await getMoneyAIStatus({ fetchImpl: async () => jsonResponse(value) });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, undefined);
+  }
+  const expected = syntheticMoneyAIStatus({ analysisReady: false });
+  const result = await getMoneyAIStatus({ fetchImpl: async (_url, options) => {
+    assert.equal(options.redirect, 'error');
+    return jsonResponse({ ...expected, unrelatedPersonalData: 'must not be forwarded' });
+  } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.status, expected);
+});
+
+test('MoneyAI analysis needs explicit send consent and readiness without posting a draft', async () => {
+  let calls = [];
+  const fetchImpl = async (url, options) => { calls.push({ url, options });
+    return jsonResponse(syntheticMoneyAIStatus({ analysisReady: false })); };
+  const request = { summary: '合成且尚未同意发送的摘要' };
+  const denied = await requestMoneyAIAnalysis(request, { fetchImpl });
+  assert.equal(denied.code, 'external_consent_required');
+  assert.equal(denied.sentToMoneyAI, false);
+  assert.equal(calls.length, 0);
+  const unready = await requestMoneyAIAnalysis(request, { fetchImpl, consentToExternalProcessing: true });
+  assert.equal(unready.code, 'analysis_unavailable');
+  assert.equal(unready.sentToMoneyAI, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.body, undefined);
+});
+
+test('MoneyAI transport rejects implicit conversions and oversized JSON without reading getters', async () => {
+  let reads = 0, calls = 0;
+  const getter = Object.defineProperty({}, 'summary', { enumerable: true, get() { reads++; return 'private'; } });
+  const cyclic = {}; cyclic.self = cyclic;
+  for (const request of [getter, cyclic, { value: NaN }, { value: undefined }, { value: 1n },
+    { when: new Date() }, { value: new Blob(['synthetic']) }, { sparse: [, 1] },
+    { toJSON() { reads++; return {}; } }, { summary: '字'.repeat(90000) }]) {
+    const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+      fetchImpl: async () => { calls++; throw new Error('must not fetch'); } });
+    assert.equal(result.code, 'invalid_payload');
+    assert.equal(result.sentToMoneyAI, false);
+  }
+  assert.equal(reads, 0);
+  assert.equal(calls, 0);
+});
+
+test('MoneyAI analysis freezes request bytes before capability lookup and preserves a no-send receipt', async () => {
+  const request = { roundId: 'synthetic_round', inputVersion: 1, summary: '确认的合成摘要' };
+  const expected = JSON.stringify(request);
+  let posted;
+  const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      assert.equal(options.redirect, 'error');
+      if (url.endsWith('/status')) {
+        request.inputVersion = 2; request.summary = '晚到修改不得混入旧请求';
+        return jsonResponse(syntheticMoneyAIStatus());
+      }
+      posted = options.body;
+      return jsonResponse({ ok: false, code: 'moneyai_project_session_required', sentToMoneyAI: false }, false);
+    } });
+  assert.equal(posted, expected);
+  assert.equal(result.ok, false);
+  assert.equal(result.sentToMoneyAI, false);
+});
+
+test('MoneyAI HTTP failure or unvalidated success cannot become a usable analysis', async () => {
+  for (const [reply, code, sent] of [
+    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }, false), 'analysis_failed', true],
+    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }), 'analysis_validation_unavailable', true],
+    [() => { throw new Error('lost response'); }, 'backend_unavailable', null],
+    [() => ({ ok: true, json: async () => { throw new Error('broken JSON'); } }), 'backend_unavailable', null]
+  ]) {
+    const result = await requestMoneyAIAnalysis({ synthetic: true }, { consentToExternalProcessing: true,
+      fetchImpl: async (url) => url.endsWith('/status') ? jsonResponse(syntheticMoneyAIStatus()) : reply() });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, code);
+    assert.equal(result.sentToMoneyAI, sent);
+    assert.equal(result.analysis, undefined);
+  }
+});
+
+test('MoneyAI cancellation and timeout distinguish never posted from an uncertain send', async () => {
+  const stopped = new AbortController(); stopped.abort();
+  const cancelled = await requestMoneyAIAnalysis({ synthetic: true }, { signal: stopped.signal,
+    consentToExternalProcessing: true, fetchImpl: async () => { throw new Error('must not fetch'); } });
+  assert.equal(cancelled.code, 'cancelled');
+  assert.equal(cancelled.sentToMoneyAI, false);
+  for (const waitAt of ['status', 'analysis']) {
+    const result = await requestMoneyAIAnalysis({ synthetic: true }, { timeoutMs: 5, consentToExternalProcessing: true,
+      fetchImpl: async (url, options) => {
+        if (!url.endsWith('/' + waitAt)) return jsonResponse(syntheticMoneyAIStatus());
+        return new Promise((_resolve, reject) => {
+          if (options.signal.aborted) reject(new Error('aborted'));
+          else options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      } });
+    assert.equal(result.code, 'timeout');
+    assert.equal(result.sentToMoneyAI, waitAt === 'status' ? false : null);
+  }
 });

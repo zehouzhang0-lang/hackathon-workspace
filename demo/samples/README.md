@@ -1,6 +1,6 @@
 # 本轮可解析格式与合成样例
 
-仅供本地测试，所有数字均为合成。文件最多6份，单份5MiB，总计20MiB；不支持PDF/XLSX/HTML/SVG/视频。图片可接收与预览，无OCR时内容待核对。TXT真实读取，不自动当成结构化经营事实。
+仅供本地测试，所有数字均为合成。文件最多6份，单份5MiB，总计20MiB；不支持PDF/XLSX/HTML/SVG/视频。按REQ-25关闭新图片接收，不宣称已具备图片理解；已有历史图片原件仍保留、可查看。TXT真实读取，不自动当成结构化经营事实。
 
 - [CSV样例](metrics.csv)：UTF-8，可带BOM。表头为metric,value,unit,subject,window_start,window_end,channel,cohort；支持双引号、转义引号与引号内换行，未知值留空。
 - [JSON样例](metrics.json)：只接受demo.metrics.v1与metrics白名单；数字须为number或null，不将字符串自动转为数字。

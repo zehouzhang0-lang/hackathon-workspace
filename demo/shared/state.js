@@ -1,4 +1,5 @@
-import { assertState, createEmptyState, fail, ID_PATTERN, normalizeSessionState, reduceCommand, stable } from './model.js';
+import { assertState, createEmptyState, fail, getMaterialCapability, ID_PATTERN, MATERIAL_LIMITS, normalizeSessionState, reduceCommand, stable } from './model.js';
+export { getMaterialCapability, MATERIAL_CAPABILITIES, MATERIAL_CATEGORIES, MATERIAL_LIMITS } from './model.js';
 import { takeTestFault } from './test-hooks.js';
 
 const DB_NAME = 'douyin-experiment-demo';
@@ -87,10 +88,11 @@ async function digest(bytes) {
 }
 async function prepareMaterial(file, replacement = false) {
   if (!(file instanceof Blob) || typeof file.name !== 'string') fail('invalid_payload', '请通过文件选择、拖放或粘贴提交文件。');
-  if (!file.size || file.size > 5 * 1024 * 1024) fail('file_limit', '单份文件需大于0且不超过5MiB。');
+  if (!file.size || file.size > MATERIAL_LIMITS.maxFileBytes) fail('file_limit', '单份文件需大于0且不超过10,000,000字节。');
   const ext = file.name.toLowerCase().split('.').at(-1);
-  const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', txt: 'text/plain', csv: 'text/csv', json: 'application/json' }[ext];
-  if (!mime) fail('unsupported_type', '本轮支持PNG/JPEG/WebP、TXT、CSV和约定JSON。');
+  const capability = getMaterialCapability(file.name);
+  if (!capability?.receive) fail('unsupported_type', capability?.reason || '本轮支持PNG/JPEG/WebP、TXT、CSV和约定JSON。');
+  const mime = capability.mime;
   const bytes = new Uint8Array(await file.arrayBuffer());
   const ascii = (start, length) => String.fromCharCode(...bytes.slice(start, start + length));
   if (ext === 'png' && !(bytes[0] === 137 && ascii(1, 3) === 'PNG')) fail('unsupported_type', '文件内容不是有效PNG。');

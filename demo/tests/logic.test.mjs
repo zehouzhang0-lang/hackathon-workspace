@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createEmptyState, normalizeSessionState, reduceCommand, validSourceId } from '../shared/model.js';
+import { createEmptyState, getMaterialCapability, normalizeSessionState, reduceCommand, validSourceId } from '../shared/model.js';
 import { buildDemoAnalysis, buildDemoArtifact } from '../shared/demo-data.js';
 import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
 import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
@@ -201,6 +201,173 @@ test('unchanged organization is a no-op, not a new input version', () => {
   assert.equal(h.state.revision, before.revision);
   assert.equal(h.state.round.inputVersion, before.round.inputVersion);
 });
+test('material capability lookup separates local reception, preview and restricted parsing', () => {
+  for (const name of ['screen.PNG', 'screen.jpg', 'screen.jpeg', 'legacy.webp']) {
+    const capability = getMaterialCapability(name);
+    assert.equal(capability.receive, true);
+    assert.equal(capability.preview, 'image');
+    assert.equal(capability.parse, 'none');
+    assert.throws(() => { capability.parse = 'ocr'; }, TypeError);
+  }
+  assert.equal(getMaterialCapability('table.csv').parse, 'metric_csv');
+  assert.equal(getMaterialCapability('table.json').parse, 'metric_json');
+  assert.equal(getMaterialCapability('notes.txt').parse, 'text_only');
+  for (const name of ['table.xlsx', 'table.xls']) {
+    const capability = getMaterialCapability(name);
+    assert.equal(capability.receive, false);
+    assert.equal(capability.preview, null);
+    assert.equal(capability.parse, 'none');
+    assert.match(capability.reason, /尚未接通/);
+  }
+  for (const name of ['script.svg', 'page.html', 'data.csv.exe', 'csv', null, '__proto__']) {
+    assert.equal(getMaterialCapability(name), null);
+  }
+});
+
+test('material add accepts exactly 10MB and rejects invalid or larger sizes without changes', () => {
+  const h = harness();
+  const before = h.state;
+  for (const size of [0, -1, 0.5, 10_000_001]) {
+    assert.throws(() => h.send('MATERIAL_ADD', { file: null }, {
+      preparedMaterial: { name: 'limit.csv', mime: 'text/csv', size, sha256: 'boundary', file: null }
+    }), { code: 'file_limit' });
+    assert.equal(h.state, before);
+  }
+  const result = h.send('MATERIAL_ADD', { file: null }, {
+    preparedMaterial: { name: 'limit.csv', mime: 'text/csv', size: 10_000_000, sha256: 'boundary', file: null }
+  });
+  assert.equal(result.effects.putBlobs.length, 1);
+  assert.equal(h.state.input.materials[0].size, 10_000_000);
+  assert.equal(h.state.input.materials[0].userCategory, 'unknown');
+});
+
+test('material count and 20MiB total quota reject only the new command', () => {
+  const h = harness();
+  for (let index = 0; index < 6; index += 1) {
+    h.send('MATERIAL_ADD', {}, { preparedMaterial: { name: 'part.csv', mime: 'text/csv', size: 1, sha256: 'part_' + index, file: null } });
+  }
+  const beforeCount = h.state;
+  assert.throws(() => h.send('MATERIAL_ADD', {}, {
+    preparedMaterial: { name: 'seventh.csv', mime: 'text/csv', size: 1, sha256: 'seventh', file: null }
+  }), { code: 'file_limit' });
+  assert.equal(h.state, beforeCount);
+  const total = harness();
+  for (const [index, size] of [10_000_000, 10_000_000, 971_520].entries()) {
+    total.send('MATERIAL_ADD', {}, { preparedMaterial: { name: 'part.csv', mime: 'text/csv', size, sha256: 'total_' + index, file: null } });
+  }
+  const beforeTotal = total.state;
+  assert.throws(() => total.send('MATERIAL_ADD', {}, {
+    preparedMaterial: { name: 'extra.csv', mime: 'text/csv', size: 1, sha256: 'extra', file: null }
+  }), { code: 'file_limit' });
+  assert.equal(total.state, beforeTotal);
+});
+
+test('material replacement subtracts old size, preserves same-byte identity and rejects duplicates', () => {
+  const h = harness();
+  for (const [index, size] of [10_000_000, 10_000_000, 971_520].entries()) {
+    h.send('MATERIAL_ADD', { userCategory: 'content' }, { preparedMaterial: { name: 'part.csv', mime: 'text/csv', size, sha256: 'replace_' + index, file: null } });
+  }
+  const first = h.state.input.materials[0];
+  const replacement = { name: 'new.csv', mime: 'text/csv', size: first.size, sha256: 'replacement', file: null };
+  const result = h.send('MATERIAL_REPLACE', { materialId: first.id, inputVersion: h.state.round.inputVersion }, { preparedMaterial: replacement });
+  const next = h.state.input.materials.find((item) => item.id === first.id);
+  assert.equal(next.version, first.version + 1);
+  assert.equal(next.userCategory, 'unknown');
+  assert.deepEqual(result.effects.putBlobs.map((item) => item.materialId), [first.id]);
+  const before = h.state;
+  assert.equal(h.send('MATERIAL_REPLACE', { materialId: first.id, inputVersion: before.round.inputVersion, userCategory: 'ads' },
+    { preparedMaterial: replacement }).changed, false);
+  assert.equal(h.state, before);
+  const third = h.state.input.materials.find((item) => item.size === 971_520);
+  assert.throws(() => h.send('MATERIAL_REPLACE', { materialId: third.id, inputVersion: before.round.inputVersion }, {
+    preparedMaterial: { ...replacement, size: 971_521, sha256: 'over_total' }
+  }), { code: 'file_limit' });
+  assert.throws(() => h.send('MATERIAL_REPLACE', { materialId: third.id, inputVersion: before.round.inputVersion },
+    { preparedMaterial: replacement }), { code: 'duplicate_material' });
+  assert.equal(h.state, before);
+});
+
+test('user material category changes invalidate downstream context without rewriting facts or Blob identity', () => {
+  const h = harness('one_sentence_v1');
+  const material = addTextMaterial(h);
+  h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
+    roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, status: 'parsed', error: null, facts: [parsedFact(material)] });
+  analyze(h); selectAndSave(h);
+  const before = structuredClone(h.state);
+  const originalMaterial = before.input.materials[0];
+  const result = h.send('MATERIAL_CATEGORY_SET', { roundId: before.round.id, inputVersion: before.round.inputVersion,
+    materialId: material.id, materialVersion: material.version, userCategory: 'transactions' });
+  assert.deepEqual(result.effects, { putBlobs: [], deleteBlobs: [], clearSession: false });
+  assert.deepEqual(h.state.input.materials[0], { ...originalMaterial, userCategory: 'transactions' });
+  assert.deepEqual(h.state.input.facts, before.input.facts);
+  assert.deepEqual(h.state.input.constraints, before.input.constraints);
+  assert.deepEqual(h.state.input.unknowns, before.input.unknowns);
+  assert.equal(h.state.input.confirmedVersion, null);
+  assert.equal(h.state.analysis.status, 'stale');
+  assert.equal(h.state.selection, null);
+  assert.ok(h.state.artifacts.every((artifact) => artifact.status === 'stale'));
+  assert.equal(h.state.round.inputVersion, before.round.inputVersion + 1);
+  const history = h.state.history.find((item) => item.type === 'material_category_changed');
+  assert.equal(history.previousUserCategory, 'unknown');
+  assert.equal(history.userCategory, 'transactions');
+  assert.equal(history.materialVersion, originalMaterial.version);
+  assert.throws(() => h.send('MATERIAL_RESULT_SET', { roundId: before.round.id, inputVersion: before.round.inputVersion,
+    materialId: material.id, materialVersion: material.version, status: 'parsed', facts: [], error: null }), { code: 'stale_input' });
+  const unchanged = h.state;
+  assert.equal(h.send('MATERIAL_CATEGORY_SET', { roundId: unchanged.round.id, inputVersion: unchanged.round.inputVersion,
+    materialId: material.id, materialVersion: material.version, userCategory: 'transactions' }).changed, false);
+  assert.equal(h.state, unchanged);
+});
+
+test('category edits reject stale scope and unrecognized labels without saving', () => {
+  const h = harness();
+  const material = addTextMaterial(h);
+  const before = h.state;
+  const payload = { roundId: before.round.id, inputVersion: before.round.inputVersion,
+    materialId: material.id, materialVersion: material.version, userCategory: 'product' };
+  for (const patch of [{ roundId: undefined }, { roundId: 'old_round' }, { inputVersion: payload.inputVersion - 1 },
+    { materialId: 'missing' }, { materialVersion: payload.materialVersion + 1 }]) {
+    assert.throws(() => h.send('MATERIAL_CATEGORY_SET', { ...payload, ...patch }), { code: 'stale_input' });
+    assert.equal(h.state, before);
+  }
+  for (const userCategory of [null, '', 'verified', { name: 'content' }]) {
+    assert.throws(() => h.send('MATERIAL_CATEGORY_SET', { ...payload, userCategory }), { code: 'invalid_payload' });
+    assert.equal(h.state, before);
+  }
+});
+
+test('old material records without a user category remain readable and unchanged until an actual edit', () => {
+  const h = harness();
+  const material = addTextMaterial(h);
+  const legacy = structuredClone(h.state);
+  delete legacy.input.materials[0].userCategory;
+  const snapshot = structuredClone(legacy);
+  assert.deepEqual(normalizeSessionState(legacy), snapshot);
+  let id = 0;
+  const context = { newId: () => 'legacy_category_' + (++id), now: '2026-08-28T10:00:00.000Z' };
+  const payload = { roundId: legacy.round.id, inputVersion: legacy.round.inputVersion,
+    materialId: material.id, materialVersion: material.version, userCategory: 'unknown' };
+  const unchanged = reduceCommand(legacy, { type: 'MATERIAL_CATEGORY_SET', payload }, context);
+  assert.equal(unchanged.changed, false);
+  assert.equal(unchanged.state, legacy);
+  const edited = reduceCommand(legacy, { type: 'MATERIAL_CATEGORY_SET', payload: { ...payload, userCategory: 'ads' } }, context);
+  assert.equal(edited.state.input.materials[0].userCategory, 'ads');
+  assert.equal(edited.state.history.at(-1).previousUserCategory, 'unknown');
+  assert.deepEqual(legacy, snapshot);
+});
+
+test('add and replace never accept a forged verification label as a material category', () => {
+  const h = harness();
+  const material = addTextMaterial(h);
+  const before = h.state;
+  for (const type of ['MATERIAL_ADD', 'MATERIAL_REPLACE']) {
+    assert.throws(() => h.send(type, { materialId: material.id, inputVersion: before.round.inputVersion, userCategory: 'checked' },
+      { preparedMaterial: { name: 'sample.csv', mime: 'text/csv', size: 8, sha256: 'new_file', file: null } }),
+    { code: 'invalid_payload' });
+    assert.equal(h.state, before);
+  }
+});
+
 test('material deletion drops current extracted facts and refuses late parsing', () => {
   const h = harness('one_sentence_v1');
   h.send('MATERIAL_ADD', { file: null }, { preparedMaterial: { name: 'sample.txt', mime: 'text/plain', size: 5, sha256: 'hash', file: null } });

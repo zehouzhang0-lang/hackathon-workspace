@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>拿去执行 · 演示</title>
+    <title>执行并记录 · 路芽</title>
     <link rel="stylesheet" href="shared/tokens.css">
     <link rel="stylesheet" href="shared/base.css">
     <link rel="stylesheet" href="shared/title-motion.css">
@@ -16,6 +16,11 @@
     <div id="shared-shell"></div>
 
     <main id="action-main" tabindex="-1">
+      <nav class="action-local-nav" aria-label="当前项目与复盘">
+        <button id="open-project" class="button button--quiet" type="button" aria-haspopup="dialog">当前项目</button>
+        <button id="open-review" class="button button--quiet" type="button" disabled>反馈后改判</button>
+      </nav>
+
       <section id="load-state" class="action-state" aria-labelledby="load-title">
         <h1 id="load-title">读取当前行动</h1>
         <p id="load-message" role="status" aria-live="polite">正在读取本机浏览器中的选择与记录。</p>
@@ -30,18 +35,24 @@
 
       <div id="action-content" hidden>
         <header class="action-heading">
+          <p id="selected-plan-label" class="selected-plan-label">已选方案</p>
           <div class="action-heading-copy">
+            <p class="action-task-intro">今天只做这一件事</p>
             <div class="action-heading-line">
-              <h1 id="action-title">当前行动</h1>
+              <h1 id="action-title" tabindex="-1">当前行动</h1>
               <p id="round-label" class="action-round-label"></p>
             </div>
             <div id="context-meta" class="action-context"></div>
             <details class="action-context-disclosure action-disclosure">
-              <summary>本轮问题</summary>
+              <summary>本轮问题与范围</summary>
               <p id="problem-summary" class="action-problem"></p>
             </details>
           </div>
-          <button class="button button--quiet action-change-path" type="button" data-nav="decisions">回去换一条路径</button>
+          <div class="action-fixed-context">
+            <h2>本轮保持不变</h2>
+            <ul id="keep-fixed-list"><li>以当前已选计划为准，未明确项保持未知。</li></ul>
+            <button class="button button--quiet action-change-path" type="button" data-nav="decisions">回去换一条路径</button>
+          </div>
         </header>
 
         <div class="action-layout">
@@ -49,16 +60,16 @@
             <div class="action-workspace">
               <div class="artifact-navigation">
                 <header class="artifact-list-heading">
-                  <h2 id="delivery-title" data-fold-title>行动内容</h2>
+                  <h2 id="delivery-title" data-fold-title>可以直接使用的修改稿</h2>
                   <span id="artifact-count" class="artifact-count"></span>
                 </header>
-                <div id="artifact-list" role="tablist" aria-orientation="vertical" aria-label="选择行动内容"></div>
+                <div id="artifact-list" role="tablist" aria-orientation="horizontal" aria-label="选择行动内容"></div>
               </div>
 
               <p id="preview-empty" class="preview-empty">当前还没有可预览的内容，请查看准备状态与核对提示。</p>
               <section id="artifact-preview" class="action-preview" role="tabpanel" aria-labelledby="preview-title" tabindex="0" hidden>
                 <header class="preview-header">
-                  <h2 id="preview-title">内容预览</h2>
+                  <h3 id="preview-title">内容预览</h3>
                   <p id="preview-meta" class="preview-meta"></p>
                   <p id="preview-placement" class="preview-placement"></p>
                 </header>
@@ -69,7 +80,7 @@
                     <button id="preview-steps-tab" class="preview-tab" type="button" role="tab" aria-controls="preview-steps-panel" aria-selected="false" tabindex="-1">使用步骤</button>
                   </div>
                   <div class="preview-actions">
-                    <button id="copy-artifact" class="button" type="button" aria-describedby="artifact-status" disabled>复制内容</button>
+                    <button id="copy-artifact" class="button button--quiet" type="button" aria-describedby="artifact-status" disabled>复制当前内容</button>
                     <button id="select-artifact" class="button button--quiet" type="button" aria-describedby="artifact-status" disabled>手动选取</button>
                   </div>
                 </div>
@@ -78,7 +89,7 @@
                   <p id="preview-warning" class="action-warning" role="status" aria-live="polite"></p>
                   <div id="preview-content" role="tabpanel" aria-labelledby="preview-content-tab">
                     <label for="preview-body" class="action-visually-hidden">当前行动的只读内容</label>
-                    <textarea id="preview-body" class="preview-body" rows="8" readonly spellcheck="false" aria-describedby="preview-placement preview-meta"></textarea>
+                    <textarea id="preview-body" class="preview-body" rows="6" readonly spellcheck="false" aria-describedby="preview-placement preview-meta"></textarea>
                   </div>
                   <div id="preview-steps-panel" role="tabpanel" aria-labelledby="preview-steps-tab" hidden>
                     <ol id="preview-steps" class="preview-steps" tabindex="0" aria-label="当前行动的使用步骤"></ol>
@@ -88,16 +99,20 @@
 
                 <footer class="preview-export">
                   <div class="action-export-row">
-                    <button id="export-pack" class="button button--secondary" type="button">下载整包 TXT</button>
-                    <p class="preview-export-scope">包含这条行动的全部内容、步骤与必要风险。</p>
+                    <button id="copy-all" class="button" type="button" aria-describedby="artifact-status" disabled>复制全部文案</button>
+                    <button id="export-pack" class="button button--secondary" type="button">下载执行清单 TXT</button>
+                    <button id="select-all" class="button button--quiet" type="button" disabled>手动选全文</button>
                   </div>
+                  <p class="preview-export-scope">完整文案对应当前方案；TXT 另含步骤、必要风险、来源与稿件版本。</p>
                   <section id="export-consent" class="action-export-consent" aria-label="本次导出的摘要授权" hidden>
                     <label class="action-checkbox-label" for="export-summary-consent">
                       <input id="export-summary-consent" type="checkbox">
                       <span>我同意本次导出包含此页所示的必要摘要。</span>
                     </label>
                   </section>
-                  <p class="action-takeaway-note">复制或下载不会记作已执行。</p>
+                  <label for="all-copy-fallback" class="action-visually-hidden">当前方案完整文案，可手动选择复制</label>
+                  <textarea id="all-copy-fallback" class="all-copy-fallback field" rows="5" readonly spellcheck="false" hidden></textarea>
+                  <p class="action-takeaway-note">先取用，再自愿反馈。复制或下载不会记作采用或已执行。</p>
                 </footer>
               </section>
             </div>
@@ -109,32 +124,29 @@
             </div>
           </section>
 
-          <aside class="action-guidance" aria-labelledby="guidance-title">
+          <aside class="action-guidance" aria-labelledby="experiment-title">
+            <section class="action-guidance-section action-experiment-section">
+              <h2 id="experiment-title">本轮实验卡</h2>
+              <div id="experiment-content"></div>
+              <p class="action-field-note">样本与时间按实际计划展示；计划假设不代表统计充分或效果承诺。</p>
+              <button id="open-experiment-evidence" class="button button--secondary" type="button" aria-haspopup="dialog">查看实验依据</button>
+            </section>
+
             <section class="action-guidance-section">
-              <h2 id="guidance-title">使用前核对</h2>
+              <h3 id="guidance-title">使用前核对</h3>
               <ul id="prerequisite-list" class="action-condition-list"></ul>
             </section>
 
-            <section class="action-guidance-section">
+            <section class="action-guidance-section action-risk-section">
               <h3>必要风险</h3>
               <ul id="risk-list" class="action-risk-list"></ul>
             </section>
-
-            <section class="action-guidance-section">
-              <h3>按原计划观察</h3>
-              <div id="experiment-content"></div>
-            </section>
-
-            <details id="source-details" class="action-disclosure">
-              <summary>来源与依据</summary>
-              <div id="source-list"></div>
-            </details>
           </aside>
         </div>
 
-        <details id="feedback-panel" class="action-feedback action-disclosure">
+        <details id="feedback-panel" class="action-feedback action-disclosure" open>
           <summary>
-            <span class="action-feedback-title">记一下实际情况</span>
+            <span class="action-feedback-title">准备好以后，记录你的执行情况</span>
             <span class="action-feedback-hint">选填，不影响取用</span>
           </summary>
 
@@ -143,25 +155,58 @@
               <fieldset id="feedback-fields">
                 <legend class="action-visually-hidden">这次行动的实际情况</legend>
 
-                <div id="feedback-artifact-field" class="action-form-field">
-                  <label for="feedback-artifact">这次记录对应的内容</label>
-                  <select id="feedback-artifact" name="artifactId" class="field"></select>
+                <div class="feedback-context-row">
+                  <div id="feedback-artifact-field" class="action-form-field feedback-artifact-field">
+                    <label for="feedback-artifact">这次记录对应的稿件</label>
+                    <select id="feedback-artifact" name="artifactId" class="field"></select>
+                  </div>
+                  <p id="execution-status" class="action-field-note" role="status" aria-live="polite">执行情况未知，请按实际情况选择。</p>
+                  <button id="clear-execution" class="button button--quiet" type="button">恢复为未知</button>
                 </div>
 
-                <div class="action-form-field">
+                <div class="execution-options" role="group" aria-label="你实际执行了多少" aria-describedby="execution-status">
+                  <button class="button button--secondary execution-option" type="button" data-execution="done" aria-pressed="false">我已经执行</button>
+                  <button class="button button--secondary execution-option" type="button" data-execution="partial" aria-pressed="false">只执行了一部分</button>
+                  <button class="button button--secondary execution-option" type="button" data-execution="not_started" aria-pressed="false">我没有执行</button>
+                </div>
+
+                <div hidden>
                   <label for="execution-select">动作是否实施</label>
-                  <select id="execution-select" name="execution" class="field">
-                    <option value="unknown" selected>还不确定</option>
-                    <option value="not_started">还没开始</option>
-                    <option value="partial">做了一部分</option>
-                    <option value="done">已经做完</option>
+                  <select id="execution-select" name="execution">
+                    <option value="unknown" selected>执行情况未知</option>
+                    <option value="not_started">我没有执行</option>
+                    <option value="partial">只执行了一部分</option>
+                    <option value="done">我已经执行</option>
                   </select>
                 </div>
 
-                <div class="action-form-field">
-                  <label for="feedback-text">一句实际观察<span class="action-optional">（选填）</span></label>
-                  <textarea id="feedback-text" name="feedback" class="field" rows="3" placeholder="写下你实际看到的情况，也可以留空。"></textarea>
+                <div class="feedback-input-row">
+                  <label class="attachment-upload" for="feedback-image" aria-disabled="true">
+                    <span class="attachment-upload-title">上传新的后台截图</span>
+                    <span>PNG／JPEG</span>
+                    <span class="attachment-pending">待接通</span>
+                    <input id="feedback-image" class="action-visually-hidden" type="file" accept=".png,.jpg,.jpeg" aria-describedby="attachment-dependency" disabled>
+                  </label>
+                  <label class="attachment-upload" for="feedback-table" aria-disabled="true">
+                    <span class="attachment-upload-title">上传新的 Excel 或 CSV</span>
+                    <span>.xlsx／.xls／.csv</span>
+                    <span class="attachment-pending">待接通</span>
+                    <input id="feedback-table" class="action-visually-hidden" type="file" accept=".xlsx,.xls,.csv" aria-describedby="attachment-dependency" disabled>
+                  </label>
+
+                  <div class="action-form-field feedback-text-field">
+                    <label for="feedback-text">变化或没有执行的原因<span class="action-optional">（选填）</span></label>
+                    <textarea id="feedback-text" name="feedback" class="field" rows="3" maxlength="500" aria-describedby="feedback-count" placeholder="用文字说明实际看到的变化，或没有执行的原因。"></textarea>
+                    <output id="feedback-count" class="feedback-count" for="feedback-text">0/500</output>
+                  </div>
+
+                  <div class="feedback-submit-column">
+                    <button id="feedback-later" class="button button--secondary" type="button">稍后回来补充</button>
+                    <button id="save-feedback" class="button" type="submit">保存本轮记录</button>
+                  </div>
                 </div>
+
+                <p id="attachment-dependency" class="action-dependency-note">反馈附件待接通（C2／C6）。当前未选择、未保存附件；可先保存文字与执行自述，不会改动原分析输入。</p>
 
                 <details id="feedback-more" class="action-disclosure action-feedback-more">
                   <summary>补充观察、范围和日期（选填）</summary>
@@ -188,7 +233,6 @@
                 </details>
 
                 <div class="action-form-actions">
-                  <button id="save-feedback" class="button" type="submit">保存这次记录</button>
                   <button id="discard-feedback" class="button button--quiet" type="button">放弃未保存的填写</button>
                 </div>
               </fieldset>
@@ -200,12 +244,103 @@
                 <h3 id="saved-feedback-title">已保存的记录</h3>
                 <div id="saved-feedback-content"></div>
               </section>
-              <button id="next-round" class="button button--secondary" type="button" disabled>带着反馈再分析</button>
+              <button id="next-round" class="button button--secondary" type="button" disabled>查看反馈后改判</button>
               <p id="round-status" class="status" role="status" aria-live="polite"></p>
             </div>
           </div>
         </details>
       </div>
+
+      <section id="review-content" class="action-review" aria-labelledby="review-title" hidden>
+        <header class="review-heading">
+          <h1 id="review-title" tabindex="-1">反馈后改判</h1>
+          <button id="return-action" class="button button--secondary" type="button">返回当前行动</button>
+        </header>
+
+        <section class="review-receipt-panel" aria-label="本轮记录回执">
+          <div>
+            <p id="review-receipt" class="review-receipt" role="status" aria-live="polite">尚未读取本轮保存记录。</p>
+            <p id="review-capability" class="action-field-note">本机保存、本机读回、MoneyAI 写入与读回分别核对。</p>
+          </div>
+          <button id="open-record" class="button button--secondary" type="button" aria-haspopup="dialog" disabled>查看完整实验记录</button>
+        </section>
+
+        <section class="review-section" aria-labelledby="review-summary-title">
+          <h2 id="review-summary-title">上一轮发生了什么</h2>
+          <div class="review-summary-grid">
+            <article class="review-summary-item">
+              <h3>上轮动作</h3>
+              <div id="review-last-action"><p>尚未读取上轮动作。</p></div>
+            </article>
+            <article class="review-summary-item">
+              <h3>执行情况</h3>
+              <div id="review-last-execution"><p>执行情况未知。</p></div>
+            </article>
+            <article class="review-summary-item">
+              <h3>观察结果</h3>
+              <div id="review-last-observation"><p>观察结果未知。</p></div>
+            </article>
+            <article class="review-summary-item">
+              <h3>当前结论</h3>
+              <div id="review-last-conclusion"><p>等待共享再判断，尚无结论。</p></div>
+            </article>
+          </div>
+          <p class="action-field-note">执行自述不等于平台核验；没有变化或证据不足，都不能单独证明行动无效。</p>
+        </section>
+
+        <section class="review-section" aria-labelledby="review-judgement-title">
+          <h2 id="review-judgement-title">下一步建议与再判断理由</h2>
+          <div class="review-judgement-grid">
+            <article class="review-treatment">
+              <h3>原行动如何处理</h3>
+              <div id="review-old-treatment"><p>等待共享层结合已保存反馈判断。</p></div>
+            </article>
+            <article class="review-suggestion">
+              <h3>下一步建议</h3>
+              <div id="review-next-suggestion"><p>尚无候选建议，不会自动改选另一条路径。</p></div>
+            </article>
+          </div>
+          <div id="review-reason" class="review-reason">再判断尚未接通（C7）。保留现有记录，待取得实际依据后再决定继续观察、补数据、暂停或换实验。</div>
+        </section>
+
+        <div class="review-plan-grid">
+          <section class="review-section" aria-labelledby="review-candidate-title">
+            <h2 id="review-candidate-title">候选执行预览</h2>
+            <div id="review-candidate-preview" class="review-candidate-preview">
+              <p>尚无候选执行稿。共享层需先返回适用方案；预览不会覆盖当前稿件。</p>
+            </div>
+            <div class="action-form-actions">
+              <button id="generate-candidate" class="button" type="button" aria-describedby="candidate-dependency" disabled>生成完整执行稿</button>
+              <button id="show-change-list" class="button button--secondary" type="button" aria-describedby="candidate-dependency" disabled>查看修改清单</button>
+            </div>
+            <p id="candidate-dependency" class="action-dependency-note">候选生成与再判断待接通（C5／C7）；未确认的产品事实不能写成承诺。</p>
+          </section>
+
+          <section class="review-section" aria-labelledby="review-rules-title">
+            <h2 id="review-rules-title">第二轮实验规则</h2>
+            <div id="review-rules">
+              <dl class="experiment-facts">
+                <dt>本轮只改什么</dt><dd>等待候选计划</dd>
+                <dt>继续保持不变</dt><dd>等待候选计划</dd>
+                <dt>主要观察</dt><dd>未知</dd>
+                <dt>停止条件</dt><dd>等待风险与可观察范围</dd>
+                <dt>回滚方式</dt><dd>等待候选计划</dd>
+              </dl>
+            </div>
+            <div class="action-form-actions">
+              <button id="start-candidate" class="button" type="button" aria-describedby="candidate-start-dependency" disabled>开始第二轮</button>
+              <button id="pause-review" class="button button--secondary" type="button">暂时不继续</button>
+            </div>
+            <p id="candidate-start-dependency" class="action-dependency-note">下一轮创建待接通（C8）。只有明确接受候选并成功建轮，才会形成正式记录；缺少退款等数据不能视为风险未触发。</p>
+          </section>
+        </div>
+
+        <section class="review-section review-memory" aria-labelledby="review-memory-title">
+          <h2 id="review-memory-title">这个商家的实验记忆</h2>
+          <p class="action-field-note">仅展示当前项目的实际记录与候选状态；本机记录不代表 MoneyAI 已记住。</p>
+          <div id="review-memory-list"><p class="empty-note">尚未读取实验记录。</p></div>
+        </section>
+      </section>
 
       <div class="action-operation-area">
         <p id="operation-status" class="status" role="status" aria-live="polite"></p>
@@ -216,6 +351,42 @@
         <summary>过去的行动记录</summary>
         <div id="history-list"></div>
       </details>
+
+      <dialog id="evidence-dialog" class="action-dialog" aria-labelledby="evidence-title">
+        <header class="action-dialog-heading">
+          <h2 id="evidence-title">本轮实验依据</h2>
+          <button class="button button--quiet" type="button" data-close-dialog="evidence-dialog">关闭并返回</button>
+        </header>
+        <div class="action-dialog-body">
+          <section aria-labelledby="experiment-basis-title">
+            <h3 id="experiment-basis-title">观察计划与限制</h3>
+            <div id="experiment-basis"></div>
+          </section>
+          <details id="source-details" class="action-disclosure" open>
+            <summary>来源与依据</summary>
+            <div id="source-list"></div>
+          </details>
+        </div>
+        <footer class="action-dialog-footer">
+          <button class="button button--secondary" type="button" data-nav="decisions">查看路径报告与完整条件树</button>
+        </footer>
+      </dialog>
+
+      <dialog id="record-dialog" class="action-dialog" aria-labelledby="record-title">
+        <header class="action-dialog-heading">
+          <h2 id="record-title">完整实验记录</h2>
+          <button class="button button--quiet" type="button" data-close-dialog="record-dialog">关闭并返回</button>
+        </header>
+        <div id="record-content" class="action-dialog-body"></div>
+      </dialog>
+
+      <dialog id="project-dialog" class="action-dialog action-project-dialog" aria-labelledby="project-title">
+        <header class="action-dialog-heading">
+          <h2 id="project-title">当前项目</h2>
+          <button class="button button--quiet" type="button" data-close-dialog="project-dialog">关闭并返回</button>
+        </header>
+        <div id="project-content" class="action-dialog-body"></div>
+      </dialog>
 
       <noscript>
         <p class="action-warning">此页需要 JavaScript 读取已选行动。当前没有读取或保存任何记录。</p>

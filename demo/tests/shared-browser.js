@@ -282,6 +282,15 @@ button.addEventListener('click', async () => {
       await send('MATERIAL_ADD', { file });
       const material = state.input.materials.at(-1);
       check(await (await getMaterialBlob(material.id)).text() === '合成测试原件', '应读回相同Blob内容');
+      const beforeCategory = structuredClone(state);
+      await send('MATERIAL_CATEGORY_SET', { roundId: state.round.id, inputVersion: state.round.inputVersion,
+        materialId: material.id, materialVersion: material.version, userCategory: 'content' });
+      check(state.input.materials.at(-1).userCategory === 'content', '用户分类应保存为元数据');
+      check(state.input.materials.at(-1).version === material.version, '分类不能冒充原件的新版本');
+      check(state.round.inputVersion === beforeCategory.round.inputVersion + 1, '分类变更须重新核对输入');
+      equal(state.input.facts, beforeCategory.input.facts, '用户分类不能生成或改写事实');
+      await readBack(structuredClone(state), '用户分类和输入版本须实际读回');
+      check(await (await getMaterialBlob(material.id)).text() === '合成测试原件', '分类不能改变Blob原文');
       const invalid = new File([new Uint8Array([255])], 'invalid.txt', { type: 'text/plain' });
       const replaced = await dispatch(command('MATERIAL_REPLACE', { materialId: material.id, inputVersion: state.round.inputVersion, file: invalid }));
       check(!replaced.ok, '坏UTF-8替换应拒绝');

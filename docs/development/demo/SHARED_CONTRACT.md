@@ -1,16 +1,52 @@
 # 三页共享契约｜demo.v1
 
-## REQ-30 共享增量边界（目标已授权，接口尚未交付）
+## REQ-30 共享增量边界（C2首批已交付，其余逐项跟踪）
 
 [四图功能锁定](WIREFRAME_FUNCTION_LOCK.md)第8节列出C1—C9：公共壳、截图／Excel能力矩阵、榨汁杯种子与六组投影、分析互动、执行稿／实验卡、反馈附件原子保存、再判断、显式幂等下一轮以及MoneyAI业务通路。统筹逐项实现并追加接口后才由页面调用，不能把目标字段或名字当成已经存在的API。保留demo.v1和现有接口，不重建共享状态。
 
-本批允许新增截图和Excel目标，覆盖下文旧产品限制；现有解析器支持范围、5MiB限制等仍是旧代码事实，未改之前必须如实提示而非标记新功能完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
+本批允许新增截图和Excel目标，覆盖下文旧产品限制；共享C2首批已更新能力矩阵、用户分类和单文件限额，首页接线尚待交回。Excel和OCR仍未接通，不以格式入口存在声明解析完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
 
 P1签收后的最小接线依赖已登记：C2必须提供实际格式能力／限额查询、图片来源类别的用户标注及修改命令、统一Excel解析入口；C3必须给出确切fixtureId与九组／草稿初始化映射。现阶段这些新增接口均未发出，页面不得猜名称、写私有字段或硬编码榨汁杯数值。
 
 状态：2026-08-28新统筹已完成文档审查，本文与[补充细则](CONTRACT_DETAILS.md)一并作为本轮实施约定；契约版本仍为demo.v1；保留原公开API与命令，REQ-25追加INTAKE_SET及草稿/提取辅助接口，不另建状态库。用户已要求先跑通基础版本，实施与完整验收状态分开登记在[入口READY表](README.md)。变更只能由统筹同步通知三页，不能由一页私自改接口。
 
 细则补齐补问/答案、来源、文件去重/解析、路径/树/估算、纯生成器、事件/导出；迟到实质投影失效和ID分配/幂等两项修订已定向复核。本文的最小字段表不是另一套schema，完整嵌套字段以细则为准；[实施计划](SHARED_BUILD_PLAN.md)中的待执行测试不能当运行通过。
+
+### C2 首批接口：已实现，页面接线和浏览器待验
+
+从 `demo/shared/state.js` 导入以下只读出口；它们与事务内的实现共用定义，不由页面另写格式或体积常量：
+
+- `MATERIAL_LIMITS = { maxFiles:6, maxFileBytes:10000000, maxTotalBytes:20971520 }`，只读。单份必须大于0，≤10,000,000字节；20MiB为20×1024×1024字节。
+- `MATERIAL_CATEGORIES` 为只读数组：`unknown/content/product/transactions/ads`，对应未标注／内容／商品／成交／投流。
+- `MATERIAL_CAPABILITIES` 为按扩展名索引的只读表；`getMaterialCapability(fileName)` 返回对应只读条目或null。条目为 `{extension,mime,receive,preview,parse,reason}`。该查询仅声明能力，不验证文件本身，也不表示已保存。
+
+| 格式 | receive／preview／parse | 本批真实边界 |
+| --- | --- | --- |
+| PNG、JPG/JPEG | true／image／none | 实际字节、MIME及图片解码检查后可接收；可用原件预览，无OCR，事实仍待核对 |
+| WebP | true／image／none | 保留原有兼容，不因新页面不主推它而删除旧原件 |
+| TXT | true／text／text_only | UTF-8原文读取，默认facts为空、needs_review，不声称业务已识别 |
+| CSV | true／text／metric_csv | 原有UTF-8约定指标表头及逐值定位；任意经营报表不保证可解析 |
+| JSON | true／text／metric_json | 原有demo.metrics.v1白名单；不执行文件内指令 |
+| XLSX、XLS | false／null／none | 接收和解析尚未接通，有明确reason；按钮不能假装上传成功，建议先导出UTF-8 CSV |
+| HTML、SVG、PDF、视频等 | 查询为null | 不接收，不执行宏、公式、脚本或外部链接 |
+
+既有CSV/JSON/TXT读取函数仍位于首页模块；本批统一存储能力和限额，没有伪造一个共享Excel或OCR解析器。已接收文本读取失败时保留原件并标明失败；坏替换在提交前拒绝，不能破坏旧原件。页面应使用原件类型决定预览，文件名／标签只作文本渲染。
+
+`MATERIAL_ADD`、`MATERIAL_REPLACE` 的payload新增可选 `userCategory`，默认unknown；仍用既有 `file` 和替换所需 `materialId/inputVersion`。新文件字节替换成功后不自动继承旧类别，除非用户明确提供该类别。同字节替换仍为无变化，即使携带另一类别；纯改类别应使用新命令：
+
+```js
+dispatch({
+  type: 'MATERIAL_CATEGORY_SET',
+  commandId, expectedRevision,
+  payload: { roundId, inputVersion, materialId, materialVersion, userCategory: 'content' }
+})
+```
+
+四个作用域字段均必须匹配当前材料；旧轮次／输入／材料版本及已删除材料返回stale_input，非法类别返回invalid_payload。旧material没有userCategory时，页面只读显示unknown，不在读取时补写或制造保存。命令用原有commandId幂等和revision冲突机制；同类别为无变化。
+
+类别仅为用户自述，不改 `sourceKind:'user_file'`、事实、事实verification、channel或cohort，不生成解析值，不改变Blob、blobKey、sha256或material.version。真实变更记录 `material_category_changed` 历史（前后类别、材料版本、旧输入版本），inputVersion+1并失效旧确认／分析／选择；迟到解析必须按原启动版本拒绝，不能偷换成新版本重试。失败保留当前原件与页面草稿。
+
+本批已通过61项Node纯逻辑回归、6项Node实际File预检和独立8项增量复核；前者包含原53项。预检刻意无IndexedDB，**不是保存或浏览器通过**。现有浏览器宿主13组定义中扩展了分类／Blob读回断言，实际运行仍为0。首页尚需移除旧5MiB／新图禁用并接线；P3反馈仍必须等待C6，不能借C2调用MATERIAL_ADD。C3榨汁杯、Excel解析、真实MoneyAI均未由本批交付。
 
 ## 1. 文件归属与依赖
 
@@ -89,7 +125,7 @@ REQ-21新增独占例外：“视觉反馈与动效评审”任务负责`docs/de
 
 | 对象 | 约定字段与语义 |
 | --- | --- |
-| material | `id,name,mime,size,status,sourceKind,blobKey,error,version,sha256`；状态为received/parsed/needs_review/failed；文件名不是可信内容，摘要不导出 |
+| material | `id,name,mime,size,status,sourceKind,userCategory?,blobKey,error,version,sha256`；旧userCategory缺省按unknown只读显示；状态为received/parsed/needs_review/failed；文件名／类别不是可信内容，摘要不导出 |
 | fact | `id,key,value,availability,unit,subject,window,channel,cohort,source,verification`；availability=known/unknown/not_applicable，未知值为null；0只能来自明确值。九组投影另带intakeField/evidenceStatus；confirmed_fact仍只是商家已确认理解，非外部核实，owner_hypothesis仍为老板判断 |
 | input.intake | `null`或`{draft,sourceBindings,status,roundId,inputVersion,savedAt}`；draft.version=v0.5-intake-1，status=current/stale。保存原始转写、证据账本和更正链，编辑文字另在input.description；不存音频 |
 | fact.source | `kind,materialId,locator,note`；kind=merchant_statement/file_extract/derived/public_reference/scenario_assumption；locator为文本片段、CSV行列或其他可定位位置 |
@@ -124,8 +160,9 @@ getMaterialBlob(materialId) // Promise<Blob|null>；缺原件才null，读取故
 | LOAD_FIXTURE | `fixtureId` | 仅明确的载入示例操作，覆盖现有会话需确认；来源保持合成 |
 | INPUT_EDIT | `description` | 内容真变才递增inputVersion；已有九组理解会标stale；不能只保存description便清除语音原文的未保存状态 |
 | INTAKE_SET | `roundId,inputVersion,draft,description,sourceBindings` | 严格校验v0.5-intake-1及完整合并投影，同事务保存原文/编辑文/来源/更正；实质变化一次inputVersion+1并失效下游；不静默覆盖外部材料事实或其他未知；明确更正保留原ID及来源历史 |
-| MATERIAL_ADD / MATERIAL_REMOVE | `file` / `materialId` | ADD的File只在本机处理并转Blob；metadata与Blob一并保存，REMOVE删除Blob并失效依赖 |
-| MATERIAL_REPLACE | `materialId,file,inputVersion` | 原子替换；取消或失败保留旧Blob与状态，成功才变更输入版本 |
+| MATERIAL_ADD / MATERIAL_REMOVE | `file,userCategory?` / `materialId` | ADD的File只在本机处理并转Blob；metadata与Blob一并保存，REMOVE删除Blob并失效依赖 |
+| MATERIAL_REPLACE | `materialId,file,inputVersion,userCategory?` | 原子替换；取消或失败保留旧Blob与状态，成功才变更输入版本；同字节不借替换改类别 |
+| MATERIAL_CATEGORY_SET | `materialId,materialVersion,roundId,inputVersion,userCategory` | 用户分类单独保存；改变输入版本并失效下游，不改原件身份／事实／真实性，同类别无变化 |
 | MATERIAL_RESULT_SET | `materialId,materialVersion,roundId,inputVersion,status,facts,error` | 保存实际解析结果；核对启动轮次/输入/材料版本，过期/已删除任务拒绝，实质迟到投影按第5节失效，失败不删原件 |
 | FACT_PATCH | `fact,reason` | 保留来源及更正记录，关联确认卡标stale；递归派生值退回未知并撤销旧依赖条件，不替换为无出处“事实” |
 | ORGANIZATION_SET | `focus,facts,constraints,unknowns,roundId,inputVersion` | 只接收对应版本的整理结果，不覆盖用户更正；不能把分析结论写成事实 |
@@ -211,9 +248,9 @@ materials仅可为当前已保存TXT/CSV/JSON的`{materialId,materialVersion,mim
 
 建议IndexedDB数据库`douyin-experiment-demo`、版本1，统一存会话JSON和附件Blob；不要把图片base64塞localStorage。只有事务完成才返回ok/显示“已保存到本机浏览器”；重新打开后实际读到记录才说“已读取本地记录”。这不等于MoneyAI记忆或多设备同步。
 
-REQ-25新首页仅开放UTF-8 TXT/CSV、约定JSON；新图片入口在没有真实图片理解时关闭，原有PNG/JPEG/WebP材料、原件和历史继续保留，不清空旧数据。共享存储保留旧格式兼容；最多6份，每份5MiB，总计20MiB。超过范围明确拒绝该文件，保留其他文件。PDF、XLSX、视频不声称支持解析；不接收HTML/SVG可执行素材。禁止eval、导入上传脚本或把未转义文本写innerHTML。
+REQ-30覆盖旧REQ-25禁新图与5MiB限制：共享C2支持PNG/JPEG/WebP接收预览及UTF-8 TXT/CSV/约定JSON，最多6份、每份10,000,000字节、总计20MiB。首页接线尚未验收。超过范围明确拒绝该文件，保留其他文件；旧原件不清空。XLSX/XLS接收与解析尚未接通，PDF、视频不支持；不接收HTML/SVG可执行素材。禁止eval、导入上传脚本或把未转义文本写innerHTML。
 
-- 历史图片：可预览、删除或按needs_review核对；不把文件接收冒充OCR或图片理解。本版不让新图片入口绕过REQ-25。
+- 新旧图片：可接收后预览、删除或按needs_review核对；接收不等于OCR或图片理解，图片没有已解析事实时不能标“已读取数据”。
 - TXT：真实读取原文；CSV：支持带引号字段与UTF-8 BOM的既定列；JSON：只接受已公布白名单结构，失败有原因。统筹在`samples/`提供说明与示例，不用关键词匹配假装识别任何报表。
 - 结构化示例指标列：`metric,value,unit,subject,window_start,window_end,channel,cohort`；缺列/缺值保持未知，不用0填满。
 - 文件接收与现有白名单解析在本机；真实提取尚未发送。浏览器语音识别可能由浏览器厂商服务处理，用户须主动开始、可停止并获得明确说明；不声称离线、不把未保存音频当未发送。MoneyAI文本发送另核对项目模型/费用/范围。本轮不做爬虫、银行/收款授权、后台API或监控识别。

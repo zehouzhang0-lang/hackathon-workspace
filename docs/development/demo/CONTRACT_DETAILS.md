@@ -163,14 +163,15 @@ FACT_PATCH 保留 fact.id，原值／来源进入 history；更正条目为 `{ty
 
 ## 5. 文件接收、重复与替换
 
-- 沿用最多 6 份、单份 5 MiB、总计 20 MiB 的 Demo 上限（MiB=1024×1024 字节）。检查实际 File.size；拒绝一份不丢弃同批已成功文件。
+- REQ-30 C2首批统一最多6份、单份10,000,000字节、总计20MiB（MiB=1024×1024字节），覆盖旧5MiB规则。使用state.js公开MATERIAL_LIMITS和getMaterialCapability；接收、预览、解析是分别声明的能力。检查实际File.size；拒绝一份不丢弃同批已成功文件。
 - material 补 `version`（初始 1）与内部 `sha256`；以当前会话中相同 size＋实际字节摘要判重复，不以文件名判重。摘要不外发、不作为商家身份、不放进报告。
 - 同名不同内容允许添加并提示“同名材料”；同内容改名拒绝 `duplicate_material` 并指向既有材料，不增加数量或 inputVersion。文件名始终按文本显示。
 - 一批文件按用户接收顺序逐份走 MATERIAL_ADD，上一份完成后用最新 revision；逐份返回结果，不新增批量写库 API。限额／重复判断须在提交前按最新已存状态重检。
 - MATERIAL_REPLACE 使用“总量−旧文件＋新文件”算体积，数量不增加；保持 material.id，成功后 version 加 1，清旧 Blob／解析投影并失效依赖。替换成相同字节为无变化；与另一个现存材料重复则拒绝。
 - 取消、超限、解码或存储失败都不能删掉旧版本。替换与移除只留历史元数据／必要摘要，不在历史快照藏 Blob 或 data URL；新原件不能被旧 locator 引用。
 - MATERIAL_RESULT_SET 补 `materialVersion`，与启动时 inputVersion 一并校验；材料删除／替换或输入改变后迟到的结果拒绝为 stale_input，不能恢复旧 Blob 或原来的解析状态。
-- REQ-25新上传入口仅开放TXT/CSV/约定JSON；PNG/JPEG/WebP仅保留已有存储、预览及删除兼容，不让新入口绕过图片理解缺失。核验扩展名、可用MIME和实际可解码内容，不能只信文件名；历史图片无OCR仍needs_review，HTML/SVG/PDF/XLSX/视频不进入解析流程。
+- REQ-30允许新PNG/JPEG接收，保留WebP兼容及TXT/CSV/约定JSON。核验扩展名、可用MIME和实际可解码内容，不能只信文件名；新旧图片无OCR仍needs_review。XLSX/XLS接收和解析待接通，HTML/SVG/PDF/视频不接收。
+- material新增可选userCategory，unknown/content/product/transactions/ads仅为用户标注；旧记录缺省只读显示unknown。ADD/REPLACE可传该字段，新字节替换默认unknown；同字节替换无变化。MATERIAL_CATEGORY_SET须带roundId/inputVersion/materialId/materialVersion/userCategory，真实变化保存前后类别并失效下游；不改事实、真实性、Blob身份和material.version。详见[主契约C2](SHARED_CONTRACT.md)。
 
 ## 6. UTF-8 与解析白名单
 

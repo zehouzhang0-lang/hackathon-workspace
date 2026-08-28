@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>说清情况 · 路芽</title>
+    <title>资料确认 · 路芽</title>
     <link rel="stylesheet" href="shared/tokens.css">
     <link rel="stylesheet" href="shared/base.css">
     <link rel="stylesheet" href="shared/title-motion.css">
@@ -14,110 +14,108 @@
     <div id="shared-shell"></div>
 
     <main class="intake-main" id="main-content">
+
       <header class="intake-intro">
-        <h1 id="intake-title" data-fold-title>用一分钟，把你的商品讲给我听</h1>
-        <p id="intake-lead">不必准备完整报表，不知道的可以直接说不知道。</p>
+        <h1 id="intake-title" data-fold-title>把你现有的抖音经营资料发给我</h1>
+        <p id="intake-lead">截图、表格都可以，再用语音或文字补充经营背景</p>
       </header>
 
-      <section class="voice-panel" aria-labelledby="voice-heading">
-        <div class="voice-status-row">
-          <h2 id="voice-heading">像发一段语音一样，聊聊你的生意</h2>
-          <time id="voice-timer" datetime="PT0S" aria-live="off" aria-label="本次听取时长" hidden>00:00</time>
-        </div>
-        <ul class="voice-topics" aria-label="可以聊聊这五件事">
-          <li>卖什么、大概多少钱</li>
-          <li>你觉得谁会买</li>
-          <li>会在什么场景用</li>
-          <li>现在卡在哪里</li>
-          <li>做过什么、有哪些限制</li>
-        </ul>
-        <div class="voice-primary-actions">
-          <button id="voice-start" class="button voice-start" type="button" aria-describedby="voice-service-note" disabled>
-            <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-              <path d="M12 19v3" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <rect x="9" y="2" width="6" height="13" rx="3" />
-            </svg>
-            <span id="voice-start-label">直接说给我听</span>
-          </button>
-          <button id="voice-stop" class="button voice-stop" type="button" hidden>我说完了</button>
-        </div>
-        <p id="voice-stage" class="voice-stage" role="status" aria-live="polite">推荐说 60—90 秒，也可以随时停止。</p>
-        <div id="voice-live" class="voice-live" hidden>
-          <p class="voice-live-label">正在听取，文字可能继续修正</p>
-          <p id="voice-live-text" aria-live="off"></p>
-        </div>
-        <div class="entry-options">
-          <button id="open-upload" class="button button--secondary" type="button" aria-controls="upload-section" aria-expanded="false">上传商品资料</button>
-          <button id="open-manual" class="button button--quiet" type="button" aria-controls="manual-entry" aria-expanded="false">手动补充</button>
-          <button id="return-to-review" class="button button--quiet" type="button" hidden>返回核对</button>
-        </div>
-        <p id="voice-service-note" class="voice-service-note">语音使用浏览器识别服务，音频可能离开设备；开始前会请你确认。本页不保存音频文件。</p>
-      </section>
-
       <form id="intake-form" class="intake-form" novalidate>
-        <section id="manual-entry" class="description-section" aria-labelledby="description-heading" hidden>
-          <h2 id="description-heading" class="input-heading">
-            <label for="description">补充或修改这段话</label>
-          </h2>
-          <div class="description-composer">
-            <textarea
-              id="description"
-              rows="5"
-              aria-describedby="intake-lead"
-              placeholder="可以说卖什么、谁可能会买、现在想改变什么。不知道的先留空。"
-            ></textarea>
-            <div class="composer-actions">
-              <button
-                id="organize-button"
-                class="composer-submit"
-                type="submit"
-                aria-label="整理并核对"
-                disabled
-              >
-                <span>整理并核对</span>
-                <span class="submit-icon" aria-hidden="true">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">
-                    <path d="m5 12 7-7 7 7" />
-                    <path d="M12 19V5" />
-                  </svg>
-                </span>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section id="upload-section" class="materials-section" aria-labelledby="materials-heading" hidden>
-          <h2 id="materials-heading" class="input-heading">商品资料</h2>
-          <div id="drop-zone" class="material-drop-zone" role="group" aria-labelledby="drop-zone-title" aria-describedby="image-note" tabindex="0">
-            <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <div class="intake-entry-grid">
+          <section id="screenshot-section" class="input-panel screenshot-section" aria-labelledby="screenshot-heading">
+            <h2 id="screenshot-heading" class="input-heading">上传抖音后台截图</h2>
+            <p class="input-panel-note">内容、商品、成交或投流页面</p>
+            <div id="image-drop-zone" class="material-drop-zone capability-pending" role="group" aria-label="截图上传区域，待接线" aria-describedby="image-note" aria-disabled="true">
+              <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
               <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
               <path d="M14 2v5a1 1 0 0 0 1 1h5" />
               <path d="M12 12v6" />
               <path d="m15 15-3-3-3 3" />
             </svg>
-            <p id="drop-zone-title">拖入 TXT、CSV 或 JSON</p>
-            <button id="choose-files" class="button button--secondary choose-files" type="button">选择文件</button>
-          </div>
-          <input id="file-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" multiple hidden>
-          <input id="replacement-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" hidden>
-
-          <details class="file-details">
-            <summary>
-              <span>格式与大小</span>
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-                <path d="m6 9 6 6 6-6" />
-              </svg>
-            </summary>
-            <div class="file-details-content">
-              <p>TXT、CSV、JSON，文本须为 UTF-8。</p>
-              <p>最多 6 份，每份 5 MiB，总计 20 MiB。</p>
+              <button id="choose-images" class="button button--secondary choose-files" type="button" disabled>上传截图</button>
+              <p>PNG / JPEG · 待接线</p>
             </div>
-          </details>
-          <p id="image-note" class="image-note">尚未接通图片理解，本轮不接收新图片；历史原件仍可查看。</p>
-          <div id="materials-list" class="materials-list" hidden></div>
-          <button id="organize-materials" class="button button--secondary" type="button" disabled>整理这些资料</button>
-        </section>
+            <div class="image-category-field">
+              <label for="image-category">来源类别</label>
+              <select id="image-category" class="field" aria-describedby="image-note" disabled>
+                <option value="">待接线，尚未标注</option>
+                <option value="content">内容</option>
+                <option value="product">商品</option>
+                <option value="transaction">成交</option>
+                <option value="advertising">投流</option>
+                <option value="unknown">暂不确定</option>
+              </select>
+            </div>
+            <p id="image-note" class="input-panel-note">截图接收、缩略图和来源标注待共享能力接线；当前不会保存新图或自动识别。已有图片原件仍可查看。</p>
+            <div id="image-materials-list" class="materials-list" hidden></div>
+          </section>
+
+          <section id="upload-section" class="input-panel materials-section" aria-labelledby="materials-heading">
+            <h2 id="materials-heading" class="input-heading">上传数据表</h2>
+            <p id="table-capability-note" class="input-panel-note">当前可接收 CSV；Excel 解析待接线</p>
+            <div id="drop-zone" class="material-drop-zone" role="group" aria-labelledby="drop-zone-title" aria-describedby="table-capability-note" tabindex="0">
+              <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+              <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+              <path d="M12 12v6" />
+              <path d="m15 15-3-3-3 3" />
+            </svg>
+              <button id="choose-files" class="button button--secondary choose-files" type="button">上传Excel或CSV</button>
+              <p id="drop-zone-title">拖入 CSV，或点击选择文件</p>
+            </div>
+            <input id="file-input" type="file" accept="text/csv,.csv" multiple hidden>
+            <input id="replacement-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" hidden>
+            <details class="file-details">
+              <summary>格式、限额与历史文件</summary>
+              <div class="file-details-content">
+                <p>CSV、TXT、JSON 须为 UTF-8。Excel（.xlsx / .xls）待共享解析接线。</p>
+                <p>当前最多 6 份、每份 5 MiB、总计 20 MiB；每份 10 MB 的新限额待共享统一实施。</p>
+                <button id="choose-legacy" class="button button--quiet" type="button">上传 TXT 或 JSON</button>
+                <input id="legacy-file-input" type="file" accept="text/plain,application/json,.txt,.json" multiple hidden>
+              </div>
+            </details>
+            <div id="materials-list" class="materials-list" hidden></div>
+          </section>
+
+          <section id="manual-entry" class="input-panel description-section" aria-labelledby="description-heading">
+            <h2 id="description-heading" class="input-heading"><label for="description">补充实际经营情况</label></h2>
+            <div class="voice-panel" role="group" aria-label="语音补充">
+              <div class="voice-primary-actions">
+                <button id="voice-start" class="button button--secondary voice-start" type="button" aria-pressed="false" aria-describedby="voice-service-note voice-stage" disabled>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M12 19v3" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <rect x="9" y="2" width="6" height="13" rx="3" />
+            </svg>
+                  <span id="voice-start-label">按住说话</span>
+                </button>
+                <button id="voice-stop" class="button button--quiet voice-stop" type="button" hidden>停止语音</button>
+                <time id="voice-timer" datetime="PT0S" aria-live="off" aria-label="本次听取时长" hidden>00:00</time>
+              </div>
+              <p id="voice-stage" class="voice-stage" role="status" aria-live="polite">先确认处理方式，再按住说话；松开结束。键盘可按住空格或回车。</p>
+              <div id="voice-live" class="voice-live" hidden>
+                <p class="voice-live-label">正在听取，文字可能继续修正</p>
+                <p id="voice-live-text" aria-live="off"></p>
+              </div>
+            </div>
+            <div class="description-composer">
+              <textarea id="description" rows="5" aria-describedby="description-count description-limit-note" placeholder="也可以输入商品、人群、目标、做过的动作和经营限制"></textarea>
+              <div class="description-counter"><output id="description-count" for="description">0/1000</output></div>
+            </div>
+            <p id="description-limit-note" class="input-panel-note" hidden>已超过 1000 字，原文未截断；请核对后再整理。</p>
+            <p id="voice-service-note" class="voice-service-note">语音使用浏览器识别服务，音频可能离开设备；开始前会请你确认。本页不保存音频文件。</p>
+          </section>
+        </div>
+
+        <div class="intake-start-actions">
+          <div class="demo-load-action">
+            <button id="load-blender-demo" class="button button--secondary" type="button" aria-describedby="demo-load-note" disabled>载入榨汁杯演示案例</button>
+            <p id="demo-load-note" class="input-panel-note">共享榨汁杯案例待接线，尚未载入</p>
+          </div>
+          <p class="intake-choice-note">文字或任一有效材料即可开始</p>
+          <button id="return-to-review" class="button button--quiet" type="button" hidden>返回核对</button>
+          <button id="organize-button" class="button" type="submit" disabled>开始整理</button>
+        </div>
       </form>
 
       <p id="operation-status" class="status operation-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -129,11 +127,16 @@
 
       <section id="organization" class="organization" aria-labelledby="organization-title" tabindex="-1" hidden>
         <header class="organization-heading">
-          <h2 id="organization-title">我先确认一下，我有没有听懂你的生意</h2>
+          <h2 id="organization-title">我先这样理解你的生意</h2>
           <p id="understanding-note" class="muted">确认表示与你的讲述一致，不代表已经外部核实。</p>
         </header>
 
         <div id="understanding-grid" class="understanding-grid"></div>
+
+        <details id="full-understanding-details" class="evidence-details">
+          <summary>查看完整字段（九组）</summary>
+          <div id="full-understanding-grid" class="full-understanding-grid"></div>
+        </details>
 
         <section id="review-cautions" class="review-cautions" aria-labelledby="review-cautions-title" hidden>
           <h3 id="review-cautions-title">先保留这些待核对项</h3>
@@ -177,9 +180,9 @@
         </details>
 
         <div class="organization-actions">
-          <button id="edit-understanding" class="button button--secondary" type="button">有一项不对</button>
-          <button id="back-to-input" class="button button--secondary" type="button">再补充一句</button>
-          <button id="confirm-button" class="button" type="button">理解正确，继续</button>
+          <button id="edit-understanding" class="button button--secondary" type="button">有信息不对</button>
+          <button id="back-to-input" class="button button--secondary" type="button">补充资料</button>
+          <button id="confirm-button" class="button" type="button">确认，开始分析</button>
         </div>
       </section>
 
@@ -200,6 +203,8 @@
         </form>
       </section>
 
+      <p id="demo-notice" class="demo-notice" hidden>演示案例为合成数据，不代表真实商家效果</p>
+
       <noscript>
         <p class="intake-error">需要启用 JavaScript 才能整理材料和保存本轮内容。</p>
       </noscript>
@@ -209,11 +214,11 @@
 
     <dialog id="voice-consent" class="intake-dialog voice-consent" aria-labelledby="voice-consent-title" aria-describedby="voice-consent-description">
       <h2 id="voice-consent-title">开始前，确认语音处理方式</h2>
-      <p id="voice-consent-description">浏览器可能把麦克风音频发送给其语音识别服务处理，无法保证离线。开始后会申请麦克风权限；你可以随时停止。本页不保存音频文件。保存时会保留转写原文和你编辑后的文字。</p>
+      <p id="voice-consent-description">浏览器可能把麦克风音频发送给其语音识别服务处理，无法保证离线。同意后再次按住说话，才会申请麦克风权限；你可以随时停止。本页不保存音频文件。保存时会保留转写原文和你编辑后的文字。</p>
       <p class="muted">这不授权向 MoneyAI 或其他模型发送材料，也不会安装语言包或调用付费转写接口。</p>
       <div class="dialog-actions">
         <button id="voice-consent-cancel" class="button button--secondary" type="button">改用文字</button>
-        <button id="voice-consent-start" class="button" type="button">同意并开始语音</button>
+        <button id="voice-consent-start" class="button" type="button">同意，返回按住说话</button>
       </div>
     </dialog>
 

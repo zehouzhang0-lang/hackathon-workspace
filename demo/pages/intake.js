@@ -354,6 +354,125 @@ export function getIntakeReviewGroups(draft, projection = null) {
   }));
 }
 
+
+// Six presentation groups only; never persisted as a second intake schema.
+export function getIntakeSummaryGroups(draft, state = null, projection = null, sourceBindings = null) {
+  const groups = [
+    { id: "data", title: "已读取数据", empty: "尚无已读取的指标；未提供的值保持未知。" },
+    { id: "background", title: "商品与经营背景", empty: "商品和已做动作尚未提供，可在完整字段中补充。" },
+    { id: "judgment", title: "老板的判断", empty: "尚未提供判断；不会替你猜测购买原因。" },
+    { id: "unconfirmed", title: "尚未确认", empty: "仍待你核对；尚未进行外部核验。" },
+    { id: "constraints", title: "经营限制", empty: "尚未提供，不默认预算、时间或可做的动作。" },
+    { id: "gaps", title: "数据缺口", empty: "没有额外登记的缺口，不等于资料已全部核实。" }
+  ].map((group) => ({ ...group, items: [] }));
+  const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
+  const sourceNames = { voice: "语音自述", manual: "商家填写", paste: "粘贴文字",
+    txt: "TXT提取", csv: "CSV提取", json: "JSON提取" };
+  const add = (id, item) => {
+    if (!byId[id].items.some((entry) => entry.text === item.text && entry.note === item.note &&
+      entry.factId === item.factId && entry.materialId === item.materialId && entry.field === item.field)) byId[id].items.push(item);
+  };
+  const facts = state?.input?.facts || [];
+  const conflicts = getIntakeCorrectionConflicts(draft, facts, state, sourceBindings);
+  const representedFacts = new Set();
+  const factRow = (fact) => {
+    const label = INTAKE_FIELD_LABELS[fact.intakeField] || labelFor(fact.key);
+    const value = fact.availability === "not_applicable" ? "不适用" :
+      fact.availability !== "known" || fact.value === null ? "未知" :
+        String(fact.value) + (fact.unit ? " " + fact.unit : "");
+    const fileSource = fact.source?.kind === "file_extract" ? fact.source :
+      (state?.history || []).find((entry) => entry.type === "fact_correction" && entry.factId === fact.id &&
+        entry.before?.source?.kind === "file_extract")?.before.source;
+    const material = (state?.input?.materials || []).find((entry) => entry.id === fileSource?.materialId &&
+      entry.version === fileSource?.materialVersion);
+    const provenance = fact.verification === "conflicting" ? "来源或口径冲突，待核对" :
+      fact.verification === "user_corrected" ? (fileSource ?
+      "商家更正；原文件未改写" : "商家明确更正，未外部核验") :
+      fact.source?.kind === "file_extract" ? "文件提取，待核对" :
+      fact.source?.kind === "merchant_statement" ? "商家陈述，未外部核验" :
+      fact.source?.kind === "scenario_assumption" ? "情景假设" : "来源及口径待核对";
+    const window = fact.window?.start || fact.window?.end ?
+      (fact.window.start || "起日未知") + "至" + (fact.window.end || "止日未知") : null;
+    const note = [provenance, material ? material.name + " v" + material.version :
+      fileSource ? "原文件来源见明细" : null, fact.subject, fact.channel, fact.cohort, window].filter(Boolean).join(" · ");
+    return { text: label + "：" + value, note, factId: fact.id, conflicting: fact.verification === "conflicting" };
+  };
+  for (const item of getIntakeReviewGroups(draft, projection).flatMap((group) => group.items)) {
+    const row = { field: item.field, conflicting: item.conflicting, text: item.label + "：" +
+      (item.conflicting ? "待核对（当前填写：" + String(item.value) + "）" : String(item.value)),
+      note: item.hypothesis ? "商家判断，尚未证实" :
+        item.conflicting ? "来源不一致，按未知保留" :
+          item.sources.map((source) => sourceNames[source] || source).join(" · ") || "当前填写，来源待核对" };
+    if (item.hypothesis) add("judgment", row);
+    else if (item.field.startsWith("metrics.")) {
+      const fact = state ? findIntakeFieldFact(state, item.path, sourceBindings) : null;
+      if (fact && ((!item.conflicting && Object.is(fact.value, item.value)) ||
+        conflicts.some((entry) => entry.field === item.path && entry.factId === fact.id && entry.canRecover))) {
+        add("data", factRow(fact));
+        representedFacts.add(fact.id);
+      } else {
+        add("data", row);
+        if (fact) representedFacts.add(fact.id);
+      }
+    } else if (item.field === "constraints") add("constraints", row);
+    else if (item.field === "unknowns") add("gaps", row);
+    else if (item.field === "customerQuestions") add("unconfirmed", row);
+    else add("background", row);
+    if (item.conflicting) add("unconfirmed", { ...row, note: "来源冲突，需在完整字段中核对" });
+  }
+  for (const fact of facts.filter((item) => !item.intakeField && !representedFacts.has(item.id) &&
+    (item.source?.kind === "file_extract" || item.verification === "user_corrected"))) {
+    add("data", factRow(fact));
+  }
+  for (const conflict of conflicts) {
+    const label = INTAKE_FIELD_LABELS[conflict.field] || INTAKE_FIELD_LABELS[conflict.field.split(".")[0]] || "这项信息";
+    add("unconfirmed", { field: conflict.field, factId: conflict.factId, conflicting: true,
+      text: label + "：旧卡片“" + String(conflict.oldValue ?? "未知") +
+        "”／当前更正“" + String(conflict.currentValue ?? "未知") + "”",
+      note: conflict.canRecover ? "点“有信息不对”核对当前更正，再明确保存" :
+        "数组、类型或来源对应不明确，阻止自动恢复" });
+  }
+  for (const material of state?.input?.materials || []) {
+    if (material.status !== "parsed") add("unconfirmed", { text: material.name + "：" +
+      (material.status === "failed" ? "读取未完成" : "已接收，内容待核对"),
+      note: material.error || "没有把接收成功当作内容已理解", materialId: material.id });
+  }
+  for (const constraint of state?.input?.constraints || []) {
+    if (constraint.intakeField || constraint.source?.locator?.type === "intake") continue;
+    add("constraints", { text: constraint.description + (constraint.value === null || constraint.value === undefined ? "" :
+      "：" + String(constraint.value) + (constraint.unit || "")), note: "本轮已登记限制" });
+  }
+  for (const unknown of [...(projection?.unknowns || []), ...(state?.input?.unknowns || [])]) {
+    add("gaps", { text: unknown.description, conflicting: unknown.reason === "conflicting",
+      note: unknown.reason === "conflicting" ? "来源或口径冲突" : "保留未知" });
+  }
+  return groups;
+}
+
+// Input ownership only: no browser permission or recording is performed here.
+export function createVoiceHoldController({ canStart, hasConsent, requestConsent, start, stop, cancel, getPhase }) {
+  let held = null;
+  return {
+    begin(token) {
+      if (typeof token !== "string" || !token || held !== null || !canStart()) return false;
+      if (!hasConsent()) { requestConsent(); return false; }
+      held = token;
+      const result = start();
+      if (!result?.ok) held = null;
+      return !!result?.ok;
+    },
+    release(token, cancelled = false) {
+      if (held === null || token !== held) return false;
+      held = null;
+      if (cancelled || !["listening", "stopping"].includes(getPhase())) cancel();
+      else stop();
+      return true;
+    },
+    clear() { held = null; },
+    current() { return held; }
+  };
+}
+
 export function getIntakeCorrectionConflicts(draft, facts, state = null, sourceBindings = null) {
   const corrected = facts.filter((fact) => fact.verification === "user_corrected");
   const conflictFor = (field, fact, resolved = true) => {
@@ -481,6 +600,12 @@ export function getNextIntakeQuestion(draft, clarification) {
 export function isSubmitKey(event, composing, lastCompositionAt, now) {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing &&
     event.keyCode !== 229 && !composing && now - lastCompositionAt > 100;
+}
+
+export function isVoiceHoldKey(event, composing = false, lastCompositionAt = -Infinity, now = Infinity) {
+  return ["Enter", " "].includes(event.key) && !event.isComposing && event.keyCode !== 229 &&
+    !composing && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+    now - lastCompositionAt > 100;
 }
 
 export function formatVoiceTime(milliseconds) {
@@ -712,7 +837,10 @@ export function createVoiceSession({
 async function validateFile(file, replacing = false) {
   const extension = fileExtension(file.name);
   if (Object.hasOwn(IMAGE_TYPES, extension)) {
-    throw errorWithCode("尚未接通图片理解，本轮不接收新图片；已有图片原件不会删除。请改用文字、TXT、CSV 或 JSON。", "unsupported_type");
+    throw errorWithCode("截图接收与来源标注待共享能力接线，本次未保存新图；已有原件保留。当前可用 CSV、TXT、JSON 或文字。", "unsupported_type");
+  }
+  if (["xlsx", "xls"].includes(extension)) {
+    throw errorWithCode("Excel 解析待共享能力接线，本次未保存该表格；可先导出 UTF-8 CSV。原有材料未替换。", "unsupported_type");
   }
   if (!["txt", "csv", "json"].includes(extension)) {
     throw errorWithCode("本轮只支持 TXT、CSV、JSON，或直接粘贴文字。", "unsupported_type");
@@ -742,7 +870,10 @@ function startIntakePage() {
   const ui = {
     form: byId("intake-form"), description: byId("description"), organize: byId("organize-button"),
     manual: byId("manual-entry"), upload: byId("upload-section"),
-    openManual: byId("open-manual"), openUpload: byId("open-upload"), organizeMaterials: byId("organize-materials"),
+    imageDrop: byId("image-drop-zone"), imageMaterials: byId("image-materials-list"),
+    chooseLegacy: byId("choose-legacy"), legacyFiles: byId("legacy-file-input"),
+    descriptionCount: byId("description-count"), descriptionLimitNote: byId("description-limit-note"),
+    demoNotice: byId("demo-notice"), fullUnderstanding: byId("full-understanding-grid"),
     voiceStart: byId("voice-start"), voiceStartLabel: byId("voice-start-label"), voiceStop: byId("voice-stop"),
     voiceStage: byId("voice-stage"), voiceTimer: byId("voice-timer"), voiceLive: byId("voice-live"),
     voiceText: byId("voice-live-text"), voiceConsent: byId("voice-consent"),
@@ -783,6 +914,7 @@ function startIntakePage() {
   let pendingRead = false, visibleFacts = 40;
   let draftContext = null;
   let voiceSession = null, voiceSnapshot = null, voiceBaseText = "", intakeStage = "idle";
+  let voiceConsentGranted = false, voiceHold = null;
   let intakeApi = null, contextDraft = null, contextEdit = null, contextDirty = false, questionDirty = false;
   let contextBindings = [], contextOrigin = null, extractionController = null, reviewMessage = "";
   let readyToAnalyze = false, questionContext = null, renderedQuestionId = null;
@@ -831,11 +963,13 @@ function startIntakePage() {
 
   function updateControls() {
     const blocked = busy || voiceEditingLocked() || connectInProgress || !state || !!pending || pendingRead;
-    ui.organize.disabled = blocked || !inputReady();
+    const blockedForSubmission = blocked || !!voiceSnapshot?.active;
+    ui.organize.disabled = blockedForSubmission || !inputReady();
     ui.choose.disabled = blocked;
+    ui.chooseLegacy.disabled = blocked;
     ui.description.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
     ui.focus.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
-    ui.confirm.disabled = blocked || correctionDirty || contextEdit?.dirty || (questionDirty && !intakeApi) || uploadQueue.length > 0 ||
+    ui.confirm.disabled = blockedForSubmission || correctionDirty || contextEdit?.dirty || (questionDirty && !intakeApi) || uploadQueue.length > 0 ||
       (intakeApi ? !contextDraft || !sameContext(contextOrigin) || contextOrigin.inputVersion !== state?.round.inputVersion :
         descriptionDirty || contextDirty || hasUnsavedVoice() || organizedVersion !== state?.round.inputVersion);
     ui.form.setAttribute("aria-busy", String(busy));
@@ -848,25 +982,30 @@ function startIntakePage() {
     ui.unit.readOnly = busy || !!pending;
     ui.reason.readOnly = busy || !!pending;
     ui.cancelCorrection.disabled = busy;
-    ui.voiceStart.disabled = blocked || !voiceSnapshot?.canStart;
+    ui.voiceStart.disabled = busy || connectInProgress || !state || !!pending || pendingRead ||
+      (!voiceSnapshot?.active && !voiceSnapshot?.canStart);
     ui.voiceConsentStart.disabled = blocked || !voiceSnapshot?.canStart;
     ui.voiceStop.hidden = !voiceSnapshot?.active;
     ui.voiceStop.disabled = false;
-    ui.voiceStart.hidden = !!voiceSnapshot?.active;
-    ui.openUpload.disabled = blocked;
+    ui.voiceStart.hidden = false;
+    ui.voiceStart.setAttribute("aria-pressed", String(!!voiceSnapshot?.active));
+    ui.voiceStartLabel.textContent = !voiceSnapshot?.supported ? "当前浏览器不支持语音" :
+      voiceSnapshot?.active ? (voiceSnapshot.current?.phase === "stopping" ? "正在结束" : "松开结束") : "按住说话";
     ui.returnReview.disabled = blocked || !contextDraft;
-    ui.organizeMaterials.disabled = blocked || !inputReady();
+    updateDescriptionCount();
     ui.editUnderstanding.disabled = blocked || !intakeApi || !contextDraft;
     ui.contextSave.disabled = blocked || !!contextEdit?.recoveryBlocked;
     ui.contextField.disabled = blocked;
     ui.contextValue.readOnly = blocked;
-    for (const node of [ui.questionAnswer, ui.questionUnknown, ui.questionSkip, ui.questionSubmit]) node.disabled = blocked;
+    ui.questionAnswer.disabled = blocked;
+    for (const node of [ui.questionUnknown, ui.questionSkip, ui.questionSubmit]) node.disabled = blockedForSubmission;
     ui.questionBack.disabled = busy || !!pending;
     ui.questionDiscard.disabled = blocked;
     ui.questionDiscard.hidden = !questionDirty || contextMatches(questionContext);
-    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" :
-      readyToAnalyze ? "开始分析" : "理解正确，继续";
-    for (const node of ui.materials.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
+    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" : "确认，开始分析";
+    for (const list of [ui.materials, ui.imageMaterials]) {
+      for (const node of list.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
+    }
     for (const node of ui.facts.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
     for (const node of ui.correctionForm.querySelectorAll("button[type=submit]")) node.disabled = blocked;
   }
@@ -908,12 +1047,6 @@ function startIntakePage() {
         if (ui.contextDialog.open) ui.contextDialog.close();
         if (ui.correction.open) ui.correction.close();
         if (ui.voiceConsent.open) ui.voiceConsent.close();
-        if (!state.input.materials.length) {
-          ui.upload.hidden = true; ui.openUpload.setAttribute("aria-expanded", "false");
-        }
-        if (!ui.description.value.trim() && voiceSnapshot?.supported) {
-          ui.manual.hidden = true; ui.openManual.setAttribute("aria-expanded", "false");
-        }
         setIntakeStage("idle");
       }
     }
@@ -927,7 +1060,7 @@ function startIntakePage() {
       setIntakeStage("idle"); render();
     }
     ui.manual.hidden = false;
-    ui.openManual.setAttribute("aria-expanded", "true");
+
     if (focus) {
       ui.description.scrollIntoView({ behavior: "instant", block: "center" });
       ui.description.focus({ preventScroll: true });
@@ -939,7 +1072,7 @@ function startIntakePage() {
       setIntakeStage("idle"); render();
     }
     ui.upload.hidden = false;
-    ui.openUpload.setAttribute("aria-expanded", "true");
+
     if (focus) {
       ui.upload.scrollIntoView({ behavior: "instant", block: "center" });
       ui.choose.focus({ preventScroll: true });
@@ -997,6 +1130,7 @@ function startIntakePage() {
   function onVoiceChange(snapshot) {
     const focusWasOnVoice = document.activeElement === ui.voiceStop;
     voiceSnapshot = snapshot;
+    if (!snapshot.active) voiceHold?.clear();
     const run = snapshot.current;
     if (!run) { updateControls(); return; }
     ui.voiceTimer.hidden = run.captureMs === 0 && !run.audioActive;
@@ -1008,9 +1142,9 @@ function startIntakePage() {
     ui.voiceLive.querySelector(".voice-live-label").textContent = run.endObserved || run.phase === "fallback" ?
       "本次识别原文，修改后的文字在下方" : "正在听取，文字可能继续修正";
     ui.voiceStop.textContent = run.phase === "starting" ? "取消开始" :
-      run.phase === "stopping" ? "已请求停止" : run.phase === "fallback" ? "再次请求停止" : "我说完了";
+      run.phase === "stopping" ? "已请求停止" : run.phase === "fallback" ? "再次请求停止" : "停止语音";
     if (run.phase === "starting") setIntakeStage("listening", "正在等待浏览器开始采集，尚未开始听取。");
-    if (run.phase === "listening") setIntakeStage("listening", "正在听你说，可以随时点“我说完了”。");
+    if (run.phase === "listening") setIntakeStage("listening", "正在听取，松开结束，也可以点“停止语音”。");
     if (run.phase === "stopping") setIntakeStage("transcribing", "正在等待这段话的最终转写。");
     if ((run.endObserved || run.phase === "fallback") && !appliedVoiceRuns.has(run.id)) {
       appliedVoiceRuns.add(run.id);
@@ -1027,8 +1161,12 @@ function startIntakePage() {
         "识别文字已保留。你可以先修改，再整理核对。");
       if (run.interimText) status("有尚未定稿的识别文字，请核对后再使用。");
     } else if (run.phase === "fallback") setIntakeStage("idle", voiceIssueMessage(run.issue));
+    if (snapshot.active && run.phase === "fallback") {
+      setIntakeStage("idle", voiceIssueMessage(run.issue) +
+        " 仍在等待识别服务确认结束；可先编辑文字，结束确认前暂不能整理或提交。");
+    }
     updateControls();
-    if (run.phase === "starting" && document.activeElement === ui.voiceStart) ui.voiceStop.focus();
+
   }
 
   function askVoiceConsent() {
@@ -1037,22 +1175,43 @@ function startIntakePage() {
       showError("请先保存或取消当前编辑，再开始一段新语音。");
       return;
     }
-    ui.voiceConsent.showModal();
+    if (!ui.voiceConsent.open) ui.voiceConsent.showModal();
   }
 
-  function startConsentedVoice() {
-    if (busy || pending || pendingRead || !state || !voiceSnapshot?.canStart) return;
+
+  function startVoiceCapture() {
+    if (busy || pending || pendingRead || !state || !voiceConsentGranted || !voiceSnapshot?.canStart) return { ok: false };
+    if (correctionDirty || contextEdit?.dirty || questionDirty) {
+      showError("请先保存或取消当前编辑，再开始一段新语音。");
+      return { ok: false };
+    }
     voiceBaseText = ui.description.value;
-    ui.voiceConsent.close();
     const result = voiceSession.start({ consented: true });
     if (!result.ok) {
       showManual();
       setIntakeStage("idle", voiceIssueMessage(result.code));
     }
+    return result;
+  }
+
+  function grantVoiceConsent() {
+    if (busy || pending || pendingRead || !state || !voiceSnapshot?.canStart) return;
+    voiceConsentGranted = true;
+    ui.voiceConsent.close();
+    ui.voiceStage.textContent = "已确认处理方式。请按住“按住说话”，松开结束；键盘可按住空格或回车。";
+    ui.voiceStart.focus();
+  }
+
+  function updateDescriptionCount() {
+    const length = Array.from(ui.description.value).length;
+    ui.descriptionCount.textContent = length + "/1000";
+    ui.descriptionCount.parentElement.dataset.overLimit = String(length > 1000);
+    ui.descriptionLimitNote.hidden = length <= 1000;
   }
 
   function renderUnderstanding() {
     ui.understanding.replaceChildren();
+    ui.fullUnderstanding.replaceChildren();
     ui.reviewCautionsList.replaceChildren();
     ui.reviewCautions.hidden = true;
     ui.reviewTranscript.textContent = contextDraft?.transcript || "本轮没有语音识别原文。";
@@ -1069,6 +1228,31 @@ function startIntakePage() {
     for (const message of cautions) ui.reviewCautionsList.append(element("p", message));
     ui.reviewCautions.hidden = !cautions.length;
     const sourceNames = { voice: "语音自述", manual: "手动填写", paste: "粘贴文字", txt: "TXT材料", csv: "CSV材料", json: "JSON材料" };
+    for (const group of getIntakeSummaryGroups(contextDraft, state, projection, contextBindings)) {
+      const card = element("section", undefined, "summary-card");
+      card.dataset.summaryGroup = group.id;
+      card.append(element("h3", group.title));
+      const content = element("div", undefined, "summary-content");
+      if (!group.items.length) content.append(element("p", group.empty, "muted"));
+      let overflow = null;
+      group.items.forEach((item, index) => {
+        const row = element("p", item.text, item.conflicting ? "correction-conflict" : undefined);
+        if (item.note) row.append(element("span", item.note, "understanding-source"));
+        // Keep conflicts visible even when other rows are progressively disclosed.
+        if (index < 3 || item.conflicting) content.append(row);
+        else {
+          if (!overflow) {
+            overflow = element("details", undefined, "summary-overflow");
+            overflow.append(element("summary", "查看其余内容"));
+          }
+          overflow.append(row);
+        }
+      });
+      if (overflow) content.append(overflow);
+      card.append(content);
+      ui.understanding.append(card);
+    }
+
     for (const group of getIntakeReviewGroups(contextDraft, projection)) {
       const card = element("section", undefined, "understanding-card");
       card.append(element("h3", group.title));
@@ -1085,7 +1269,7 @@ function startIntakePage() {
         const label = INTAKE_FIELD_LABELS[correction.field] || INTAKE_FIELD_LABELS[correction.field.split(".")[0]] || "这项信息";
         card.append(element("p", label + "：旧理解“" + String(correction.oldValue ?? "未知") +
           "”／当前已更正“" + String(correction.currentValue ?? "未知") + "”", "correction-conflict"));
-        card.append(element("p", correction.canRecover ? "打开“有一项不对”，核对当前更正后再保存。" :
+        card.append(element("p", correction.canRecover ? "打开“有信息不对”，核对当前更正后再保存。" :
           "这项的数组、类型或来源对应不明确，保留冲突，暂不自动恢复。", "muted"));
       }
       const sources = [...new Set(group.items.flatMap((item) => item.sources))];
@@ -1095,9 +1279,9 @@ function startIntakePage() {
       }
       if (group.id === "problem" && !contextDraft.currentProblem && state.input.focus) {
         card.append(element("p", "上次保存的问题：" + state.input.focus));
-        card.append(element("p", "这轮范围变了，可以通过“有一项不对”修改当前问题。", "muted"));
+        card.append(element("p", "这轮范围变了，可以通过“有信息不对”修改当前问题。", "muted"));
       }
-      ui.understanding.append(card);
+      ui.fullUnderstanding.append(card);
     }
     ui.understandingNote.textContent = reviewMessage || "与你的讲述核对；“你的判断”不等于已证实。";
   }
@@ -1461,7 +1645,10 @@ function startIntakePage() {
   function render() {
     if (!state) { updateControls(); return; }
     ui.materials.replaceChildren();
-    ui.materials.hidden = state.input.materials.length === 0;
+    ui.imageMaterials.replaceChildren();
+    ui.materials.hidden = !state.input.materials.some((material) => !material.mime.startsWith("image/"));
+    ui.imageMaterials.hidden = !state.input.materials.some((material) => material.mime.startsWith("image/"));
+    ui.demoNotice.hidden = !state.fixtureId;
     for (const material of state.input.materials) {
       const card = element("article", undefined, "material-card");
       card.dataset.materialId = material.id;
@@ -1481,7 +1668,7 @@ function startIntakePage() {
         actions.append(item);
       }
       card.append(main, actions);
-      ui.materials.append(card);
+      (material.mime.startsWith("image/") ? ui.imageMaterials : ui.materials).append(card);
     }
     ui.organization.hidden = !(organizationVisible || state.input.focus);
     ui.understandingNote.textContent = intakeApi ?
@@ -1660,7 +1847,7 @@ function startIntakePage() {
         const resume = async () => {
           await processReceived();
           await drainUploads();
-          status("材料已接收并保存在本机，可继续整理。");
+          status("材料接收处理已结束；请核对文件列表中的读取状态和未接收提示，再继续整理。");
         };
         if (entry.target) {
           await send("MATERIAL_REPLACE", {
@@ -1686,7 +1873,7 @@ function startIntakePage() {
     await exclusive(async () => {
       if (!intakeApi) await saveDescription();
       await drainUploads();
-      status(state.input.materials.length ? "材料已保存在本机。可以继续添加，或整理当前内容。" : "未接收材料，请核对提示。");
+      status(state.input.materials.length ? "材料接收处理已结束；请核对文件列表中的读取状态和未接收提示。" : "未接收材料，请核对提示。");
     }, "正在接收材料…");
   }
 
@@ -2155,34 +2342,72 @@ function startIntakePage() {
     } finally { connectInProgress = false; updateControls(); }
   }
 
-  ui.voiceStart.addEventListener("click", askVoiceConsent);
-  ui.voiceConsentStart.addEventListener("click", startConsentedVoice);
+
+  voiceHold = createVoiceHoldController({
+    canStart: () => !ui.voiceStart.disabled && !!voiceSnapshot?.canStart,
+    hasConsent: () => voiceConsentGranted,
+    requestConsent: askVoiceConsent,
+    start: startVoiceCapture,
+    stop: () => voiceSession?.stop(),
+    cancel: () => voiceSession?.cancel("cancelled"),
+    getPhase: () => voiceSnapshot?.current?.phase
+  });
+  ui.voiceStart.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.isPrimary === false || ui.voiceStart.disabled) return;
+    event.preventDefault();
+    ui.voiceStart.focus();
+    if (voiceHold.begin("pointer:" + event.pointerId)) {
+      try { ui.voiceStart.setPointerCapture(event.pointerId); } catch { /* Window release still stops the hold. */ }
+    }
+  });
+  window.addEventListener("pointerup", (event) => voiceHold.release("pointer:" + event.pointerId));
+  window.addEventListener("pointercancel", (event) => voiceHold.release("pointer:" + event.pointerId, true));
+  ui.voiceStart.addEventListener("lostpointercapture", (event) => voiceHold.release("pointer:" + event.pointerId, true));
+  ui.voiceStart.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    // Prevent the native button click even when a composing/repeated key is ignored.
+    event.preventDefault();
+    if (!isVoiceHoldKey(event, composing || questionComposing,
+      Math.max(lastCompositionAt, lastQuestionCompositionAt), performance.now())) return;
+    voiceHold.begin("key:" + event.key);
+  });
+  window.addEventListener("keyup", (event) => {
+    if (["Enter", " "].includes(event.key) && voiceHold.current() === "key:" + event.key) {
+      event.preventDefault();
+      voiceHold.release("key:" + event.key);
+    }
+  });
+  window.addEventListener("blur", () => voiceHold.release(voiceHold.current(), true));
+  // Assistive activation has no physical key/pointer hold: activate once to start,
+  // again (or use the explicit stop button) to stop. Physical clicks are handled above.
+  ui.voiceStart.addEventListener("click", (event) => {
+    if (event.detail !== 0 || ui.voiceStart.disabled) return;
+    if (voiceHold.current() === "assistive") voiceHold.release("assistive");
+    else if (!voiceSnapshot?.active) voiceHold.begin("assistive");
+  });
+  ui.voiceConsentStart.addEventListener("click", grantVoiceConsent);
   ui.voiceConsentCancel.addEventListener("click", () => { ui.voiceConsent.close(); showManual(); });
   ui.voiceConsent.addEventListener("cancel", () => { ui.voiceStart.focus(); });
   ui.voiceStop.addEventListener("click", () => {
+    if (voiceHold.release(voiceHold.current())) return;
     if (["listening", "stopping"].includes(voiceSnapshot?.current?.phase)) voiceSession?.stop();
     else voiceSession?.cancel("cancelled");
   });
-  for (const control of [ui.voiceStart, ui.voiceStop, ui.voiceConsentStart]) {
+  for (const control of [ui.voiceStop, ui.voiceConsentStart]) {
     control.addEventListener("keydown", (event) => {
       if (event.repeat && ["Enter", " "].includes(event.key)) event.preventDefault();
     });
   }
-  ui.openManual.addEventListener("click", () => {
-    if (voiceSnapshot?.active) voiceSession?.cancel("cancelled");
-    showManual();
-  });
-  ui.openUpload.addEventListener("click", () => { if (!ui.openUpload.disabled) showUpload(); });
   ui.returnReview.addEventListener("click", () => {
     if (!ui.returnReview.disabled) showReview(readyToAnalyze ? "ready" : "confirming");
   });
-  ui.organizeMaterials.addEventListener("click", organize);
   ui.form.addEventListener("submit", (event) => { event.preventDefault(); organize(); });
   ui.description.addEventListener("input", (event) => {
     if (!descriptionDirty && !focusDirty) draftContext = state ? context() : null;
     descriptionDirty = ui.description.value !== state?.input.description;
     inputSources.add(event.inputType === "insertFromPaste" ? "paste" : "manual");
-    organizedVersion = null;
+    organizedVersion = null; readyToAnalyze = false;
+    if (["confirming", "ready"].includes(intakeStage)) { setIntakeStage("idle"); render(); }
     status("描述尚未保存，确认核对内容时会一起保存。");
     updateControls();
   });
@@ -2201,6 +2426,12 @@ function startIntakePage() {
     updateControls();
   });
   ui.choose.addEventListener("click", () => { if (!ui.choose.disabled) ui.files.click(); });
+  ui.chooseLegacy.addEventListener("click", () => { if (!ui.chooseLegacy.disabled) ui.legacyFiles.click(); });
+  ui.legacyFiles.addEventListener("change", () => {
+    const files = Array.from(ui.legacyFiles.files);
+    ui.legacyFiles.value = "";
+    receiveFiles(files);
+  });
   ui.files.addEventListener("change", () => {
     const files = Array.from(ui.files.files);
     ui.files.value = "";
@@ -2232,6 +2463,20 @@ function startIntakePage() {
       event.preventDefault(); ui.files.click();
     }
   });
+
+  for (const type of ["dragenter", "dragover"]) {
+    ui.imageDrop.addEventListener(type, (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "none";
+    });
+  }
+  ui.imageDrop.addEventListener("drop", (event) => {
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault();
+    showError("截图接收、缩略图及来源标注待共享能力接线，本次未保存新图；已有材料不变。");
+  });
+
   ui.form.addEventListener("paste", (event) => {
     const images = Array.from(event.clipboardData?.items || [])
       .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
@@ -2239,9 +2484,9 @@ function startIntakePage() {
     if (event.target === ui.description && event.clipboardData?.getData("text/plain")) inputSources.add("paste");
     if (!images.length) return;
     if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
-    showError("尚未接通图片理解，未接收新截图。可以粘贴文字或上传 TXT、CSV、JSON；已有图片仍保留。");
+    showError("截图接收待共享能力接线，本次未保存新图。可以粘贴文字或上传 CSV、TXT、JSON；已有图片仍保留。");
   });
-  ui.materials.addEventListener("click", async (event) => {
+  for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("click", async (event) => {
     const action = event.target.closest("button[data-action]");
     const card = action?.closest("[data-material-id]");
     if (!card || !state) return;
@@ -2271,7 +2516,11 @@ function startIntakePage() {
     if (action.dataset.action === "source") await showFactSource(fact);
     if (action.dataset.action === "correct") openCorrection(fact);
   });
-  ui.back.addEventListener("click", () => showManual());
+  ui.back.addEventListener("click", () => {
+    showManual(false); setIntakeStage("idle"); render();
+    ui.form.scrollIntoView({ behavior: "instant", block: "start" });
+    ui.description.focus({ preventScroll: true });
+  });
   ui.editUnderstanding.addEventListener("click", openContextEditor);
   ui.contextForm.addEventListener("submit", saveContextEdit);
   ui.contextCancel.addEventListener("click", closeContextEditor);
@@ -2340,6 +2589,7 @@ function startIntakePage() {
   });
   window.addEventListener("pagehide", (event) => {
     extractionController?.abort();
+    voiceHold?.release(voiceHold.current(), true);
     previewRequest += 1;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = null;
@@ -2357,7 +2607,7 @@ function startIntakePage() {
   voiceSnapshot = voiceSession.snapshot();
   if (!voiceSnapshot.supported) {
     ui.voiceStartLabel.textContent = "当前浏览器不支持语音";
-    setIntakeStage("idle", "可以使用“手动补充”或上传资料，文字不会受到影响。");
+    setIntakeStage("idle", "可以直接在下方输入文字或上传资料。");
     showManual(false);
   }
   connect();

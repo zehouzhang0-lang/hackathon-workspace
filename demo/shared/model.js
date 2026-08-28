@@ -4,6 +4,26 @@ import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeR
 export const CONTRACT_VERSION = 'demo.v1';
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 export const PAGE_IDS = ['intake', 'decisions', 'action'];
+export const MATERIAL_LIMITS = Object.freeze({ maxFiles: 6, maxFileBytes: 10_000_000, maxTotalBytes: 20 * 1024 * 1024 });
+export const MATERIAL_CATEGORIES = Object.freeze(['unknown', 'content', 'product', 'transactions', 'ads']);
+export const MATERIAL_CAPABILITIES = Object.freeze(Object.fromEntries([
+  ['png', 'image/png', true, 'image', 'none', '图片可接收和预览；未进行OCR，内容仍待核对。'],
+  ['jpg', 'image/jpeg', true, 'image', 'none', '图片可接收和预览；未进行OCR，内容仍待核对。'],
+  ['jpeg', 'image/jpeg', true, 'image', 'none', '图片可接收和预览；未进行OCR，内容仍待核对。'],
+  ['webp', 'image/webp', true, 'image', 'none', '保留WebP接收预览兼容；未进行OCR。'],
+  ['txt', 'text/plain', true, 'text', 'text_only', '只读取UTF-8原文，不自动提取业务事实。'],
+  ['csv', 'text/csv', true, 'text', 'metric_csv', '仅支持UTF-8约定指标表头；其他结构保留原文待核对。'],
+  ['json', 'application/json', true, 'text', 'metric_json', '仅支持UTF-8的demo.metrics.v1结构；不执行导入内容。'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', false, null, 'none', 'Excel接收和解析尚未接通，请先导出UTF-8 CSV。'],
+  ['xls', 'application/vnd.ms-excel', false, null, 'none', 'Excel接收和解析尚未接通，请先导出UTF-8 CSV。']
+].map(([extension, mime, receive, preview, parse, reason]) => [extension, Object.freeze({ extension, mime, receive, preview, parse, reason })])));
+
+// Declared capability only: dispatch still checks bytes, MIME, quota and decoding.
+export function getMaterialCapability(fileName) {
+  const extension = typeof fileName === 'string' ? /\.([^.]+)$/.exec(fileName.toLowerCase())?.[1] : null;
+  return Object.prototype.hasOwnProperty.call(MATERIAL_CAPABILITIES, extension) ? MATERIAL_CAPABILITIES[extension] : null;
+}
+
 const clone = (value) => structuredClone(value);
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const allowedEvents = new Set(['page_viewed', 'path_viewed', 'source_viewed', 'artifact_viewed', 'copy_succeeded', 'download_requested', 'session_read']);
@@ -431,6 +451,10 @@ export function reduceCommand(original, command, context) {
     case 'MATERIAL_REPLACE': {
       const file = context.preparedMaterial;
       requireValue(file, '没有可接收的文件。');
+      requireValue(Number.isInteger(file.size) && file.size > 0 && file.size <= MATERIAL_LIMITS.maxFileBytes,
+        '单份文件需大于0且不超过10,000,000字节。', 'file_limit');
+      const userCategory = own(payload, 'userCategory') ? payload.userCategory : 'unknown';
+      requireValue(MATERIAL_CATEGORIES.includes(userCategory), '材料来源类别不合法。');
       const old = command.type === 'MATERIAL_REPLACE' ? state.input.materials.find((item) => item.id === payload.materialId) : null;
       if (command.type === 'MATERIAL_REPLACE') {
         requireValue(old, '原材料已不存在。', 'stale_input');
@@ -438,8 +462,10 @@ export function reduceCommand(original, command, context) {
       }
       if (old?.sha256 === file.sha256 && old.size === file.size) { changed = false; break; }
       requireValue(!state.input.materials.some((item) => item.id !== old?.id && item.size === file.size && item.sha256 === file.sha256), '相同内容的材料已经在本轮中。', 'duplicate_material');
-      requireValue(state.input.materials.length + (old ? 0 : 1) <= 6 && file.size <= 5 * 1024 * 1024 && state.input.materials.reduce((sum, item) => sum + item.size, 0) - (old?.size || 0) + file.size <= 20 * 1024 * 1024, '最多6份，单份5MiB，总计20MiB。', 'file_limit');
-      const material = { id: old?.id || context.newId(), name: file.name, mime: file.mime, size: file.size, status: 'received', sourceKind: 'user_file', blobKey: old?.id || null, error: null, version: (old?.version || 0) + 1, sha256: file.sha256 };
+      requireValue(state.input.materials.length + (old ? 0 : 1) <= MATERIAL_LIMITS.maxFiles
+        && state.input.materials.reduce((sum, item) => sum + item.size, 0) - (old?.size || 0) + file.size <= MATERIAL_LIMITS.maxTotalBytes,
+        '最多6份，单份10,000,000字节，总计20MiB。', 'file_limit');
+      const material = { id: old?.id || context.newId(), name: file.name, mime: file.mime, size: file.size, status: 'received', sourceKind: 'user_file', userCategory, blobKey: old?.id || null, error: null, version: (old?.version || 0) + 1, sha256: file.sha256 };
       material.blobKey = material.id;
       if (old) {
         state.history.push({ type: 'material_replaced', at: context.now, material: clone(old) });
@@ -448,6 +474,21 @@ export function reduceCommand(original, command, context) {
       }
       state.input.materials.push(material);
       effects.putBlobs.push({ materialId: material.id, file: file.file });
+      inputChanged = true;
+      break;
+    }
+    case 'MATERIAL_CATEGORY_SET': {
+      const material = state.input.materials.find((entry) => entry.id === payload.materialId);
+      requireValue(material && payload.roundId === state.round.id, '材料或轮次已变化，请重新读取。', 'stale_input');
+      currentInput(payload, state, material);
+      requireValue(MATERIAL_CATEGORIES.includes(payload.userCategory), '材料来源类别不合法。');
+      const previousUserCategory = material.userCategory ?? 'unknown';
+      if (previousUserCategory === payload.userCategory) { changed = false; break; }
+      state.history.push({ type: 'material_category_changed', at: context.now, roundId: state.round.id,
+        inputVersion: state.round.inputVersion, materialId: material.id, materialVersion: material.version,
+        previousUserCategory, userCategory: payload.userCategory });
+      material.userCategory = payload.userCategory;
+      // A user label is context, never a parsed fact, verified origin or new Blob.
       inputChanged = true;
       break;
     }

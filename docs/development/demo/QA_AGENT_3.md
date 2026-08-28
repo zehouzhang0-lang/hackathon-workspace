@@ -1,8 +1,373 @@
 # Agent 3｜第三页实现与验收记录
 
-更新：2026-08-28。**本轮完成 REQ-25 限定纯逻辑回归与来源展示修补；REQ-20 工作区和 REQ-23 固定标题接入沿用已交接版本。浏览器交互、真实动画和最终视觉仍未验收。** 旧前检与先前依赖未交付记录仅供追溯，不代表本轮状态。
+更新：2026-08-28。**本批完成 REQ-30 可独立的区域实现、现有数据流程接线与纯逻辑检查，尚未完成整页功能或真实 UI 验收。C2／C5—C8 的反馈附件、榨汁杯/候选稿、再判断与接受建轮仍具名待接通。完成本批后停写，交现任统筹集成。**
 
-## 本轮追加：REQ-25 限定纯逻辑回归
+下方 REQ-25／REQ-23／REQ-20 与基础版均保留为历史交接；其中旧“下一轮”按钮行为已被本批覆盖。现在查看复盘不会调用 ROUND_START，不把旧 reducer 可建空白轮次当作接受候选并开始下一轮。
+
+## 本轮追加：REQ-30 图3执行记录与图2反馈后改判
+
+### 范围、实际参考与依赖
+
+依据现任统筹 `01a0476a-6049-70d2-9bb0-95af778428eb` 的明确下发，已完整读取 [功能锁定](WIREFRAME_FUNCTION_LOCK.md)、[本页提示词](PROMPT_AGENT_3.md) 顶部覆盖，并按 [品牌补充](../brand-ip/REQ30_WIREFRAME_BRAND.md) 与 [DF005 逐区判据](../design-feedback/DF-20260828-005-wireframe-conformance.md) 执行原 18 个编号，没有另造需求或第四页。
+
+本次实际查看过以下两张原图，均为 **1586×992 静态设计草稿**，不是运行截图；只读原件，没有复制进仓库、用作上传测试或外发：
+
+- 图3：`D:/路演方案工作指导/微信图片_20260828184148_47_3165.png`。
+- 图2：`D:/路演方案工作指导/微信图片_20260828184145_46_3165.png`。
+
+目标为 PC 1920×1080，原生三页与路芽名称保持。执行页以所选行动头区、修改稿/实验卡、后置可选反馈组织；图2在同一 HTML 的明确复盘状态中，带返回当前行动。没有回到长文章铺排，也没有另建编辑器、任务看板或自动执行。
+
+本批只写 `demo/03-action.html`、`demo/pages/action.css`、`demo/pages/action.js` 与本 QA。共享、后台、tests 目录、公共文档、其他页面和 Git 均未写入；未安装依赖、改 MCP/信任、重复资源前检、启动手机/Figma或浏览器。
+
+| 共享依赖 | 本次实际消费与仍缺的能力 |
+| --- | --- |
+| C5 | 继续消费真实 buildDemoArtifact → 逐项 ARTIFACT_SAVE 的当前路径产物。现有 underbed/general 稿件可预览；没有榨汁杯 A/B 或候选稿对象。八项卡使用已交付字段，护栏与具体回滚步骤明确待接通；恢复条件不能冒充回滚方法。 |
+| C6 | 现有 FEEDBACK_SAVE 可追加文字、执行自述、观察及指标 JSON；无反馈附件 Blob 原子接口。新截图／Excel／CSV 输入禁用并具名说明，绝不借 MATERIAL_ADD 改原输入。附件格式接收另依赖 C2。 |
+| C7 | 没有版本化再判断接口，结论／原行动处理／候选建议／理由区域标等待共享结果。普通分析摘要中“读取了本地反馈”不被当成再判断。 |
+| C8 | 旧 ROUND_START 会清空分析、选择并使旧稿失效，不是“接受候选及建有效下一轮”。本页已移除旧建轮调用；开始第二轮禁用，不创建正式未来记录。 |
+| C9／MoneyAI | 公共壳仍负责真实服务状态；本页只显示本机保存和读回证据。未调用个人历史/管理 API，未称 MoneyAI 已写入、读回或记住。 |
+
+### 逐项交回（沿用原功能 ID 与模块名）
+
+“已实现未验”只指本批代码已有；下列没有任何一项标为整项“已实测”。“阻塞”项同时列出已保留的区域/接线和具体共享缺口。复现列中的页面操作仍待获准的统一浏览器窗口；纯函数证据另列，不混成真实 UI。
+
+| 功能 ID／锁定模块 | 状态与本批实现 | 代码位置 | 复现与实际证据／依赖 |
+| --- | --- | --- | --- |
+| R30-P3-01 所选行动头区 | 已实现未验。仅由当前有效选择显示方案、轮次、输入版本、动作和不变项；无选择为空态。 | `03-action.html:36`；`action.js:641` | 从 P2 分别显式选路再进 P3；失效后不得默认 A。R30 脚本第1、2组通过，实际头区与跨标签未验；C1/C5。 |
+| R30-P3-02 “可以直接使用的修改稿” | 阻塞。已有共享稿件在带标题、版本的容器内切换；内容切换不选路。榨汁杯购买问答/适用 B 稿未由 C5 交付，没有硬写容量、冰块、清洗或售后承诺。 | `03-action.html:63`；`action.js:476`、`action.js:539` | 当前三种既有合成种子冒烟通过；比较 A/B 的 artifact 引用，榨汁杯分支须待 C5。未有运行稿件截图。 |
+| R30-P3-03 “复制全部文案／下载执行清单” | 已实现未验。全文复制包含当前路径全部已保存 copy 正文，步骤/观察计划不混成发布文案；另保留当前内容/步骤复制。TXT 明确为整条行动包、逐次摘要授权。 | `03-action.html:102`；`action.js:160`、`action.js:798`、`action.js:881` | R30 第1、2、9组及旧 REQ25 第2、3组通过。点击时锁定已展示签名，重读变更则拒绝；失败可手动选取且不记成功。真实剪贴板、浏览器下载请求、落盘与日志重试未验；C5。 |
+| R30-P3-04 “本轮实验卡”八项 | 阻塞。八个位置与已有计划字段映射完成；无样本/日期不填 100 或 24—72。护栏及具体回滚方法仍缺 C5。 | `03-action.html:129`；`action.js:169`、`action.js:428` | R30 第3组通过：null 保持未知，数值样本明确为合成假设或待核对计划；恢复条件不冒充已回滚。八行实际首屏高度未验。 |
+| R30-P3-05 “查看实验依据” | 已实现未验。依据弹窗含当前计划口径、来源模式、限制、证据摘要与算式；关键前提/风险在取用区旁保持可发现。 | `03-action.html:132`、`03-action.html:355`；`action.js:407`、`action.js:428` | 静态确认风险/前提没有包进反馈折叠。来源只有弹窗实际打开才触发 source_viewed；未造专家调用流程。打开/关闭/焦点返回与滚动未验；C5/C9。 |
+| R30-P3-06 执行状态三按钮 | 已实现未验。done/partial/not_started 仅明确点击后记录；初始三项均未选，清除可恢复 unknown。采用与观察独立，日期不自动补。 | `03-action.html:163`；`action.js:74`、`action.js:1219`、`action.js:1309` | 静态三按钮 aria-pressed=false；R30 第4组及共享反馈组合通过，包括 done+worse+executedAt=null、adoption=unknown。实际点击、刷新恢复未验；C6。 |
+| R30-P3-07 新截图／新Excel或CSV／文字反馈 | 阻塞。两文件位置及格式具名禁用，文字0/500、日期/范围/观察选填已接旧反馈流程。没有接收或保存文件的假回执。 | `03-action.html:188`、`03-action.html:194`、`03-action.html:199`；`action.js:74` | R30 第4、10组验证500字符边界与无 MATERIAL_ADD 接线；没有处理真实图片/Excel/CSV。接收、预览、删除、Blob/JSON事务等待 C2/C6。已存长记录仍只读完整展示，不截断历史。 |
+| R30-P3-08 “稍后回来补充／保存本轮记录” | 阻塞（附件事务部分）。稍后不写事件、不改执行；现有文字/自述按原稿引用 FEEDBACK_SAVE，失败留草稿、同操作重试；成功后才清未保存状态。 | `03-action.html:204`；`action.js:929`、`action.js:1230` | R30 第4、9组验证现有 reducer 边界；代码保留保存成功但读回失败的独立提示，不能因此重复保存。真实 IDB/刷新/跨标签/提交响应丢失仍未验；完整附件一致性待 C6。 |
+| R30-P3-09 保存后进入复盘 | 阻塞（共享改判部分）。保存后主动重读本机记录，提供同页复盘入口；读回失败可重试，查看不建轮。 | `03-action.html:247`；`action.js:929`、`action.js:986`、`action.js:1000` | R30 第5、6、10组验证原版本引用与无建轮捷径；没有无反馈预播“A已记住→B”。真实保存/读回/入口切换未验；自动再判断仍待 C7，候选建轮待 C8。 |
+| R30-R-01 记录回执与“查看完整实验记录” | 已实现未验（现有本机JSON记录）。实际 loadSession 成功且匹配原记录后展示回执；完整记录含原稿、执行/观察、指标口径、原实验计划、步骤/风险和原分析引用摘要。 | `03-action.html:262`、`03-action.html:375`；`action.js:202`、`action.js:986`、`action.js:1134` | R30 第5—8组通过；只按 feedback→execution/artifact版本→原 analysis 精确关联，不拿新材料补旧证据。MoneyAI、反馈附件读回仍未接通；真实弹窗与存储读回未验。 |
+| R30-R-02 上轮发生了什么四块 | 阻塞。动作/执行/观察三块来自所读记录，指标另可查看；第四块“当前结论”明确等待 C7。 | `03-action.html:269`；`action.js:1068` | R30 第4、5、8组保持 done+worse、unknown 与原话；有数值不自动改 observation，不把未知变0。未有四块运行截图或 C7 结论。 |
+| R30-R-03 不再重复／下一步建议与原因 | 阻塞。保留原行动处理、候选建议及关联反馈/分析/输入版本的位置；不把已尝试写成已验证，不固定 A→B。 | `03-action.html:291`；`action.js:1068` | 当前只能查看待共享提示；须等 C7 返回带版本理由，才能验继续观察/补数据/暂停/换实验。 |
+| R30-R-04 B执行预览 | 阻塞。候选预览容器保留，当前无候选稿，不用另一条旧路径填充，更不伪造视频。 | `03-action.html:307`；`action.js:1068` | 待 C5/C7 实际候选后核对片段和确认来源；当前没有0—2/2—4/4—5秒运行内容证据。 |
+| R30-R-05 “生成完整执行稿／查看修改清单” | 阻塞。两个具名按钮禁用并展示原因，无空跳转或成功 toast；候选不会覆盖当前稿件。 | `03-action.html:312`；`action.js:1068` | R30 第10组仅确认禁用及边界，未产出候选完整稿/修改清单；待 C5/C7/C8。 |
+| R30-R-06 “第二轮实验规则” | 阻塞。候选五项规则的位置保留、均为待返回状态；缺退款/投诉不能判护栏未触发。 | `03-action.html:319`；`action.js:1068` | 未使用当前轮计划冒充第二轮，也未造100次/24—72小时；待 C5/C7/C8 后核对候选版本。 |
+| R30-R-07 “开始第二轮／暂时不继续” | 阻塞。开始禁用且解释 C8；暂不继续只返回当前行动，不改变记录/执行或创建轮次。 | `03-action.html:330`；`action.js:1027`、`action.js:1309` | R30 第10组确认页面没有 ROUND_START 调用。旧 reducer 的纯逻辑建轮测试仅作兼容证据，不是本按钮实现；明确接受、幂等有效建轮仍待 C8。 |
+| R30-R-08 “这个商家的实验记忆”时间线 | 阻塞（候选/正式新轮部分）。只列已存反馈及原轮次/稿件，完整记录可读；未知候选单独提示，不插入“第二次待执行”。 | `03-action.html:338`；`action.js:1115` | R30 第5、6、8组证据为真实 reducer 关联，不是 MoneyAI 使用历史验证。正式新轮与来源使用说明待 C8/C9，时间线运行未验。 |
+| R30-R-09 商家中心／演示商家／导航入口 | 已实现未验。具名“当前项目”弹窗列当前本机会话/轮次及记录，复盘可返回当前行动；不建账号、多商家中心或第四主页面。 | `03-action.html:19`、`03-action.html:383`；`action.js:1197` | 静态确认两个状态同属 action-content/review-content 同级区域与共享壳；打开/关闭、普通第三步返回和焦点未验。C1/C8/C9 扩展能力未冒充可用。 |
+
+### 本批重要修补与事件边界
+
+- 全文取用和 TXT 都绑定当前选路及已保存稿件版本。全文复制还绑定点击时已展示的签名；重读后出现新选择/新稿即中止，不静默把 A 的点击意图迁给 B。剪贴板 Promise 成功才记 copy_succeeded，手动选中不算复制；下载仅记 download_requested，不称文件落盘。
+- 八项计划不从情景估算中的“100名访客”推成最低样本；只显示现有来源字段。具体护栏/回滚缺口保持可见，不为清爽藏掉必要风险。
+- 精确历史关联处理了“同轮保存反馈后重新分析、随后归档轮次”的情况：历史 round.analysis 可能是较晚分析，必须按 analysisId + roundId + inputVersion 找原快照，再取原 path/材料版本；不得用当前事实兜底。完整记录同时保留已有指标0/未知、单位/对象/渠道/计数口径/窗口，但不推导结果状态。
+- 记录/复盘读取使用请求代号、来源会话与 revision 检查；关闭、返回、换项目视图、换会话和离页取消旧请求。取消同时释放 busy；旧 finally 只能释放自己的读取，避免迟到结果重新弹窗、覆盖新选择或解除另一次请求状态。这里只完成代码与静态边界检查，真实取消/迟到时序仍待验。
+- 新反馈附件位置没有接普通输入命令；文本保存不会主动改原 inputVersion。保存确认与后续读回分开，后者失败不能误报前者失败或制造第二条保存。查看复盘、取用、候选预览位置都不是采用/执行/开始第二轮。
+
+### 已执行检查、实际证据与未验项
+
+| 检查 | 本批实际结果与边界 |
+| --- | --- |
+| `node --check demo/pages/action.js` | 退出0；最终官方文件复跑，不只是暂存稿。 |
+| `node --test demo/tests/logic.test.mjs` | **53/53 通过，0失败**。沿用现有 suite，没有写测试目录；不是浏览器、模型或 IDB 验收。 |
+| 本 QA 的 REQ-25 8组脚本 | **8/8 通过，0失败**；原 v0.5、三问、来源/更正、失效与逐次导出授权继续成立。 |
+| 下方 REQ-30 脚本 | **10/10 通过，0失败**；真实 reducer/生成器和页面纯投影，最后1项为源码/HTML静态边界。没有创建另一状态库。 |
+| 既有三合成种子模块冒烟 | 通过；underbed_complete_v1、one_sentence_v1、scope_conflict_v1 仍可导入纯函数。此处使用旧种子只作兼容检查，不声称榨汁杯已交付。 |
+| Python DOM/样式静态检查 | 124个唯一HTML ID、89个JS字面挂载点；label/ARIA/锚点目标存在、两状态同级、三执行按钮默认未知、反馈不包住取用/核心风险、单标题标记通过。CSS只检查作用域、共享变量和括号，不是完整CSS解析或渲染。 |
+| `python scripts/verify_demo_content.py` | 退出0；明确未运行 UI、模型、MoneyAI记忆、授权与经营效果检查。 |
+| 文件与权限边界 | 三实现文件UTF-8、无U+FFFD/NUL/尾空格、末尾换行；D备份哈希及原子替换检查完成。未运行任何Git命令，统筹负责差异/提交检查。 |
+
+第一次新增脚本的正文断言未先统一 LF/CRLF，因 TXT 按契约输出 CRLF 而失败；修正了比较方式并保留 BOM/逐次授权检查，没有为测试改变产品换行。CSS静态脚本也已按括号深度拆选择器，未把 :where 内的逗号误报为越界作用域。最终文档检查曾将复现代码中的正则字符组识别成Markdown链接；本QA改用等价的正则交替写法，未修改公共检查器或放宽断言。
+
+**真实运行证据：当前无。** 首屏、主交互、模态窗口、1920×1080排版、中文输入/键盘与焦点、减少动效/实际标题动画、剪贴板权限、TXT落盘、反馈Blob/JSON原子保存、刷新/跨标签、请求迟到与失败重试均未验。没有实际截图、录像或性能结论。两张静态草稿与上述 Node/源码检查均不能替代；Browser可信路径/备用许可继续由统筹协调，本页没有另试或绕过。
+
+尚未完成的联调顺序沿锁定：C5产物/完整计划 → C6反馈附件保存 → 实际读回 → C7版本化再判断 → 候选预览/修改清单 → 明确接受 → C8有效下一轮。以上是依赖顺序，不是自动派发的新任务；本批交回后停写。
+
+### 安全写入记录
+
+每个官方替换批次均先检查 C盘剩余大于1GiB，复制当前原文件到D并读回SHA-256，再使用同目录临时文件、flush/fsync、UTF-8/非空/内容校验；再次核对源文件哈希未变后 os.replace。临时文件没有当作新功能文件保留。
+
+| 批次 | 写前/复核情况与D备份 |
+| --- | --- |
+| HTML/CSS | 写前C剩余5,605,494,784字节。备份及检查回执：`D:/CodexBackups/luya/req30-agent3/markup-20260828T112902367954Z/manifest.json`、同目录 `atomic-receipt.json`。根任务另读最终文件并复核哈希/124ID。 |
+| JS | 原件SHA `caa8490029cb1779d110ccb36ed6698fda972ba4f681a000ca0ccd8898779325`；备份 `D:/CodexBackups/luya/req30-agent3/js-20260828T112730922676Z/action.js`。暂存通过语法/纯函数检查后替换，替换后C剩余5487001600字节。 |
+| 本QA | 写前C剩余5465944064字节；原件SHA `33ad405a72c5f94a5f8bed0b8076b805f09582f4dabc997752d56e1512feadf1`，备份 `D:/CodexBackups/luya/req30-agent3/qa-20260828T114118703996Z/QA_AGENT_3.md`。本段和复现脚本同批暂存/验证/替换，原历史记录保留。 |
+| QA复现语法兼容修订 | 写前C剩余4472668160字节；备份 `D:/CodexBackups/luya/req30-agent3/qa-check-20260828T114616888244Z/QA_AGENT_3.md`，SHA `a309e0d007fd66ba1679ab9f555946735c733f86b615037ac8681d5e14d2bdf9`。只调整QA正则的等价写法和检查说明，业务代码不变。 |
+
+最终实现文件：HTML 24029字节／`964515851ddb87ea8580320a58c8b2ecb4c85e5e2ffff4623f24a409472048e3`；CSS 30694字节／`57f2acaa29f7d8173177f5b60bd53210cd108cf46eae880295948c5145fb5e56`；JS 77260字节／`84cab901dc38c94e2ccb4ba4040c872fe24924830b70845fff59454f407134c5`。这些标识只定位本批源码，不表示已完成统一Git检查点或运行验收。
+
+<details>
+<summary>REQ-30 的10组纯逻辑/静态边界复现（仓库根目录）</summary>
+
+只运行进程内 reducer、生成器和页面纯函数；不启动浏览器，不读写演示持久会话。不设置 A3_ACTION_MODULE 时导入官方 action.js；该环境变量仅用于本批同目录暂存稿的替换前检查。
+
+```powershell
+$qaText = Get-Content -LiteralPath 'docs/development/demo/QA_AGENT_3.md' -Encoding UTF8 -Raw
+$qaSmoke = [regex]::Match($qaText, '(?s)<!-- A3-REQ30-SMOKE -->\s*```javascript\r?\n(.*?)\r?\n```').Groups[1].Value
+if (-not $qaSmoke) { throw 'REQ-30 smoke block missing' }
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$qaSmoke | node --input-type=module
+```
+
+<!-- A3-REQ30-SMOKE -->
+```javascript
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createEmptyState, reduceCommand } from './demo/shared/model.js';
+import { buildDemoAnalysis, buildDemoArtifact } from './demo/shared/demo-data.js';
+const modulePath = process.env.A3_ACTION_MODULE || './demo/pages/action.js';
+const { activeSelection, currentArtifacts, buildActionCopy, buildActionPack, experimentCardRows,
+  makeFeedbackPayload, resolveFeedbackRecord, feedbackMetricRows } = await import(modulePath);
+const NOW = '2026-08-28T12:00:00.000Z';
+function harness(fixtureId = 'underbed_complete_v1') {
+  let serial = 0;
+  const context = { now: NOW, newId: () => 'r30_' + (++serial) };
+  let state = createEmptyState(context);
+  const send = (type, payload) => {
+    const result = reduceCommand(state, { type, payload, commandId: 'r30_cmd_' + (++serial),
+      expectedRevision: state.revision }, context);
+    state = result.state;
+    return result;
+  };
+  if (fixtureId) send('LOAD_FIXTURE', { fixtureId });
+  return { get state() { return state; }, send };
+}
+function analyze(h) {
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const generated = buildDemoAnalysis(h.state);
+  assert.equal(generated.ok, true);
+  h.send('ANALYSIS_SET', { analysis: generated.analysis });
+}
+function choose(h, index = 0) {
+  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: h.state.analysis.paths[index].id,
+    inputVersion: h.state.round.inputVersion });
+  const generated = buildDemoArtifact(h.state);
+  assert.equal(generated.ok, true);
+  for (const artifact of generated.artifacts) h.send('ARTIFACT_SAVE', { artifact });
+}
+function ready() { const h = harness(); analyze(h); choose(h); return h; }
+function draft(overrides = {}) {
+  return { execution: 'unknown', observation: 'unknown', rawText: '', scope: '', executedAt: null, ...overrides };
+}
+function saveFeedback(h, overrides = {}) {
+  h.send('FEEDBACK_SAVE', makeFeedbackPayload(currentArtifacts(h.state)[0], draft(overrides)));
+  return h.state.feedbackRecords.at(-1);
+}
+function pack(h, allowSummaries) {
+  return buildActionPack(h.state, { exportId: 'r30_export', generatedAt: NOW, allowSummaries });
+}
+
+test('R30 copy-all uses every saved copy on the selected path; no feedback or mutation', () => {
+  const h = harness();
+  assert.throws(() => buildActionCopy(h.state));
+  analyze(h);
+  assert.throws(() => buildActionCopy(h.state));
+  choose(h);
+  const original = currentArtifacts(h.state).find((a) => a.kind === 'copy');
+  // Synthetic second draft, saved by the real reducer; not a new production generator.
+  h.send('ARTIFACT_SAVE', { artifact: { ...structuredClone(original), id: null, version: 0,
+    savedAt: null, title: 'Second synthetic copy', body: 'SECOND_COPY_BODY' } });
+  const before = structuredClone(h.state);
+  const copies = currentArtifacts(h.state).filter((a) => a.kind === 'copy');
+  const actual = buildActionCopy(h.state);
+  assert.deepEqual(actual.artifacts.map((a) => a.id), copies.map((a) => a.id));
+  assert.equal(actual.text, copies.map((a) => a.body).join('\n\n'));
+  assert.equal(actual.artifacts.some((a) => a.kind === 'experiment_plan'), false);
+  assert.deepEqual(h.state, before);
+  assert.deepEqual(h.state.feedbackRecords, []);
+  assert.throws(() => pack(h, false));
+  const txt = pack(h, true).text;
+  for (const artifact of currentArtifacts(h.state)) {
+    assert(txt.includes(artifact.id));
+    assert(txt.replace(/\r\n/g, '\n').includes(artifact.body.replace(/\r\n/g, '\n')));
+  }
+  assert.equal(txt.charCodeAt(0), 0xfeff);
+  assert.throws(() => pack(h, false)); // Consent is required again, even after success.
+});
+
+test('R30 displayed signature rejects silent A-to-B copy, extra drafts and invalidated input', () => {
+  const h = ready();
+  const clicked = buildActionCopy(h.state);
+  choose(h, 1);
+  assert.throws(() => buildActionCopy(h.state, { expectedSignature: clicked.signature }));
+  const b = buildActionCopy(h.state);
+  assert.notEqual(b.context.pathId, clicked.context.pathId);
+  assert.equal(b.text, b.artifacts.map((a) => a.body).join('\n\n'));
+  const next = { ...structuredClone(b.artifacts[0]), id: null, version: 0, savedAt: null,
+    title: 'Additional B copy', body: 'ADDITIONAL_B' };
+  h.send('ARTIFACT_SAVE', { artifact: next });
+  assert.throws(() => buildActionCopy(h.state, { expectedSignature: b.signature }));
+  h.send('INPUT_EDIT', { description: 'Synthetic correction: now a different input.' });
+  assert.equal(activeSelection(h.state), null);
+  assert.throws(() => buildActionCopy(h.state));
+  assert.throws(() => pack(h, true));
+});
+
+test('R30 eight experiment rows keep sample, guardrail and rollback limits explicit', () => {
+  const h = ready();
+  const path = activeSelection(h.state).path;
+  const before = structuredClone(path);
+  const rows = experimentCardRows(path, h.state.analysis.mode);
+  const byLabel = Object.fromEntries(rows);
+  assert.equal(rows.length, 8);
+  assert.equal(byLabel['本轮只改什么'], path.experiment.change);
+  assert.equal(byLabel['本轮保持不变'], path.experiment.keepFixed.join('；'));
+  assert.match(byLabel['最小样本'], /尚未确定/);
+  assert.doesNotMatch(byLabel['最小样本'], /100/);
+  assert.doesNotMatch(byLabel['观察时间'], /24|72/);
+  assert.match(byLabel['护栏指标'], /不代表风险未触发/);
+  assert.match(byLabel['回滚方式'], /仅有恢复条件/);
+  assert.match(byLabel['回滚方式'], /步骤待共享/);
+  assert.deepEqual(path, before);
+  assert.equal(experimentCardRows(null).length, 8);
+  const scenario = structuredClone(path);
+  scenario.experiment.minSample = 100;
+  assert.match(Object.fromEntries(experimentCardRows(scenario, 'demo_fixture'))['最小样本'], /合成计划假设.*100.*不代表统计充分/);
+  assert.match(Object.fromEntries(experimentCardRows(scenario, 'local_limited'))['最小样本'], /依据待核对.*100.*不代表统计充分/);
+});
+
+test('R30 explicit execution stays separate from observation, adoption and time', () => {
+  for (const execution of ['unknown', 'done', 'partial', 'not_started']) {
+    const h = ready();
+    const record = saveFeedback(h, { execution, observation: 'worse', rawText: 'Synthetic self-report.' });
+    const bundle = resolveFeedbackRecord(h.state, record.id);
+    assert.equal(bundle.execution.execution, execution);
+    assert.equal(bundle.execution.adoption, 'unknown');
+    assert.equal(bundle.execution.executedAt, null);
+    assert.equal(bundle.feedback.observation, 'worse');
+    assert.equal(h.state.events.some((event) => event.type === 'adoption_reported'), false);
+    assert.equal(h.state.events.some((event) => event.type === 'round_started'), false);
+    const before = structuredClone(h.state);
+    buildActionCopy(h.state); // A saved optional report is not a new taking prerequisite.
+    assert.deepEqual(h.state, before);
+  }
+  const h = ready(), artifact = currentArtifacts(h.state)[0];
+  assert.throws(() => makeFeedbackPayload(artifact, draft()));
+  const text = '甲'.repeat(500);
+  assert.equal(makeFeedbackPayload(artifact, draft({ rawText: text })).feedbackRecord.rawText, text);
+  assert.throws(() => makeFeedbackPayload(artifact, draft({ rawText: text + '乙' })));
+  assert.throws(() => makeFeedbackPayload(artifact, draft({ rawText: 'x', executedAt: '2026-02-30' })));
+});
+
+test('R30 exact old record survives same-round reanalysis and a later archived round', () => {
+  const h = ready();
+  const oldAnalysis = structuredClone(h.state.analysis);
+  const oldArtifact = structuredClone(currentArtifacts(h.state)[0]);
+  const feedback = saveFeedback(h, { execution: 'done', observation: 'unchanged', rawText: 'Original report.' });
+  const beforeRead = structuredClone(h.state);
+  const first = resolveFeedbackRecord(h.state, feedback.id);
+  assert.equal(first.analysis.id, oldAnalysis.id);
+  assert.deepEqual(h.state, beforeRead);
+  analyze(h); // The current round's new analysis is NOT the feedback's original analysis.
+  const laterAnalysisId = h.state.analysis.id;
+  assert.notEqual(laterAnalysisId, oldAnalysis.id);
+  assert.equal(resolveFeedbackRecord(h.state, feedback.id).analysis.id, oldAnalysis.id);
+  // Exercise a pre-existing reducer transition only; the R30 page has no such command.
+  h.send('ROUND_START', { feedbackId: feedback.id });
+  const archived = h.state.history.find((entry) => entry.type === 'round');
+  assert.equal(archived.analysis.id, laterAnalysisId);
+  const resolved = resolveFeedbackRecord(h.state, feedback.id);
+  assert.equal(resolved.analysis.id, oldAnalysis.id);
+  assert.equal(resolved.path.id, oldArtifact.pathId);
+  assert.equal(resolved.artifact.id, oldArtifact.id);
+  assert.equal(resolved.artifact.version, oldArtifact.version);
+  assert.equal(resolved.artifact.body, oldArtifact.body);
+  assert.deepEqual(resolved.analysis.inputSnapshot, oldAnalysis.inputSnapshot);
+  assert.equal(resolved.roundIndex, 1);
+  assert.equal(resolved.execution.execution, 'done');
+});
+
+test('R30 missing or mismatched record references never use another version', () => {
+  const h = ready();
+  const feedback = saveFeedback(h, { rawText: 'One report.' });
+  assert.equal(resolveFeedbackRecord(h.state, 'missing'), null);
+  for (const change of [
+    (copy) => { copy.feedbackRecords[0].artifactVersion += 1; },
+    (copy) => { copy.executionRecords[0].pathId = 'other_path'; },
+    (copy) => { copy.feedbackRecords[0].savedAt = null; },
+  ]) {
+    const corrupted = structuredClone(h.state); change(corrupted);
+    assert.equal(resolveFeedbackRecord(corrupted, feedback.id), null);
+  }
+  const withoutAnalysis = structuredClone(h.state);
+  withoutAnalysis.analysis = null; withoutAnalysis.history = [];
+  const partial = resolveFeedbackRecord(withoutAnalysis, feedback.id);
+  assert.equal(partial.analysis, null);
+  assert.equal(partial.path, null);
+  assert.equal(partial.artifact.id, feedback.artifactId);
+});
+
+test('R30 original source snapshot is not replaced by corrected current input', () => {
+  const h = ready();
+  const original = structuredClone(h.state.analysis);
+  const record = saveFeedback(h, { rawText: 'Record against the original source.' });
+  const fact = structuredClone(h.state.input.facts.find((item) => item.key === 'external_height'));
+  const previousValue = fact.value; fact.value = 14;
+  h.send('FACT_PATCH', { fact, reason: 'Synthetic correction after reporting.' });
+  const bundle = resolveFeedbackRecord(h.state, record.id);
+  assert.equal(bundle.analysis.id, original.id);
+  assert.equal(bundle.analysis.inputSnapshot.facts.find((item) => item.id === fact.id).value, previousValue);
+  assert.equal(h.state.input.facts.find((item) => item.id === fact.id).value, 14);
+  assert.equal(activeSelection(h.state), null);
+});
+
+test('R30 metrics-only feedback preserves zero, unknown and saved measurement scope', () => {
+  const h = ready(), artifact = currentArtifacts(h.state)[0];
+  const metric = { key: 'paid_orders', value: 0, unit: '笔', subject: 'Synthetic item',
+    channel: null, cohort: 'orders', window: { start: '2026-08-27', end: null } };
+  h.send('FEEDBACK_SAVE', { executionRecord: null, feedbackRecord: {
+    artifactId: artifact.id, artifactVersion: artifact.version, observation: 'unknown',
+    rawText: '', metrics: [metric], observedWindow: { start: null, end: null } } });
+  const bundle = resolveFeedbackRecord(h.state, h.state.feedbackRecords.at(-1).id);
+  assert.equal(bundle.execution, null);
+  assert.equal(bundle.feedback.observation, 'unknown');
+  assert.deepEqual(bundle.feedback.metrics, [metric]);
+  const values = Object.fromEntries(feedbackMetricRows(bundle.feedback.metrics[0]));
+  assert.equal(values['已报数值'], '0');
+  assert.equal(values['单位'], '笔');
+  assert.equal(values['对象'], 'Synthetic item');
+  assert.equal(values['渠道'], '未知');
+  assert.equal(values['观察开始'], '2026-08-27');
+  assert.equal(values['观察结束'], '未知');
+  assert.equal(Object.fromEntries(feedbackMetricRows({ value: null }))['已报数值'], '未知');
+  assert.equal(Object.fromEntries(feedbackMetricRows({ metric: 'product_clicks', window_start: '2026-08-26' }))['观察开始'], '2026-08-26');
+});
+
+test('R30 taking events do not adopt, execute, report, read back or start a round', () => {
+  const h = ready(), copy = buildActionCopy(h.state);
+  const before = structuredClone(h.state);
+  const refs = { pageId: 'action', analysisId: copy.context.analysisId, pathId: copy.context.pathId,
+    inputVersion: copy.context.inputVersion, artifactId: copy.artifacts[0].id, artifactVersion: copy.artifacts[0].version };
+  h.send('EVENT_APPEND', { event: { type: 'copy_succeeded', roundId: copy.context.roundId, refs } });
+  h.send('EVENT_APPEND', { event: { type: 'download_requested', roundId: copy.context.roundId,
+    refs: { pageId: 'action', exportId: 'r30_export', format: 'txt' } } });
+  assert.deepEqual(h.state.events.slice(before.events.length).map((event) => event.type), ['copy_succeeded', 'download_requested']);
+  for (const key of ['round', 'selection', 'artifacts', 'executionRecords', 'feedbackRecords', 'history']) {
+    assert.deepEqual(h.state[key], before[key]);
+  }
+});
+
+test('R30 static page boundaries: no feedback-as-input, no candidate round shortcut, one title', () => {
+  const source = readFileSync(new URL(modulePath, import.meta.url), 'utf8');
+  const html = readFileSync('demo/03-action.html', 'utf8');
+  assert.doesNotMatch(source, /command\(\s*(?:'|")(?:ROUND_START|MATERIAL_ADD)(?:'|")/);
+  assert.match(source, /expectedSignature:\s*renderedPackSignature/);
+  assert.match(source, /expectedSignature:\s*intent\.signature/);
+  assert.match(source, /token !== viewReadToken \|\| state\?\.sessionId !== sessionId/);
+  assert.match(source, /addEventListener\('cancel'/);
+  assert.match(source, /function invalidateViewRead\(\)[\s\S]*?readingReview = false;/);
+  assert.match(source, /if \(token === viewReadToken\) readingReview = false;/);
+  assert.equal((html.match(/\bdata-fold-title\b/g) || []).length, 1);
+  for (const control of ['feedback-image', 'feedback-table', 'generate-candidate', 'show-change-list', 'start-candidate']) {
+    assert.match(html, new RegExp('<(?:input|button)\\b[^>]*\\bid="' + control + '"[^>]*\\bdisabled\\b'));
+  }
+  assert.equal((html.match(/data-execution="(?:done|partial|not_started)"[^>]*aria-pressed="false"/g) || []).length, 3);
+});
+```
+
+</details>
+
+---
+
+## REQ-25 限定纯逻辑回归（上一轮交接）
+
 
 依据新统筹本次明确下发及已交付的主契约 4.1／细则 3、3.1执行。只做内存 reducer 和页面纯函数检查，不启动浏览器、同源持久会话、手机或 Figma。REQ-28 的三页渐进方向与路芽文字品牌继续有效；本轮没有重新布局、动共享样式或增加语音／提取接口。
 

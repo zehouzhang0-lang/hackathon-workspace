@@ -1,4 +1,5 @@
 import { enhanceFoldTitle } from "../shared/title-motion.js";
+import { findIntakeFieldFact } from "../shared/intake-draft.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -353,25 +354,64 @@ export function getIntakeReviewGroups(draft, projection = null) {
   }));
 }
 
-export function getIntakeCorrectionConflicts(draft, facts) {
-  return facts.filter((fact) => fact.intakeField && fact.verification === "user_corrected").flatMap((fact) => {
-    const field = fact.intakeField;
+export function getIntakeCorrectionConflicts(draft, facts, state = null, sourceBindings = null) {
+  const corrected = facts.filter((fact) => fact.verification === "user_corrected");
+  const conflictFor = (field, fact, resolved = true) => {
     const oldValue = field.split(".").reduce((value, part) => value?.[part], draft) ?? null;
-    if (Object.is(oldValue, fact.value)) return [];
+    if (resolved && Object.is(oldValue, fact.value)) return [];
     const scalar = Object.hasOwn(INTAKE_FIELD_LABELS, field) && !INTAKE_ARRAY_FIELDS.has(field);
     const known = fact.availability === "known", unknown = fact.availability === "unknown" && fact.value === null;
     const validValue = unknown || known && (INTAKE_COUNT_FIELDS.has(field) ?
       Number.isSafeInteger(fact.value) && fact.value >= 0 : typeof fact.value === "string" && !!fact.value.trim() &&
       (!["metrics.windowStart", "metrics.windowEnd"].includes(field) || validDate(fact.value)));
-    return [{ field, factId: fact.id, oldValue, currentValue: fact.value, canRecover: scalar && validValue }];
+    return [{ field, factId: fact.id, oldValue, currentValue: fact.value, canRecover: resolved && scalar && validValue }];
+  };
+  // Legacy callers can still inspect intake-owned facts without a session.
+  if (!state) return corrected.filter((fact) => fact.intakeField)
+    .flatMap((fact) => conflictFor(fact.intakeField, fact));
+  const current = { ...state, input: { ...state.input, facts } };
+  const savedBindings = [state.input?.intake?.sourceBindings || [], ...(state.history || [])
+    .filter((entry) => entry.type === "intake_revision" && entry.intake)
+    .map((entry) => entry.intake.sourceBindings || [])];
+  const fields = new Set([
+    ...Object.keys(INTAKE_FIELD_LABELS).filter((field) => !INTAKE_ARRAY_FIELDS.has(field)),
+    ...facts.map((fact) => fact.intakeField || (fact.source?.locator?.type === "intake" ? fact.source.locator.field : null)),
+    ...(sourceBindings || []).map((binding) => binding.field),
+    ...savedBindings.flatMap((bindings) => bindings.map((binding) => binding.field))
+  ].filter((field) => typeof field === "string" && field));
+  return [...fields].flatMap((field) => {
+    // Only an explicit file binding overrides current/history lookup. An empty
+    // local binding list must not hide the original file after a manual review.
+    const explicit = sourceBindings?.some((binding) => binding.field === field &&
+      ["txt", "csv", "json"].includes(binding.source)) ? sourceBindings : null;
+    const fact = findIntakeFieldFact(current, field, explicit);
+    if (fact) return fact.verification === "user_corrected" ? conflictFor(field, fact) : [];
+    // Keep ambiguous associations visible but unusable. Probe with the shared
+    // resolver, never infer a field from the metric name or an array index.
+    return corrected.filter((candidate) => findIntakeFieldFact({ ...current,
+      input: { ...current.input, facts: [candidate] } }, field, explicit)?.id === candidate.id)
+      .flatMap((candidate) => conflictFor(field, candidate, false));
   });
 }
 
-export function editIntakeField(draft, sourceBindings, field, rawText, baselineFact = null) {
+export function isIntakeCorrectionSnapshotCurrent(state, snapshot) {
+  if (!state?.sessionId || !snapshot || snapshot.sessionId !== state.sessionId ||
+    snapshot.roundId !== state.round?.id || snapshot.inputVersion !== state.round?.inputVersion) return false;
+  const current = (state.input?.facts || []).filter((fact) => fact.id === snapshot.factId);
+  return current.length === 1 && typeof snapshot.factSnapshot === "string" &&
+    JSON.stringify(current[0]) === snapshot.factSnapshot;
+}
+
+export function editIntakeField(draft, sourceBindings, field, rawText, baselineFact = null, state = null) {
   if (!Object.hasOwn(INTAKE_FIELD_LABELS, field)) throw new Error("请选择可修改的经营字段。");
-  if (baselineFact && (baselineFact.intakeField !== field ||
-    !getIntakeCorrectionConflicts(draft, [baselineFact]).some((entry) => entry.canRecover))) {
-    throw new Error("这项历史更正的类型或数组映射不明确，请保留冲突；没有猜测编辑起点。");
+  if (baselineFact) {
+    const facts = state?.input?.facts || [baselineFact];
+    const current = !state || facts.some((fact) => fact.id === baselineFact.id &&
+      JSON.stringify(fact) === JSON.stringify(baselineFact));
+    if (!current || !getIntakeCorrectionConflicts(draft, facts, state, sourceBindings)
+      .some((entry) => entry.field === field && entry.factId === baselineFact.id && entry.canRecover)) {
+      throw new Error("这项历史更正已变化，或类型、数组及来源对应不明确，请重新核对；没有猜测编辑起点。");
+    }
   }
   const raw = rawText.trim();
   let value = raw || null;
@@ -413,7 +453,13 @@ export function editIntakeField(draft, sourceBindings, field, rawText, baselineF
       status: unknown ? "unknown" : field.endsWith("Hypothesis") ? "owner_hypothesis" : "confirmed_fact",
       source: "manual" });
   }
-  return { draft: next, sourceBindings: structuredClone(sourceBindings.filter((entry) => !changedFields.has(entry.field))), changed: true };
+  // A newly chosen file can differ from the currently saved association. Keep
+  // its explicit locator for identity; the revised evidence/source stays manual.
+  const keepFileAssociation = state && baselineFact && !baselineFact.intakeField &&
+    findIntakeFieldFact(state, field)?.id !== baselineFact.id;
+  return { draft: next, sourceBindings: structuredClone(sourceBindings.filter((entry) =>
+    !changedFields.has(entry.field) || keepFileAssociation && entry.field === field &&
+      ["txt", "csv", "json"].includes(entry.source))), changed: true };
 }
 
 export function getNextIntakeQuestion(draft, clarification) {
@@ -1014,7 +1060,7 @@ function startIntakePage() {
     if (!contextDraft) return;
     const preflight = intakeApi.mapConfirmedIntakeToAnalysisInput(contextDraft, { state, sourceBindings: contextBindings });
     const projection = preflight.ok ? preflight.projection : null;
-    const corrections = getIntakeCorrectionConflicts(contextDraft, state.input.facts);
+    const corrections = getIntakeCorrectionConflicts(contextDraft, state.input.facts, state, contextBindings);
     const cautions = [...new Set([
       ...(preflight.ok ? [] : [preflight.message || "来源与当前材料不一致，请更正后再保存。"]),
       ...(projection?.unknowns || state.input.unknowns).filter((item) => ["conflicting", "unparsed"].includes(item.reason))
@@ -1040,7 +1086,7 @@ function startIntakePage() {
         card.append(element("p", label + "：旧理解“" + String(correction.oldValue ?? "未知") +
           "”／当前已更正“" + String(correction.currentValue ?? "未知") + "”", "correction-conflict"));
         card.append(element("p", correction.canRecover ? "打开“有一项不对”，核对当前更正后再保存。" :
-          "这项涉及数组或不明确的类型，保留冲突，暂不自动恢复。", "muted"));
+          "这项的数组、类型或来源对应不明确，保留冲突，暂不自动恢复。", "muted"));
       }
       const sources = [...new Set(group.items.flatMap((item) => item.sources))];
       if (sources.length) card.append(element("p", sources.map((source) => sourceNames[source] || source).join(" · "), "card-provenance"));
@@ -1231,7 +1277,7 @@ function startIntakePage() {
     for (const [field, label] of Object.entries(INTAKE_FIELD_LABELS)) {
       const option = element("option", label); option.value = field; ui.contextField.append(option);
     }
-    ui.contextField.value = getIntakeCorrectionConflicts(contextDraft, state.input.facts)
+    ui.contextField.value = getIntakeCorrectionConflicts(contextDraft, state.input.facts, state, contextBindings)
       .find((entry) => entry.canRecover)?.field || "productName";
     fillContextField();
     ui.contextDialog.showModal();
@@ -1239,7 +1285,7 @@ function startIntakePage() {
 
   function fillContextField() {
     const field = ui.contextField.value, value = intakeFieldValue(contextDraft, field);
-    const conflicts = getIntakeCorrectionConflicts(contextDraft, state.input.facts).filter((entry) =>
+    const conflicts = getIntakeCorrectionConflicts(contextDraft, state.input.facts, state, contextBindings).filter((entry) =>
       entry.field === field || INTAKE_ARRAY_FIELDS.has(field) && entry.field.startsWith(field + "."));
     const conflict = conflicts[0];
     const fact = conflict ? state.input.facts.find((entry) => entry.id === conflict.factId) : null;
@@ -1256,7 +1302,7 @@ function startIntakePage() {
       if (conflict) {
         ui.contextFieldNote.textContent = "旧理解：“" + String(conflict.oldValue ?? "未知") +
           "”；当前已更正：“" + String(conflict.currentValue ?? "未知") + "”。保存前请明确核对当前更正。";
-        if (contextEdit.recoveryBlocked) ui.contextError.textContent = "数组或类型无法明确对应，未替换任何草稿；暂不能从这里保存该项。";
+        if (contextEdit.recoveryBlocked) ui.contextError.textContent = "数组、类型或来源无法明确对应，未替换任何草稿；暂不能从这里保存该项。";
       }
     }
     updateControls();
@@ -1286,18 +1332,18 @@ function startIntakePage() {
       ui.contextError.textContent = "当前编辑已过期或仍在保存，请重新核对。"; return;
     }
     try {
-      if (contextEdit.recoveryBlocked) { ui.contextError.textContent = "这项更正的类型或数组映射仍不明确，未保存。"; return; }
+      if (contextEdit.recoveryBlocked) { ui.contextError.textContent = "这项更正的类型、数组或来源对应仍不明确，未保存。"; return; }
       const baseline = contextEdit.recoveryFact;
       if (baseline) {
-        const current = state.input.facts.find((fact) => fact.id === baseline.id);
-        if (!current || JSON.stringify(current) !== contextEdit.factSnapshot) {
+        if (!isIntakeCorrectionSnapshotCurrent(state, { ...contextEdit.origin,
+          factId: baseline.id, factSnapshot: contextEdit.factSnapshot })) {
           ui.contextError.textContent = "已保存的更正又发生变化，请重新打开核对；未使用旧值保存。"; return;
         }
         if (!window.confirm("已核对当前更正为“" + String(baseline.value ?? "未知") + "”，并以它为起点保存这次输入？原始转写和更正历史都会保留。")) return;
       }
       const editingDraft = contextEdit.applied ? contextEdit.previousDraft : contextDraft;
       const editingBindings = contextEdit.applied ? contextEdit.previousBindings : contextBindings;
-      const edited = editIntakeField(editingDraft, editingBindings, ui.contextField.value, ui.contextValue.value, baseline);
+      const edited = editIntakeField(editingDraft, editingBindings, ui.contextField.value, ui.contextValue.value, baseline, state);
       const checked = intakeApi.validateMerchantIntakeDraft(edited.draft);
       if (!checked.ok) { ui.contextError.textContent = checked.errors.map((entry) => entry.message).join(" "); return; }
       contextDraft = checked.draft; contextBindings = edited.sourceBindings; contextDirty ||= edited.changed;

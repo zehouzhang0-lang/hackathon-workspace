@@ -335,3 +335,50 @@ D 盘旧 intake-working.js 只是当时的暂存，不是当前运行版本；�
 - 真实麦克风权限、浏览器中文识别、实际计时/停止和中文 IME、真正 BFCache、跨标签、刷新/Blob/IndexedDB 持久化、配额及提交丢回执仍需统一浏览器会话验收。识别桩和内存回执不能替代这些检查。
 - 当前九组可人工核对，但自动业务理解、OCR、MoneyAI 分析/路径/历史专用通路仍未接通；本页不自行启用外发或模型。人工改写不等于外部核实。
 - 历史数组或类型不明的更正只保留可读冲突并阻止猜测恢复，本批不扩展数组实体迁移；完整视觉和手机阶段留待后续明确安排。
+
+
+## 13. 2026-08-28 追加｜首页替身接手与文件事实更正恢复
+
+本节由现任统筹调度的首页替身追加。用户已明确要求原首页开发任务停写并由替身取代；替身只执行本次定点修复，不读取旧异常对话或尚未确认的会议原件，不改三页职责、视觉、共享实现、后端或 Git。第 1—12 节仍保留当时记录；原 QA 的 43208 字节逐字节保持为本文件前缀。
+
+本批只修改 [首页脚本](../../../demo/pages/intake.js) 和本 QA，HTML/CSS 未改。起始 Git 工作区干净，HEAD 为 bd4122ccd1f783fec546ad0faacacdf59b87759b，脚本 125378 字节及交接 SHA256 一致。随后公共文档与既有测试由统筹并行修改，本替身未覆盖。
+
+### 修复内容与保存边界
+
+- `getIntakeCorrectionConflicts(draft, facts, state = null, sourceBindings = null)` 保留原两参调用，并用共享 `findIntakeFieldFact` 只读定位没有 `intakeField` 的文件事实；核对卡、打开编辑器、填充字段三处都传当前 state 和本地绑定。旧卡 0／当前更正 5 可以同时呈现，不自动回填整份草稿。
+- `editIntakeField` 兼容原五参调用，文件事实恢复另传第六参 state。实际 fact 与界面 field 分开，未向持久化事实或其快照补 `intakeField`。用户仍须明确确认当前值；采纳 5 不编造 0→5，从 5 改到 7／未知只追加 5→7／null，已存 `userCorrections` 前缀保持。
+- 新纯守卫 `isIntakeCorrectionSnapshotCurrent(state, snapshot)` 核对 `{sessionId, roundId, inputVersion, factId, factSnapshot}`；factSnapshot 来自打开时实际 fact 的 `JSON.stringify`。轮次、版本、fact 内容或身份改变时拒绝旧编辑，重新核对后再保存。编辑纯函数也核对当前实际 fact 与唯一关联，不能以修改后的临时对象蒙混通过。
+- 空的本地绑定数组不屏蔽历史关联；明确的新文件 B 绑定优先于旧 A。若 B 的新绑定尚未保存、恢复目标又不同于当前默认关联，只保留该字段明确的文件定位供识别，修改后的证据仍是 `manual`、事实来源仍是 `merchant_statement`。不把商家陈述写成原文件改动，也不改旧 A。
+- 数组、字段类型或文件候选对应不明确时显示冲突并阻止恢复。单一 fact ID、原口径及 `fact_correction` 原文件历史由共享事务保留，本页仍只提交 `INTAKE_SET`。
+
+### 本替身实际执行的检查
+
+所有探针只用合成数据与共享 reducer 内存状态，没有真实浏览器或 IndexedDB。不同组有重叠，不相加宣称端到端用例数。
+
+| 检查 | 结果与检查时点 |
+| --- | --- |
+| `node --check demo/pages/intake.js` | 最终脚本通过，只有语法证明 |
+| `node --test demo/tests/logic.test.mjs` | 本替身在最终脚本上独立复跑 53/53 通过，含统筹刚补入的页面恢复组合；运行前后测试文件 SHA256 均为 d47346ea54feda88287602d1121449109a6bff5482d97875e05b22ff8616d91f。测试文件不是本替身编写，后续统筹可能继续补充 |
+| 首补版合成纯函数／内存组合 | 14/14 通过：有／无同字段历史前缀的采纳 5、改 7／null；清本地绑定后仍能从历史再次恢复；轮次／版本／fact 原快照变化拒绝；伪加 intakeField、过期基线、旧签名、文件数组、错误类型、多个候选和显式 B 不回退 A。对应脚本 SHA256 为 e55ff49965ead4b0ca62350b9ca2cc99c7685780d94561e698a67eb53e811e78，早于下述 B 增量 |
+| 最终版未保存 B 绑定增量 | 3/3 通过：A 已更正为 5，B 原文件 99 又更正为 101，在尚未保存 B 绑定时分别采纳 101、改 103／null。只恢复 B，A 完整保持；B 单一 ID、原文件历史、manual 证据、merchant_statement 来源及本地绑定均符合约定 |
+| `python -B -X utf8 scripts/verify_demo_content.py` | 本 QA 追加前实际 1555 项通过，15 个素材定义路径有效；追加后的复跑结果见最终交接，不把内容检查当 UI 或 MoneyAI 验收 |
+| `git diff --check -- demo/pages/intake.js docs/development/demo/QA_AGENT_1.md` | 本 QA 追加前通过；Git 提示未来操作可能将 LF 转为 CRLF，本替身未做 Git 写操作。追加后另行复核 |
+| D 盘备份与原子写入 | 每批写前 C 盘可用均超过 1 GiB；原始／计划文件均 flush/fsync、逐字节回读，同目录临时文件再次核对后 `os.replace`。脚本保持 UTF-8、LF、无 NUL；QA 原文前缀不变 |
+
+最终脚本为 128676 字节，SHA256 `de9d36ad7fc3690756735de6447f0691c5ef105c6e7fbfa799957bc69ecf8c2a`。D 盘恢复根目录为 `D:/CodexTaskRecovery/01a0476a-6049-70d2-9bb0-95af778428eb/p1-replacement/`：`batch-01-file-fact-recovery/` 保存原 JS／QA 和首补计划，`batch-02-explicit-binding/` 保存 B 分支前后脚本，`batch-03-qa-handoff/` 保存本 QA 原始与计划文件，各批有 manifest 与说明。最终 QA 大小／SHA 在交接消息另报，避免自引用哈希。
+
+### 未执行与剩余验收
+
+本替身没有复跑统筹先前的 12 项 Python 后端测试、18 个模块全量语法，也未把既有 1546 内容检查当作本次运行。Browser 插件仍受 Trusted RPC 路径错误阻塞；没有用户明确的备用许可，因此未使用 Playwright、计算机控制或修改信任配置，未启动服务。没有 1920×1080 运行截图、真实确认弹窗／焦点／布局验证；跨标签、IndexedDB、下载、语音、中文 IME、真实模型及 MoneyAI 历史读写均未验。
+
+MoneyAI 四项业务 ready 继续按统筹既有 false 状态记录，本批未请求接口、未发送材料或读取个人历史。最终视觉与业务验收未通过；本次仅交定点代码及纯逻辑证据，完成后停止写入，公共集成和 Git 由统筹负责。
+
+### 统筹共享身份修复后的最终复核
+
+先前“未保存 B 绑定”3 组探针中的 A 通过 FACT_PATCH 更正。统筹随后补充了 A 先经 INTAKE_SET 更正、B 尚未保存新绑定即恢复的分支，并修复共享 prepareProjection 的身份优先级：先按实际 fact ID 查找，再回退来源签名。该共享修复和测试扩充均由统筹实施，本替身未写共享或测试文件。
+
+本替身已在当前最终首页脚本上重新执行 node --check 和 node --test demo/tests/logic.test.mjs，53/53 通过，包含上述 B 采纳当前 109、继续改 110／null 的三个分支。运行前后测试文件 SHA256 均为 33421388c74c6a9d99096968ecc0c98bb067db7e4291d1f05674f3fa283785df；共享 model.js SHA256 均为 2af6b99ff55386480e7772a21c9ff321da012ac7ed56686d26a35e72ce430bbb。首页脚本仍为本节前述 de9d36ad… 版本。
+
+第 13 节追加后已实际复跑 python -B -X utf8 scripts/verify_demo_content.py：1558 项通过、15 个素材定义路径有效。定向 git diff --check 再次通过，首页 HTML/CSS 无 diff。上述结果只是代码、合成内存和内容检查，浏览器、真实存储、语音、IME、下载和业务验收仍全部保持未验。
+
+本次最终 QA 追加另以 batch-04-final-verification 保存原始／计划文件及 manifest，写前再次核对 C 盘超过 1 GiB，按相同 flush/fsync、回读与 os.replace 流程写入。最终文件大小、哈希及追加后的最后检查结果见交接消息；交接后停止写入。

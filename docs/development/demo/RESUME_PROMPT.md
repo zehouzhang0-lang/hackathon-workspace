@@ -13,11 +13,11 @@
 
 最新视觉：PC主验收1920×1080，先网页基础稿/实际主流程，再手机或手机Figma；过程应实际查看并展示图像。产品名“路芽”、现版IP和理念“把下一步看清楚，把每一次选择接起来”已定，不重新选名或重画。REQ-28已撤回NotebookLM三栏专业工作台主布局，保留三页渐进、清楚功能区和具名可返回的信息入口；不能退回Word平铺，也不隐藏关键风险、重要未知或来源。具体色值、最终UI仍未批准；IP原图入Git许可未定。REQ-23固定单标题FoldText已授权并由共享原生实现，第一/三页已接入，动效实看未验，不再重复求开工许可或安装React/GSAP。
 
-保留以下五个原任务，使用任务工具核对，不创建替代任务：
-- 第一页开发agent：01a04682-028f-77c0-a049-75cee44974a8。REQ-25本批HTML/CSS/JS/QA四文件已固定停写；九组/三问/原文保存、外部更正A/B显式恢复、旧回执防误清dirty、revision-only重试、示例/重置空理解清理已交付。最终intake.js为125378字节，SHA256 4b854d917c9652cb4d132b4b97f6d85baecdd2dcb9de1576095fe2bb6a8872ca；其他哈希和未验项见QA/交接。
+保留以下五个原任务的历史并使用任务工具核对；用户随后已明确因P1乱码要求停写替换，当前首页写者为本统筹子Agent /root/p1_replacement（干净上下文），只接首页原四文件。其余原任务不替换；具体当前状态优先读取COORDINATOR_HANDOFF第0.1节：
+- 第一页开发agent（停写历史）：01a04682-028f-77c0-a049-75cee44974a8。因异常已撤销写入及派活，最近工具状态notLoaded/turn interrupted，更早为idle；本次限定续修由/root/p1_replacement交回并停写，当前JS128676字节，SHA256 de9d36ad7fc3690756735de6447f0691c5ef105c6e7fbfa799957bc69ecf8c2a。以下是历史固定稿：REQ-25本批HTML/CSS/JS/QA四文件已固定停写；九组/三问/原文保存、外部更正A/B显式恢复、旧回执防误清dirty、revision-only重试、示例/重置空理解清理已交付。最终intake.js为125378字节，SHA256 4b854d917c9652cb4d132b4b97f6d85baecdd2dcb9de1576095fe2bb6a8872ca；其他哈希和未验项见QA/交接。
 - 第二页开发agent：01a04682-8d35-7a00-991b-f994f6fbf0d2。基础文件在场，但工具仍显示旧轮active，后续REQ-20/23/25/28已发送且未收到新回执。已知待修：查看与已选状态分开、已选有效路径直接继续、多问快照及intake/txt来源/判断标签。未授权你抢写其文件；上一任已请用户在原任务停止旧轮并继续最新待办，尚未得到处理回执。
 - 第三页开发agent：01a04682-e43a-7292-89b1-7c2da672ba54。REQ-20功能区、REQ-23固定标题及REQ-25来源/导出限定回归已交回停写；统筹已独立复跑其8组reducer组合。REQ-28进一步布局与真实UI仍未验。
-- 视觉反馈与动效评审：01a046ec-d06b-75b3-85fe-e02a9c9c9a34。独占docs/development/design-feedback/和demo/assets/design/feedback/；上一批已停写，最新用户另要求生成Lovable视觉探索提示词，正在该任务处理，成果交新统筹。DF003已明确撤回NotebookLM主布局；探索不代表批准或改写当前工程。
+- 视觉反馈与动效评审：01a046ec-d06b-75b3-85fe-e02a9c9c9a34。独占docs/development/design-feedback/和demo/assets/design/feedback/；DF004 Lovable提示词与路由索引已交回且经统筹核验，该任务本批停写；仅供用户手动尝试，未执行Lovable或批准视觉。DF003已明确撤回NotebookLM主布局；探索不代表批准或改写当前工程。
 - 产品 IP 与品牌设计：01a04706-a4a9-72e3-b13f-c4fdb78bda1b。品牌三文档已交回停写，独占品牌目录；私有IP原件仍不入Git。两设计任务只向统筹交接，不给页面派活。
 
 公共文件、共享代码/后端/测试/公共资产和Git只归现任统筹。页面Agent只改归属页面文件及自己的QA，不pull/切分支/提交。新统筹未登记ID不算冲突，但正式移交前不得写入或派活；不要重复生图、重写schema/准备文档、改MCP/信任或新建页面任务。实际前端工作继续用Build Web Apps、Product Design及已核验的21st/React Bits，按需读skill，不重复三页前检。

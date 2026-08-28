@@ -171,7 +171,10 @@ function normalizeFact(fact, context) {
 function prepareProjection(payload, state, context, explicitIntake = false, correctedFactIds = new Set()) {
   const reuse = new Map();
   function previousFact(fact) {
-    const direct = state.input.facts.find((item) => item.id === fact.id || sourceSignature(item) === sourceSignature(fact));
+    // Different file facts can share an intake locator after explicit edits.
+    // A stored identity must win before any source-based reuse fallback.
+    const direct = state.input.facts.find((item) => item.id === fact.id) ||
+      state.input.facts.find((item) => sourceSignature(item) === sourceSignature(fact));
     if (direct) return direct;
     const correction = [...state.history].reverse().find((item) => item.type === 'fact_correction' && item.before && sourceSignature(item.before) === sourceSignature(fact));
     return correction ? state.input.facts.find((item) => item.id === correction.factId && item.verification === 'user_corrected') : undefined;

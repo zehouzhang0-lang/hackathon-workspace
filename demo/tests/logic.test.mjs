@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { createEmptyState, normalizeSessionState, reduceCommand, validSourceId } from '../shared/model.js';
 import { buildDemoAnalysis, buildDemoArtifact } from '../shared/demo-data.js';
 import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
-import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey } from '../pages/intake.js';
+import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
+  getIntakeCorrectionConflicts, editIntakeField, isIntakeCorrectionSnapshotCurrent } from '../pages/intake.js';
 import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource } from '../pages/action.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
@@ -655,7 +656,11 @@ test('explicit intake corrections can follow an earlier correction, including nu
       { field: 'productName', before: value, after: 'C' }] });
     assert.throws(() => saveIntake(recovery, corrected('A')), { code: 'invalid_intake' });
     assert.deepEqual(recovery.state, before);
-    saveIntake(recovery, corrected('B'));
+    const baseline = recovery.state.input.facts.find((fact) => fact.id === savedFact.id);
+    assert.equal(getIntakeCorrectionConflicts(original, recovery.state.input.facts)[0].currentValue, 'B');
+    const legacyEdit = editIntakeField(original, [], 'productName', 'C', baseline);
+    assert.deepEqual(legacyEdit.draft.userCorrections, corrected('B').userCorrections);
+    saveIntake(recovery, legacyEdit.draft);
     assert.equal(recovery.state.input.facts.find((fact) => fact.id === savedFact.id).value, 'C');
     assert.equal(recovery.state.round.inputVersion, before.round.inputVersion + 1);
     assert.deepEqual(recovery.state.input.intake.draft.userCorrections.slice(0, original.userCorrections.length), original.userCorrections);
@@ -692,8 +697,8 @@ test('file intake reuses an existing parsed source and a replaced material canno
     { ...binding, locator: { ...binding.locator, recordIndex: 0 } }] }).code, 'invalid_intake');
 });
 
-test('file-bound corrections require fresh intake review and keep one fact through later edits', () => {
-  for (const finalValue of [11, null]) {
+test('P1 recovery and shared saving keep file corrections, provenance and fresh snapshots aligned', () => {
+  for (const firstReviewValue of [5, 7, null]) for (const finalValue of [11, null]) {
     const h = harness('one_sentence_v1');
     h.send('MATERIAL_ADD', {}, { preparedMaterial: {
       name: 'correction.json', mime: 'application/json', size: 20, sha256: 'synthetic_correction', file: null } });
@@ -704,8 +709,10 @@ test('file-bound corrections require fresh intake review and keep one fact throu
       facts: [{ id: null, key: 'paid_orders', value: 0, availability: 'known', unit: '笔', subject: '合成商品',
         source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version, locator } }] });
     const original = structuredClone(h.state.input.facts[0]);
+    const originalMaterials = structuredClone(h.state.input.materials);
     const draft = createMerchantIntakeDraft({ sources: ['json'], metrics: { paidOrders: 0 } });
-    const bindings = [{ field: 'metrics.paidOrders', source: 'json', materialId: material.id,
+    const field = 'metrics.paidOrders';
+    const bindings = [{ field, source: 'json', materialId: material.id,
       materialVersion: material.version, locator }];
     saveIntake(h, draft, '核对合成订单数', bindings);
     h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion, fact: { ...original, value: 5 } });
@@ -714,26 +721,56 @@ test('file-bound corrections require fresh intake review and keep one fact throu
     const before = structuredClone(h.state);
     assert.throws(() => saveIntake(h, draft, '不能恢复旧零值', bindings), { code: 'invalid_intake' });
     assert.deepEqual(h.state, before);
-    let reviewed = { ...draft, metrics: { ...draft.metrics, paidOrders: 5 } };
-    saveIntake(h, reviewed, '明确核对当前五笔', bindings);
+    const currentFive = findIntakeFieldFact(h.state, field, bindings);
+    assert.deepEqual(getIntakeCorrectionConflicts(draft, h.state.input.facts, h.state, bindings), [
+      { field, factId: original.id, oldValue: 0, currentValue: 5, canRecover: true }
+    ]);
+    const snapshot = { sessionId: h.state.sessionId, roundId: h.state.round.id,
+      inputVersion: h.state.round.inputVersion, factId: currentFive.id, factSnapshot: JSON.stringify(currentFive) };
+    assert.equal(isIntakeCorrectionSnapshotCurrent(h.state, snapshot), true);
+    assert.equal(isIntakeCorrectionSnapshotCurrent({ ...h.state, revision: h.state.revision + 1 }, snapshot), true);
+    for (const patch of [{ sessionId: 'another_session' }, { roundId: 'another_round' },
+      { inputVersion: snapshot.inputVersion - 1 }, { factId: 'removed_fact' },
+      { factSnapshot: JSON.stringify({ ...currentFive, intakeField: field }) }]) {
+      assert.equal(isIntakeCorrectionSnapshotCurrent(h.state, { ...snapshot, ...patch }), false);
+    }
+    const changedFactState = { ...h.state, input: { ...h.state.input,
+      facts: h.state.input.facts.map((fact) => fact.id === currentFive.id ? { ...fact, value: 6 } : fact) } };
+    assert.equal(isIntakeCorrectionSnapshotCurrent(changedFactState, snapshot), false);
+    assert.throws(() => editIntakeField(draft, bindings, field, '7',
+      { ...currentFive, intakeField: field }, h.state));
+    let reviewed = editIntakeField(draft, bindings, field,
+      firstReviewValue === null ? '' : String(firstReviewValue), currentFive, h.state);
+    assert.deepEqual(reviewed.draft.userCorrections, firstReviewValue === 5 ? [] : [
+      { field, before: 5, after: firstReviewValue }
+    ]);
+    saveIntake(h, reviewed.draft, '明确核对当前更正后保存', reviewed.sourceBindings);
     let current = h.state.input.facts.find((fact) => fact.id === original.id);
-    assert.equal(current.value, 5);
+    assert.equal(current.value, firstReviewValue);
     assert.equal(current.source.kind, 'merchant_statement');
     assert.equal(current.intakeField, undefined);
-    assert.equal(h.state.input.facts.filter((fact) => fact.key === 'paid_orders').length, 1);
-    h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion, fact: { ...current, value: 7 } });
+    assert.deepEqual(getIntakeCorrectionConflicts(reviewed.draft, h.state.input.facts, h.state, []), []);
+    h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion,
+      fact: { ...current, value: 9, availability: 'known' } });
     assert.equal(h.state.input.intake.status, 'stale');
-    reviewed = { ...reviewed, sources: ['json', 'manual'], metrics: { ...reviewed.metrics, paidOrders: finalValue },
-      evidenceLedger: [{ field: 'metrics.paidOrders', value: finalValue,
-        status: finalValue === null ? 'unknown' : 'confirmed_fact', source: 'manual' }],
-      userCorrections: [{ field: 'metrics.paidOrders', before: 7, after: finalValue }] };
-    saveIntake(h, reviewed, '以当前更正为起点再核对', []);
+    assert.equal(isIntakeCorrectionSnapshotCurrent(h.state, snapshot), false);
+    assert.throws(() => editIntakeField(draft, bindings, field, '11', currentFive, h.state));
+    current = findIntakeFieldFact(h.state, field);
+    assert.deepEqual(getIntakeCorrectionConflicts(reviewed.draft, h.state.input.facts, h.state, []), [
+      { field, factId: original.id, oldValue: firstReviewValue, currentValue: 9, canRecover: true }
+    ]);
+    const prefix = structuredClone(reviewed.draft.userCorrections);
+    reviewed = editIntakeField(reviewed.draft, reviewed.sourceBindings, field,
+      finalValue === null ? '' : String(finalValue), current, h.state);
+    assert.deepEqual(reviewed.draft.userCorrections, [...prefix, { field, before: 9, after: finalValue }]);
+    saveIntake(h, reviewed.draft, '以当前更正为起点再核对', reviewed.sourceBindings);
     current = h.state.input.facts.find((fact) => fact.id === original.id);
     assert.equal(current.value, finalValue);
     assert.equal(current.availability, finalValue === null ? 'unknown' : 'known');
     assert.equal(current.intakeField, undefined);
     assert.equal(current.unit, original.unit);
     assert.equal(h.state.input.facts.filter((fact) => fact.key === 'paid_orders').length, 1);
+    assert.deepEqual(h.state.input.materials, originalMaterials);
     analyze(h);
     assert.equal(h.state.analysis.inputSnapshot.intake.draft.metrics.paidOrders, finalValue);
     assert.equal(h.state.analysis.inputSnapshot.facts.find((fact) => fact.id === original.id).value, finalValue);
@@ -743,37 +780,71 @@ test('file-bound corrections require fresh intake review and keep one fact throu
 });
 
 test('an explicit new file binding is not captured by an older corrected file fact', () => {
-  const h = harness('one_sentence_v1');
-  function addFile(name, value) {
-    h.send('MATERIAL_ADD', {}, { preparedMaterial: { name, mime: 'application/json', size: 20, sha256: name, file: null } });
-    const material = h.state.input.materials.at(-1), locator = { type: 'json', pointer: '/metrics/0/value' };
-    h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
-      roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, status: 'parsed', error: null,
-      facts: [{ id: null, key: 'paid_orders', value, availability: 'known',
-        source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version, locator } }] });
-    return { fact: h.state.input.facts.find((fact) => fact.source.materialId === material.id),
-      binding: { field: 'metrics.paidOrders', source: 'json', materialId: material.id, materialVersion: material.version, locator } };
+  for (const review of [{ recover: false }, ...[109, 110, null].map((value) => ({ recover: true, value }))]) {
+    const h = harness('one_sentence_v1');
+    function addFile(name, value) {
+      h.send('MATERIAL_ADD', {}, { preparedMaterial: { name, mime: 'application/json', size: 20, sha256: name, file: null } });
+      const material = h.state.input.materials.at(-1), locator = { type: 'json', pointer: '/metrics/0/value' };
+      h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
+        roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, status: 'parsed', error: null,
+        facts: [{ id: null, key: 'paid_orders', value, availability: 'known',
+          source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version, locator } }] });
+      return { fact: h.state.input.facts.find((fact) => fact.source.materialId === material.id),
+        binding: { field: 'metrics.paidOrders', source: 'json', materialId: material.id, materialVersion: material.version, locator } };
+    }
+    const a = addFile('source_a.json', 0);
+    let draft = createMerchantIntakeDraft({ sources: ['json'], metrics: { paidOrders: 0 } });
+    saveIntake(h, draft, '先确认A', [a.binding]);
+    draft = { ...draft, sources: ['json', 'manual'], metrics: { ...draft.metrics, paidOrders: 5 },
+      evidenceLedger: [{ field: 'metrics.paidOrders', value: 5, status: 'confirmed_fact', source: 'manual' }],
+      userCorrections: [{ field: 'metrics.paidOrders', before: 0, after: 5 }] };
+    saveIntake(h, draft, '明确更正A', []);
+    const aCorrected = structuredClone(h.state.input.facts.find((fact) => fact.id === a.fact.id));
+    const b = addFile('source_b.json', 99);
+    const field = 'metrics.paidOrders';
+    assert.equal(findIntakeFieldFact(h.state, field, [b.binding]).id, b.fact.id);
+    assert.equal(findIntakeFieldFact(h.state, field, [{ ...b.binding, materialVersion: 99 }]), null);
+    assert.equal(findIntakeFieldFact(h.state, field, [{ ...b.binding,
+      locator: { type: 'json', pointer: '/another/value' } }]), null);
+    let next = { ...draft, metrics: { ...draft.metrics, paidOrders: 99 },
+      evidenceLedger: [{ field, value: 99, status: 'confirmed_fact', source: 'json' }] };
+    let nextBindings = [b.binding];
+    assert.deepEqual(getIntakeCorrectionConflicts(next, h.state.input.facts, h.state, nextBindings), []);
+    assert.throws(() => editIntakeField(next, nextBindings, field, '100', aCorrected, h.state));
+    if (review.recover) {
+      h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion, fact: { ...b.fact, value: 109 } });
+      const baseline = findIntakeFieldFact(h.state, field, nextBindings);
+      assert.equal(findIntakeFieldFact(h.state, field).id, a.fact.id);
+      assert.deepEqual(getIntakeCorrectionConflicts(next, h.state.input.facts, h.state, nextBindings), [
+        { field, factId: b.fact.id, oldValue: 99, currentValue: 109, canRecover: true }
+      ]);
+      const recovered = editIntakeField(next, nextBindings, field,
+        review.value === null ? '' : String(review.value), baseline, h.state);
+      next = recovered.draft; nextBindings = recovered.sourceBindings;
+      assert.deepEqual(nextBindings, [b.binding]);
+      assert.deepEqual(next.userCorrections.slice(0, draft.userCorrections.length), draft.userCorrections);
+      assert.equal(next.evidenceLedger.find((entry) => entry.field === field).source, 'manual');
+    }
+    saveIntake(h, next, '明确改为核对B', nextBindings);
+    const expected = review.recover ? review.value : 99;
+    const currentB = findIntakeFieldFact(h.state, field);
+    assert.equal(currentB.id, b.fact.id);
+    assert.equal(h.state.input.intake.draft.metrics.paidOrders, expected);
+    assert.deepEqual(h.state.input.facts.find((fact) => fact.id === a.fact.id), aCorrected);
+    assert.equal(currentB.value, expected);
+    assert.equal(currentB.intakeField, undefined);
+    assert.equal(currentB.source.kind, review.recover ? 'merchant_statement' : 'file_extract');
+    const ambiguousFacts = [
+      { ...b.fact, value: 100, verification: 'user_corrected' },
+      { ...b.fact, id: 'other_same_source_fact', value: 101, verification: 'user_corrected' }
+    ];
+    const ambiguous = { ...h.state, input: { ...h.state.input,
+      facts: [...h.state.input.facts.filter((fact) => fact.id !== b.fact.id), ...ambiguousFacts] } };
+    const conflicts = getIntakeCorrectionConflicts(next, ambiguous.input.facts, ambiguous, [b.binding]);
+    assert.equal(conflicts.length, 2);
+    assert(conflicts.every((entry) => entry.field === field && !entry.canRecover));
+    assert.throws(() => editIntakeField(next, [b.binding], field, '102', ambiguousFacts[0], ambiguous));
   }
-  const a = addFile('source_a.json', 0);
-  let draft = createMerchantIntakeDraft({ sources: ['json'], metrics: { paidOrders: 0 } });
-  saveIntake(h, draft, '先确认A', [a.binding]);
-  draft = { ...draft, sources: ['json', 'manual'], metrics: { ...draft.metrics, paidOrders: 5 },
-    evidenceLedger: [{ field: 'metrics.paidOrders', value: 5, status: 'confirmed_fact', source: 'manual' }],
-    userCorrections: [{ field: 'metrics.paidOrders', before: 0, after: 5 }] };
-  saveIntake(h, draft, '明确更正A', []);
-  const aCorrected = structuredClone(h.state.input.facts.find((fact) => fact.id === a.fact.id));
-  const b = addFile('source_b.json', 99);
-  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [b.binding]).id, b.fact.id);
-  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [{ ...b.binding, materialVersion: 99 }]), null);
-  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders', [{ ...b.binding,
-    locator: { type: 'json', pointer: '/another/value' } }]), null);
-  const next = { ...draft, metrics: { ...draft.metrics, paidOrders: 99 },
-    evidenceLedger: [{ field: 'metrics.paidOrders', value: 99, status: 'confirmed_fact', source: 'json' }] };
-  saveIntake(h, next, '明确改为核对B', [b.binding]);
-  assert.equal(findIntakeFieldFact(h.state, 'metrics.paidOrders').id, b.fact.id);
-  assert.equal(h.state.input.intake.draft.metrics.paidOrders, 99);
-  assert.deepEqual(h.state.input.facts.find((fact) => fact.id === a.fact.id), aCorrected);
-  assert.equal(h.state.input.facts.find((fact) => fact.id === b.fact.id).value, 99);
 });
 
 test('answer saving leaves the confirmed intake intact and analysis preserves a question snapshot', () => {

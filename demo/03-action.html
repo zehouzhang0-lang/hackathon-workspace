@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>拿去执行 · 演示</title>
+    <link rel="stylesheet" href="shared/tokens.css">
+    <link rel="stylesheet" href="shared/base.css">
+    <link rel="stylesheet" href="shared/title-motion.css">
+    <link rel="stylesheet" href="pages/action.css">
+    <script type="module" src="pages/action.js"></script>
+  </head>
+  <body data-page="action">
+    <a class="action-skip-link" href="#action-main">跳到当前行动</a>
+    <div id="shared-shell"></div>
+
+    <main id="action-main" tabindex="-1">
+      <section id="load-state" class="action-state" aria-labelledby="load-title">
+        <h1 id="load-title">读取当前行动</h1>
+        <p id="load-message" role="status" aria-live="polite">正在读取本机浏览器中的选择与记录。</p>
+        <button id="retry-load" class="button button--secondary" type="button" hidden>重试读取</button>
+      </section>
+
+      <section id="empty-state" class="action-state" aria-labelledby="empty-title" hidden>
+        <h1 id="empty-title">先选一件要做的事</h1>
+        <p id="empty-description">这里暂时没有可取用的当前行动。到第二页选定路径后，再来查看内容和步骤。</p>
+        <button id="go-decisions-empty" class="button" type="button">去第二页看选择</button>
+      </section>
+
+      <div id="action-content" hidden>
+        <header class="action-heading">
+          <div class="action-heading-copy">
+            <div class="action-heading-line">
+              <h1 id="action-title">当前行动</h1>
+              <p id="round-label" class="action-round-label"></p>
+            </div>
+            <div id="context-meta" class="action-context"></div>
+            <details class="action-context-disclosure action-disclosure">
+              <summary>本轮问题</summary>
+              <p id="problem-summary" class="action-problem"></p>
+            </details>
+          </div>
+          <button class="button button--quiet action-change-path" type="button" data-nav="decisions">回去换一条路径</button>
+        </header>
+
+        <div class="action-layout">
+          <section class="action-delivery" aria-labelledby="delivery-title">
+            <div class="action-workspace">
+              <div class="artifact-navigation">
+                <header class="artifact-list-heading">
+                  <h2 id="delivery-title" data-fold-title>行动内容</h2>
+                  <span id="artifact-count" class="artifact-count"></span>
+                </header>
+                <div id="artifact-list" role="tablist" aria-orientation="vertical" aria-label="选择行动内容"></div>
+              </div>
+
+              <p id="preview-empty" class="preview-empty">当前还没有可预览的内容，请查看准备状态与核对提示。</p>
+              <section id="artifact-preview" class="action-preview" role="tabpanel" aria-labelledby="preview-title" tabindex="0" hidden>
+                <header class="preview-header">
+                  <h2 id="preview-title">内容预览</h2>
+                  <p id="preview-meta" class="preview-meta"></p>
+                  <p id="preview-placement" class="preview-placement"></p>
+                </header>
+
+                <div class="preview-toolbar">
+                  <div id="preview-tabs" class="preview-tabs" role="tablist" aria-label="预览方式">
+                    <button id="preview-content-tab" class="preview-tab" type="button" role="tab" aria-controls="preview-content" aria-selected="true" tabindex="0">内容预览</button>
+                    <button id="preview-steps-tab" class="preview-tab" type="button" role="tab" aria-controls="preview-steps-panel" aria-selected="false" tabindex="-1">使用步骤</button>
+                  </div>
+                  <div class="preview-actions">
+                    <button id="copy-artifact" class="button" type="button" aria-describedby="artifact-status" disabled>复制内容</button>
+                    <button id="select-artifact" class="button button--quiet" type="button" aria-describedby="artifact-status" disabled>手动选取</button>
+                  </div>
+                </div>
+
+                <div class="preview-canvas">
+                  <p id="preview-warning" class="action-warning" role="status" aria-live="polite"></p>
+                  <div id="preview-content" role="tabpanel" aria-labelledby="preview-content-tab">
+                    <label for="preview-body" class="action-visually-hidden">当前行动的只读内容</label>
+                    <textarea id="preview-body" class="preview-body" rows="8" readonly spellcheck="false" aria-describedby="preview-placement preview-meta"></textarea>
+                  </div>
+                  <div id="preview-steps-panel" role="tabpanel" aria-labelledby="preview-steps-tab" hidden>
+                    <ol id="preview-steps" class="preview-steps" tabindex="0" aria-label="当前行动的使用步骤"></ol>
+                  </div>
+                  <ul id="preview-risks" class="preview-risks" aria-label="当前内容的必要使用限制"></ul>
+                </div>
+
+                <footer class="preview-export">
+                  <div class="action-export-row">
+                    <button id="export-pack" class="button button--secondary" type="button">下载整包 TXT</button>
+                    <p class="preview-export-scope">包含这条行动的全部内容、步骤与必要风险。</p>
+                  </div>
+                  <section id="export-consent" class="action-export-consent" aria-label="本次导出的摘要授权" hidden>
+                    <label class="action-checkbox-label" for="export-summary-consent">
+                      <input id="export-summary-consent" type="checkbox">
+                      <span>我同意本次导出包含此页所示的必要摘要。</span>
+                    </label>
+                  </section>
+                  <p class="action-takeaway-note">复制或下载不会记作已执行。</p>
+                </footer>
+              </section>
+            </div>
+
+            <div class="action-workspace-status">
+              <p id="artifact-status" class="status" role="status" aria-live="polite"></p>
+              <button id="artifact-retry" class="button button--secondary" type="button" hidden>重试准备内容</button>
+              <ul id="generation-limitations" class="action-warning" hidden></ul>
+            </div>
+          </section>
+
+          <aside class="action-guidance" aria-labelledby="guidance-title">
+            <section class="action-guidance-section">
+              <h2 id="guidance-title">使用前核对</h2>
+              <ul id="prerequisite-list" class="action-condition-list"></ul>
+            </section>
+
+            <section class="action-guidance-section">
+              <h3>必要风险</h3>
+              <ul id="risk-list" class="action-risk-list"></ul>
+            </section>
+
+            <section class="action-guidance-section">
+              <h3>按原计划观察</h3>
+              <div id="experiment-content"></div>
+            </section>
+
+            <details id="source-details" class="action-disclosure">
+              <summary>来源与依据</summary>
+              <div id="source-list"></div>
+            </details>
+          </aside>
+        </div>
+
+        <details id="feedback-panel" class="action-feedback action-disclosure">
+          <summary>
+            <span class="action-feedback-title">记一下实际情况</span>
+            <span class="action-feedback-hint">选填，不影响取用</span>
+          </summary>
+
+          <div class="action-feedback-body">
+            <form id="feedback-form">
+              <fieldset id="feedback-fields">
+                <legend class="action-visually-hidden">这次行动的实际情况</legend>
+
+                <div id="feedback-artifact-field" class="action-form-field">
+                  <label for="feedback-artifact">这次记录对应的内容</label>
+                  <select id="feedback-artifact" name="artifactId" class="field"></select>
+                </div>
+
+                <div class="action-form-field">
+                  <label for="execution-select">动作是否实施</label>
+                  <select id="execution-select" name="execution" class="field">
+                    <option value="unknown" selected>还不确定</option>
+                    <option value="not_started">还没开始</option>
+                    <option value="partial">做了一部分</option>
+                    <option value="done">已经做完</option>
+                  </select>
+                </div>
+
+                <div class="action-form-field">
+                  <label for="feedback-text">一句实际观察<span class="action-optional">（选填）</span></label>
+                  <textarea id="feedback-text" name="feedback" class="field" rows="3" placeholder="写下你实际看到的情况，也可以留空。"></textarea>
+                </div>
+
+                <details id="feedback-more" class="action-disclosure action-feedback-more">
+                  <summary>补充观察、范围和日期（选填）</summary>
+                  <div class="action-extra-fields">
+                    <div class="action-form-field">
+                      <label for="observation-select">观察到的变化</label>
+                      <select id="observation-select" name="observation" class="field">
+                        <option value="unknown" selected>还不确定</option>
+                        <option value="better">好一些</option>
+                        <option value="unchanged">没变化</option>
+                        <option value="worse">变差</option>
+                      </select>
+                    </div>
+                    <div class="action-form-field">
+                      <label for="execution-scope">实际做了哪些部分</label>
+                      <input id="execution-scope" name="scope" class="field" type="text" autocomplete="off">
+                    </div>
+                    <div class="action-form-field">
+                      <label for="executed-date">实际执行日期</label>
+                      <input id="executed-date" name="executedAt" class="field" type="date" aria-describedby="execution-date-note">
+                      <p id="execution-date-note" class="action-field-note">不确定就留空，保存时间不会代替执行日期。</p>
+                    </div>
+                  </div>
+                </details>
+
+                <div class="action-form-actions">
+                  <button id="save-feedback" class="button" type="submit">保存这次记录</button>
+                  <button id="discard-feedback" class="button button--quiet" type="button">放弃未保存的填写</button>
+                </div>
+              </fieldset>
+              <p id="feedback-status" class="status" role="status" aria-live="polite"></p>
+            </form>
+
+            <div class="action-feedback-followup">
+              <section id="saved-feedback" aria-labelledby="saved-feedback-title" hidden>
+                <h3 id="saved-feedback-title">已保存的记录</h3>
+                <div id="saved-feedback-content"></div>
+              </section>
+              <button id="next-round" class="button button--secondary" type="button" disabled>带着反馈再分析</button>
+              <p id="round-status" class="status" role="status" aria-live="polite"></p>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="action-operation-area">
+        <p id="operation-status" class="status" role="status" aria-live="polite"></p>
+        <button id="event-retry" class="button button--secondary" type="button" hidden>重试保存操作记录</button>
+      </div>
+
+      <details id="history-panel" class="action-disclosure action-history" hidden>
+        <summary>过去的行动记录</summary>
+        <div id="history-list"></div>
+      </details>
+
+      <noscript>
+        <p class="action-warning">此页需要 JavaScript 读取已选行动。当前没有读取或保存任何记录。</p>
+      </noscript>
+    </main>
+
+    <div id="shared-footer"></div>
+  </body>
+</html>

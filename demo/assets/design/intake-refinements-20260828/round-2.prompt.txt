@@ -1,0 +1,33 @@
+Use case: ui-mockup
+Asset type: one full Chinese desktop intake screen, a focused revision of an existing project.
+Create ONE combined revision incorporating all three supplied references. Do not generate alternatives, a collage, or a second product. Target composition: 1920 x 1080, 16:9 landscape, a complete desktop screen with generous margins. Do not stretch or crop a source screenshot into the layout.
+
+Reference roles:
+1. candidate-1.png is the existing PAGE-LEVEL reference and edit target. Preserve its warm near-white paper, dark ink and restrained vermilion, quiet editorial feeling, and two-area lightweight intake. Remove its old product title, extraneous mini-copy, example chips, and template-like stacked boxes.
+2. upload-reference.png is ONLY a component-layout reference: a clearly grouped upload region, generous breathing space, purposeful small icon, clear choose-file action, and legible hierarchy. Do NOT inherit its dark global theme, modal/window, English title, tabs, URL import, existing projects, PDF/DOCX/10MB claims, audio settings, close button, or outer framed dialog.
+3. input-reference.png is ONLY the description-composer shape reference: one softly rounded integrated writing surface with a circular upward-arrow submit control inside its lower-right corner. Do NOT inherit its dark global theme or English placeholder. This is one problem description, not infinite chat, not a conversation transcript, and not a real model interface.
+
+The product name has not been decided. "抖音做了不出单怎么办" is the challenge topic, NOT the brand. Do not display that string, invent a new brand, add a logo, or put "品牌待定" in the UI. No account menu, profile, badge, marketing hero, analytics or fake results.
+
+Chinese typography must be designed, not an English component with translated words:
+- Use a clear, well-proportioned contemporary Chinese UI sans-serif with natural Chinese punctuation and rhythm; no calligraphic/serif display title or thin gray hairline text.
+- At the target viewport: heading about40px and medium/semibold, section labels about22px, input text/body/actions about20px, tertiary format text about16-18px; do not shrink the real Chinese copy to fit.
+- Moderate line height, natural character spacing, only a few purposeful font weights. Generous input padding. Correct and readable Chinese glyphs with no duplicated punctuation.
+- These are proposed typography proportions, not claims of tested fonts or a frozen font family.
+
+Precise full-screen composition:
+- Warm nearly-white page, a centered working area about1420px wide, approximately240px side margins. No outer app card.
+- A quiet top row of the same three steps: "1 说清问题", "2 看清选择", "3 拿去执行". First step is current with a small vermilion accent, later steps muted but readable. No noisy circled status badges or top toolbars.
+- Below, the primary heading exactly: "最近做抖音，哪件事最让你头疼？"
+- Exactly one short supporting line: "说一句，或放一份手头材料。"
+- Below the heading, two balanced regions on one horizontal baseline. Left is modestly wider (about820px); right about500px, with a generous clear gap. Real form controls fill sensible space, not huge dead panels.
+- Left label: "说说现在的情况". Beneath it, a single integrated softly rounded writing area, approximately280px high, subtle warm-gray outline and off-white interior, without shadows/glow. Placeholder: "比如：视频有人看，商品却很少有人问……" in readable subdued ink. The rest is blank, no generated reply, no fake merchant content.
+- Inside that composer, lower-right: ONE circular upward-arrow submit control, with a modest adjacent visible caption "整理一下" just to its left so its purpose is unambiguous. This is the single primary submit action for both regions, not a separate Send plus Organize button. In this empty state it looks disabled, but still readable. Do not add a second primary button outside the composer. Intended later behavior enables it when there is text OR an accepted material; no text-only requirement is suggested by the copy.
+- Right label: "手头的材料". Beneath it, a spacious upload region derived from reference2, but light and integrated into this page. Use a quiet dashed outline only for the actual drop target, with a subtle rounded boundary (not nested cards). A small neutral outline upload/file icon; a concise line "拖入文件，或粘贴截图"; one clear secondary button "选择文件". Good visual separation between affordance and technical formats.
+- Under the upload affordance, show one readable line "图片、TXT、CSV、JSON · 最多6份" and one quiet disclosure "格式与大小". No English upload title, unrelated tabs, toolbar, settings, file examples or extra actions. Actual limits remain5MiB per file/20MiB total in the later disclosure; don't use the reference's10MB.
+- One short truthful capability line beneath the upload region: "图片内容需核对". No claim of OCR/model recognition or upload to a remote service.
+- Only one small but readable footer note: "设计参考 · 非运行页面". No repeated instructions, additional onboarding cards or disclaimers stacked at every edge.
+
+The two regions are alternatives: a sentence OR one material is sufficient. No asterisks, mandatory labels, full questionnaire, suggested prompt chips, or duplicated CTA. The screenshot is the EMPTY state before any material was processed, not actual UI acceptance.
+Keep the warm light palette grounded in reference1; the two dark references do not authorize a dark global theme. Avoid generic floating SaaS panels, many tiny helper captions, pill chips, glass, gradients, decorative art, shadows, oversized AI glow, or unrelated animation.
+This visual will later be implemented with real native HTML/CSS controls. Do not imply that the screenshot itself can upload, submit, save, parse, diagnose or call a model. Show the entire composed page, no browser chrome, device mockup, option number or annotated measurement overlay.

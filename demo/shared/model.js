@@ -1,0 +1,705 @@
+import { makeFixtureInput } from './seeds.js';
+import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft } from './intake-draft.js';
+
+export const CONTRACT_VERSION = 'demo.v1';
+export const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+export const PAGE_IDS = ['intake', 'decisions', 'action'];
+const clone = (value) => structuredClone(value);
+const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+const allowedEvents = new Set(['page_viewed', 'path_viewed', 'source_viewed', 'artifact_viewed', 'copy_succeeded', 'download_requested', 'session_read']);
+const refKeys = new Set(['pageId', 'questionId', 'analysisId', 'pathId', 'inputVersion', 'artifactId', 'artifactVersion', 'materialId', 'sourceId', 'executionRecordId', 'feedbackId', 'stateRevision', 'exportId', 'format']);
+const refFields = new Set(['id', 'rootId', 'from', 'to', 'visitorAssumptionId', 'rateAssumptionId', 'sourceFactIds', 'factIds', 'assumptionIds', 'questionId', 'factId']);
+const branches = ['not_executed', 'insufficient_evidence', 'risk_triggered', 'comparable_positive', 'comparable_unchanged', 'comparable_negative'];
+
+export function fail(code, message) {
+  throw Object.assign(new Error(message), { code });
+}
+export function requireValue(condition, message, code = 'invalid_payload') {
+  if (!condition) fail(code, message);
+}
+export function stable(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+  return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}';
+}
+function jsonSafe(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') return requireValue(Number.isFinite(value), '数字必须是有限值。');
+  requireValue(typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof Date), '状态只能包含JSON值。');
+  for (const entry of Object.values(value)) jsonSafe(entry);
+}
+const nonempty = (value) => typeof value === 'string' && value.trim().length > 0;
+function validId(value) { requireValue(typeof value === 'string' && ID_PATTERN.test(value), '引用标识不合法。', 'invalid_structure'); }
+function uniqueIds(items) {
+  const ids = new Set();
+  for (const item of items) {
+    validId(item.id);
+    requireValue(!ids.has(item.id), '存在重复标识。', 'invalid_structure');
+    ids.add(item.id);
+  }
+  return ids;
+}
+function semantic(value) {
+  if (Array.isArray(value)) return value.map(semantic).sort((a, b) => stable(a).localeCompare(stable(b)));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'id').map(([key, entry]) => [key, semantic(entry)]));
+  }
+  return value;
+}
+const same = (left, right) => stable(left) === stable(right);
+const blankQuestion = () => ({ status: 'unused', questionId: null, questionText: null, sourceFactIds: [], askedAt: null, answeredAt: null, answer: null });
+const blankClarification = () => ({ limit: 3, questions: [], activeQuestionId: null, remaining: 3, ...blankQuestion() });
+
+// A read-only, lossless view of the original one-question record. Persist only
+// with the next successful business write; loading must not create a save event.
+export function normalizeClarification(value) {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value), '补问历史结构不完整，未覆盖原记录。', 'incompatible_version');
+  let questions;
+  if (own(value, 'questions')) {
+    requireValue(Array.isArray(value.questions), '补问历史不是列表。', 'incompatible_version');
+    questions = clone(value.questions);
+  } else {
+    requireValue(['unused', 'asked', 'answered', 'skipped'].includes(value.status), '旧补问状态无法迁移。', 'incompatible_version');
+    questions = value.status === 'unused' ? [] : [Object.fromEntries(Object.keys(blankQuestion()).map((key) => [key, clone(value[key] ?? blankQuestion()[key])]))];
+  }
+  requireValue(questions.length <= 3, '本轮补问记录超过三项，未截断原历史。', 'incompatible_version');
+  const ids = new Set();
+  for (const question of questions) {
+    requireValue(question && ['asked', 'answered', 'skipped'].includes(question.status), '补问记录状态无效。', 'incompatible_version');
+    validId(question.questionId);
+    requireValue(!ids.has(question.questionId), '补问历史包含重复标识。', 'incompatible_version');
+    ids.add(question.questionId);
+    requireValue(nonempty(question.questionText) && question.questionText.length <= 2000 && Array.isArray(question.sourceFactIds), '补问正文或来源结构无效。', 'incompatible_version');
+    question.sourceFactIds.forEach(validId);
+    if (question.status === 'answered') {
+      requireValue(['known', 'unknown'].includes(question.answer?.availability)
+        && (question.answer.rawText === null || typeof question.answer.rawText === 'string')
+        && (question.answer.availability !== 'known' || nonempty(question.answer.rawText)), '已存答案结构无效。', 'incompatible_version');
+    } else requireValue(question.answer === null, '未回答的问题不能持有答案。', 'incompatible_version');
+  }
+  const active = questions.filter((question) => question.status === 'asked');
+  requireValue(active.length <= 1, '同轮存在多个未完成补问，未自动丢弃。', 'incompatible_version');
+  const current = active[0] || questions.at(-1) || blankQuestion();
+  return { limit: 3, questions, activeQuestionId: active[0]?.questionId ?? null, remaining: 3 - questions.length,
+    ...Object.fromEntries(Object.keys(blankQuestion()).map((key) => [key, clone(current[key] ?? blankQuestion()[key])])) };
+}
+
+export function normalizeSessionState(original) {
+  assertState(original);
+  const state = clone(original);
+  state.round.clarification = normalizeClarification(state.round.clarification);
+  state.input.intake ??= null;
+  return state;
+}
+
+export function createEmptyState(context) {
+  return {
+    contractVersion: CONTRACT_VERSION, sessionId: context.newId(), fixtureId: null, revision: 0, savedAt: null,
+    round: { id: context.newId(), index: 1, inputVersion: 1, clarification: blankClarification() },
+    input: { description: '', focus: null, confirmedVersion: null, materials: [], facts: [], constraints: [], unknowns: [], intake: null },
+    analysis: null, selection: null, artifacts: [], executionRecords: [], feedbackRecords: [], history: [], events: []
+  };
+}
+
+export function assertState(state) {
+  requireValue(state?.contractVersion === CONTRACT_VERSION, '本地记录版本不兼容，未覆盖原记录。', 'incompatible_version');
+  requireValue(state.round && state.input && Number.isInteger(state.revision), '本地记录结构不完整。', 'incompatible_version');
+  for (const key of ['artifacts', 'executionRecords', 'feedbackRecords', 'history', 'events']) {
+    requireValue(Array.isArray(state[key]), '本地记录结构不完整。', 'incompatible_version');
+  }
+  jsonSafe(state);
+}
+
+function sourceSignature(fact) {
+  return stable([fact.key, fact.source?.materialId, fact.source?.materialVersion, fact.source?.locator]);
+}
+function mapDrafts(value, context, reuse = new Map()) {
+  const mapping = new Map(reuse);
+  const seen = new Set();
+  function collect(entry) {
+    if (!entry || typeof entry !== 'object') return;
+    if (Array.isArray(entry)) return entry.forEach(collect);
+    if (typeof entry.id === 'string' && entry.id.startsWith('draft_')) {
+      requireValue(!seen.has(entry.id), '草稿局部标识重复。', 'invalid_structure');
+      seen.add(entry.id);
+      if (!mapping.has(entry.id)) mapping.set(entry.id, context.newId());
+    }
+    Object.values(entry).forEach(collect);
+  }
+  collect(value);
+  function visit(entry, field = '') {
+    if (Array.isArray(entry)) return entry.map((child) => visit(child, field));
+    if (entry && typeof entry === 'object') return Object.fromEntries(Object.entries(entry).map(([key, child]) => [key, visit(child, key)]));
+    if (field === 'id' && entry === null) return context.newId();
+    if (typeof entry === 'string' && refFields.has(field) && entry.startsWith('draft_')) {
+      requireValue(mapping.has(entry), '草稿引用没有目标。', 'invalid_structure');
+      return mapping.get(entry);
+    }
+    if (field === 'sourceId' && typeof entry === 'string' && entry.startsWith('fact:draft_')) {
+      const id = entry.slice(5);
+      requireValue(mapping.has(id), '草稿来源没有目标。', 'invalid_structure');
+      return 'fact:' + mapping.get(id);
+    }
+    return entry;
+  }
+  return visit(value);
+}
+
+function normalizeFact(fact, context) {
+  const next = clone(fact);
+  if (!next.id) next.id = context.newId();
+  validId(next.id);
+  requireValue(nonempty(next.key), '事实缺少字段名。');
+  requireValue(['known', 'unknown', 'not_applicable'].includes(next.availability), '事实必须区分已知和未知。');
+  if (next.availability !== 'known') next.value = null;
+  requireValue(next.availability !== 'known' || next.value !== null, '已知事实不能没有值。');
+  requireValue(next.source && ['merchant_statement', 'file_extract', 'derived', 'public_reference', 'scenario_assumption'].includes(next.source.kind), '事实缺少可核对来源。');
+  next.unit ??= null;
+  next.subject ??= null;
+  next.window ??= { start: null, end: null };
+  next.channel ??= null;
+  next.cohort ??= null;
+  next.source.materialId ??= null;
+  next.source.materialVersion ??= null;
+  next.source.locator ??= null;
+  next.source.note ??= '';
+  next.verification ??= 'unreviewed';
+  requireValue(['unreviewed', 'user_corrected', 'checked', 'conflicting'].includes(next.verification), '事实核对状态不合法。');
+  jsonSafe(next);
+  return next;
+}
+function prepareProjection(payload, state, context, explicitIntake = false) {
+  const reuse = new Map();
+  function previousFact(fact) {
+    const direct = state.input.facts.find((item) => item.id === fact.id || sourceSignature(item) === sourceSignature(fact));
+    if (direct) return direct;
+    const correction = [...state.history].reverse().find((item) => item.type === 'fact_correction' && item.before && sourceSignature(item.before) === sourceSignature(fact));
+    return correction ? state.input.facts.find((item) => item.id === correction.factId && item.verification === 'user_corrected') : undefined;
+  }
+  for (const fact of payload.facts || []) {
+    const previous = previousFact(fact);
+    if (previous && typeof fact.id === 'string' && fact.id.startsWith('draft_')) reuse.set(fact.id, previous.id);
+  }
+  const projected = mapDrafts(payload, context, reuse);
+  projected.facts = (projected.facts || []).map((fact) => {
+    const previous = previousFact(fact);
+    if (previous?.verification === 'user_corrected' && !(explicitIntake && fact.intakeField)) return clone(previous);
+    if (previous) fact.id = previous.id;
+    return normalizeFact(fact, context);
+  });
+  uniqueIds(projected.facts);
+  return projected;
+}
+function removeFactsAndDependents(state, ids, context, materialIds = []) {
+  const removed = new Set(ids);
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const fact of state.input.facts) {
+      const references = [...(fact.source?.sourceFactIds || []), ...(fact.sourceFactIds || [])];
+      if (!removed.has(fact.id) && references.some((id) => removed.has(id))) {
+        removed.add(fact.id); expanded = true;
+      }
+    }
+  }
+  const oldFacts = state.input.facts.filter((fact) => removed.has(fact.id));
+  if (oldFacts.length) state.history.push({ type: 'facts_invalidated', at: context.now, facts: clone(oldFacts) });
+  state.input.facts = state.input.facts.filter((fact) => !removed.has(fact.id));
+  state.input.constraints = state.input.constraints.filter((entry) => !(entry.sourceFactIds || []).some((id) => removed.has(id)));
+  state.input.unknowns = state.input.unknowns.filter((entry) => !removed.has((entry.sourceId || '').replace(/^fact:/, '')) && !materialIds.some((id) => entry.sourceId === 'material:' + id));
+}
+// Keep external provenance, but never carry an old calculated value across changed inputs.
+function invalidateIntakeDependents(projected, state, context) {
+  const oldFacts = new Map(state.input.facts.map((fact) => [fact.id, fact]));
+  const currentFacts = new Map(projected.facts.map((fact) => [fact.id, fact]));
+  const roots = new Set(state.input.facts.filter((fact) => !currentFacts.has(fact.id)
+    || !same(fact, currentFacts.get(fact.id))).map((fact) => fact.id));
+  if (!roots.size) return;
+  const affected = new Set(roots), invalid = new Set();
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const fact of projected.facts) {
+      const refs = [...(fact.source?.sourceFactIds || []), ...(fact.sourceFactIds || [])];
+      if (!affected.has(fact.id) && refs.some((id) => affected.has(id))) {
+        invalid.add(fact.id); affected.add(fact.id); expanded = true;
+      }
+    }
+  }
+  const previousConstraints = new Map(state.input.constraints.map((entry) => [entry.id, entry]));
+  const invalidConstraints = projected.constraints.filter((entry) => same(entry, previousConstraints.get(entry.id))
+    && (entry.sourceFactIds || []).some((id) => affected.has(id)));
+  if (!invalid.size && !invalidConstraints.length) return;
+  state.history.push({ type: 'facts_invalidated', at: context.now,
+    reason: 'intake_dependency_changed', facts: [...invalid].map((id) => clone(oldFacts.get(id) || currentFacts.get(id))),
+    constraints: clone(invalidConstraints) });
+  projected.facts = projected.facts.map((fact) => !invalid.has(fact.id) ? fact : {
+    ...fact, value: null, availability: 'unknown', evidenceStatus: 'unknown', verification: 'unreviewed',
+    source: { ...fact.source, note: '依赖的输入已变化，旧推导值不可沿用；来源保留，等待重新核对或计算。' }
+  });
+  const invalidConstraintIds = new Set(invalidConstraints.map((entry) => entry.id));
+  projected.constraints = projected.constraints.filter((entry) => !invalidConstraintIds.has(entry.id));
+  for (const id of invalid) {
+    if (!projected.unknowns.some((entry) => entry.sourceId === 'fact:' + id)) {
+      projected.unknowns.push({ id: context.newId(), description: '依赖输入已变更，原推导结果需要重新核对。',
+        reason: 'conflicting', sourceId: 'fact:' + id });
+    }
+  }
+}
+function archiveSelection(state, context) {
+  if (state.selection) state.history.push({ type: 'selection', at: context.now, selection: clone(state.selection) });
+  state.selection = null;
+  state.artifacts.forEach((artifact) => { artifact.status = 'stale'; });
+}
+function invalidate(state, context) {
+  if (state.analysis && state.analysis.status !== 'stale') {
+    state.history.push({ type: 'analysis', at: context.now, analysis: clone(state.analysis) });
+    state.analysis.status = 'stale';
+  }
+  archiveSelection(state, context);
+  state.input.confirmedVersion = null;
+  state.round.inputVersion += 1;
+}
+function currentInput(payload, state, material) {
+  requireValue(payload.inputVersion === state.round.inputVersion, '资料已变化，请从当前输入重新整理。', 'stale_input');
+  if (own(payload, 'roundId')) requireValue(payload.roundId === state.round.id, '这份结果属于之前的一轮。', 'stale_input');
+  if (material) requireValue(payload.materialVersion === material.version, '材料已被替换，请重新读取。', 'stale_input');
+}
+function activeAnalysis(state) {
+  const analysis = state.analysis;
+  requireValue(analysis && analysis.status !== 'stale' && analysis.roundId === state.round.id && analysis.inputVersion === state.round.inputVersion && state.input.confirmedVersion === state.round.inputVersion, '请先确认当前资料并重新分析。', 'stale_input');
+  return analysis;
+}
+function checkRefs(ids, available) {
+  requireValue(Array.isArray(ids) && ids.every((id) => available.has(id)), '证据或假设引用不完整。', 'invalid_structure');
+}
+export function validateAnalysis(analysis, state) {
+  requireValue(['ready', 'limited', 'insufficient'].includes(analysis.status), '分析状态不合法。', 'invalid_structure');
+  requireValue(['demo_fixture', 'local_limited'].includes(analysis.mode), '当前没有真实模型分析能力。', 'invalid_structure');
+  requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
+  uniqueIds(analysis.paths);
+  const facts = new Set(state.input.facts.map((fact) => fact.id));
+  for (const path of analysis.paths) {
+    requireValue(nonempty(path.title) && nonempty(path.action), '路径没有具体行动。', 'invalid_structure');
+    requireValue(path.estimate && ['scenario', 'unavailable'].includes(path.estimate.kind), '估计必须区分情景和不可估。', 'invalid_structure');
+    requireValue(path.estimate.incrementalEffect?.kind === 'unavailable', '本Demo不能估计行动增量。', 'invalid_structure');
+    const assumptions = uniqueIds(path.estimate.assumptions || []);
+    for (const item of path.estimate.assumptions || []) checkRefs(item.sourceFactIds || [], facts);
+    const condition = (entry) => {
+      if (entry === null) return;
+      requireValue(entry && nonempty(entry.text), '分支条件缺少文字。', 'invalid_structure');
+      checkRefs(entry.sourceFactIds || [], facts);
+      checkRefs(entry.assumptionIds || [], assumptions);
+    };
+    for (const item of path.prerequisites || []) condition(item);
+    for (const item of [...(path.evidenceRefs || []), ...(path.counterEvidence || [])]) {
+      checkRefs(item.factIds || [], facts);
+      for (const source of item.sourceIds || []) requireValue(validSourceId(source, state), '证据来源无法定位。', 'invalid_structure');
+    }
+    for (const risk of path.risk || []) {
+      checkRefs(risk.sourceFactIds || [], facts);
+      checkRefs(risk.assumptionIds || [], assumptions);
+      condition(risk.trigger); condition(risk.stop); condition(risk.restore);
+    }
+    if (path.estimate.kind === 'scenario') {
+      requireValue(path.estimate.calculation?.method === 'visitors_times_rate' && path.estimate.values?.length > 0, '情景缺少可复算方法。', 'invalid_structure');
+      for (const result of path.estimate.values) {
+        const visitors = path.estimate.assumptions.find((item) => item.id === result.visitorAssumptionId);
+        const rate = path.estimate.assumptions.find((item) => item.id === result.rateAssumptionId);
+        requireValue(visitors && rate && Number.isFinite(visitors.value) && visitors.value >= 0 && Number.isFinite(rate.value) && rate.value >= 0 && rate.value <= 1 && Math.abs(result.value - visitors.value * rate.value) < 1e-9, '情景参数或算式不一致。', 'invalid_structure');
+      }
+    }
+    const tree = path.tree;
+    requireValue(tree && Array.isArray(tree.nodes) && Array.isArray(tree.edges), '缺少完整业务树。', 'invalid_structure');
+    const nodes = uniqueIds(tree.nodes);
+    requireValue(nodes.has(tree.rootId), '业务树没有有效根节点。', 'invalid_structure');
+    uniqueIds(tree.edges);
+    const incoming = new Map([...nodes].map((id) => [id, 0]));
+    for (const edge of tree.edges) {
+      requireValue(nodes.has(edge.from) && nodes.has(edge.to) && branches.includes(edge.branch), '业务树存在断边或未知分支。', 'invalid_structure');
+      incoming.set(edge.to, incoming.get(edge.to) + 1);
+      condition(edge.condition);
+    }
+    for (const id of nodes) requireValue(incoming.get(id) === (id === tree.rootId ? 0 : 1), '业务树必须是有向根树。', 'invalid_structure');
+    const visited = new Set();
+    function walk(id) {
+      requireValue(!visited.has(id), '业务树有环。', 'invalid_structure');
+      visited.add(id);
+      const node = tree.nodes.find((item) => item.id === id);
+      const outgoing = tree.edges.filter((edge) => edge.from === id);
+      requireValue(node.kind === 'decision' ? outgoing.length >= 2 : node.kind === 'next_step' && outgoing.length === 0, '业务树节点与分支不一致。', 'invalid_structure');
+      outgoing.forEach((edge) => walk(edge.to));
+    }
+    walk(tree.rootId);
+    requireValue(visited.size === nodes.size, '业务树包含不可达节点。', 'invalid_structure');
+    for (const branch of branches) requireValue(tree.edges.some((edge) => edge.branch === branch) || tree.notApplicableBranches?.some((entry) => entry.branch === branch && nonempty(entry.reason)), '业务树遗漏适用分支。', 'invalid_structure');
+  }
+  jsonSafe(analysis);
+}
+export function validSourceId(sourceId, state) {
+  if (sourceId === 'input:description' || sourceId === 'input:focus') return true;
+  if (typeof sourceId !== 'string') return false;
+  const match = /^(material|fact|question):([A-Za-z0-9_-]{1,80})$/.exec(sourceId);
+  if (!match) return false;
+  return match[1] === 'material' ? state.input.materials.some((entry) => entry.id === match[2])
+    : match[1] === 'fact' ? state.input.facts.some((entry) => entry.id === match[2])
+      : normalizeClarification(state.round.clarification).questions.some((question) => question.questionId === match[2])
+        || state.history.some((entry) => entry.type === 'round' && entry.round?.clarification
+          && normalizeClarification(entry.round.clarification).questions.some((question) => question.questionId === match[2]));
+}
+
+export function reduceCommand(original, command, context) {
+  assertState(original);
+  const state = normalizeSessionState(original);
+  const payload = command.payload || {};
+  const effects = { putBlobs: [], deleteBlobs: [], clearSession: false };
+  const events = [];
+  let changed = true;
+  let inputChanged = false;
+  let roundLink = null;
+  const event = (type, refs = {}) => events.push({ id: context.newId(), type, roundId: state.round.id, at: context.now, refs });
+  const hasDownstream = original.input.confirmedVersion !== null || (original.analysis && original.analysis.status !== 'stale') || !!original.selection;
+  switch (command.type) {
+    case 'LOAD_FIXTURE': {
+      const input = makeFixtureInput(payload.fixtureId, context, state.round.id);
+      const fresh = createEmptyState(context);
+      fresh.sessionId = state.sessionId;
+      fresh.revision = state.revision;
+      fresh.round.inputVersion = state.round.inputVersion + 1;
+      fresh.input = input;
+      fresh.fixtureId = payload.fixtureId;
+      Object.assign(state, fresh);
+      effects.clearSession = true;
+      break;
+    }
+    case 'INPUT_EDIT':
+      requireValue(typeof payload.description === 'string' && payload.description.length <= 20000, '描述过长或格式不正确。');
+      changed = payload.description !== state.input.description;
+      if (changed) { state.input.description = payload.description; inputChanged = true; }
+      break;
+    case 'INTAKE_SET': {
+      requireValue(own(payload, 'roundId'), '经营草稿缺少轮次，未保存。');
+      currentInput(payload, state);
+      requireValue(typeof payload.description === 'string' && payload.description.length <= 20000, '编辑文字过长或格式不正确。');
+      const validated = validateMerchantIntakeDraft(payload.draft);
+      if (!validated.ok) fail(validated.code, validated.message);
+      const sourceBindings = payload.sourceBindings ?? [];
+      const merged = mapConfirmedIntakeToAnalysisInput(validated.draft, { state, sourceBindings });
+      if (!merged.ok) fail(merged.code, merged.message);
+      for (const previous of state.input.facts.filter((fact) => fact.intakeField && fact.verification === 'user_corrected')) {
+        const next = merged.projection.facts.find((fact) => fact.id === previous.id);
+        const requested = previous.intakeField.split('.').reduce((value, key) => value?.[key], validated.draft) ?? null;
+        requireValue(!next || !same(previous, next) || same(requested, next.value),
+          '这项经营信息已有更新的用户更正，请重读并核对当前值；没有覆盖更正或保存不一致的确认卡。', 'correction_conflict');
+      }
+      const projected = prepareProjection(merged.projection, state, context, true);
+      invalidateIntakeDependents(projected, state, context);
+      const intakeContent = (entry) => entry ? { draft: entry.draft, sourceBindings: entry.sourceBindings } : null;
+      const previous = { description: state.input.description, focus: state.input.focus,
+        projection: semantic({ facts: state.input.facts, constraints: state.input.constraints, unknowns: state.input.unknowns }),
+        intake: intakeContent(state.input.intake) };
+      state.input.description = payload.description;
+      state.input.focus = projected.focus ?? (payload.description.trim() || null);
+      state.input.facts = projected.facts;
+      state.input.constraints = projected.constraints;
+      state.input.unknowns = projected.unknowns;
+      state.input.intake = { draft: validated.draft, sourceBindings: clone(sourceBindings), status: 'current',
+        roundId: state.round.id, inputVersion: state.round.inputVersion, savedAt: context.now };
+      const next = { description: state.input.description, focus: state.input.focus,
+        projection: semantic({ facts: state.input.facts, constraints: state.input.constraints, unknowns: state.input.unknowns }),
+        intake: intakeContent(state.input.intake) };
+      inputChanged = !same(previous, next);
+      changed = inputChanged || original.input.intake?.status !== 'current';
+      if (changed && original.input.intake) {
+        state.history.push({ type: 'intake_revision', at: context.now, roundId: state.round.id,
+          inputVersion: original.round.inputVersion, description: original.input.description, intake: clone(original.input.intake) });
+      }
+      if (inputChanged) state.input.intake.inputVersion += 1;
+      break;
+    }
+    case 'MATERIAL_ADD':
+    case 'MATERIAL_REPLACE': {
+      const file = context.preparedMaterial;
+      requireValue(file, '没有可接收的文件。');
+      const old = command.type === 'MATERIAL_REPLACE' ? state.input.materials.find((item) => item.id === payload.materialId) : null;
+      if (command.type === 'MATERIAL_REPLACE') {
+        requireValue(old, '原材料已不存在。', 'stale_input');
+        requireValue(payload.inputVersion === state.round.inputVersion, '材料版本已变化。', 'stale_input');
+      }
+      if (old?.sha256 === file.sha256 && old.size === file.size) { changed = false; break; }
+      requireValue(!state.input.materials.some((item) => item.id !== old?.id && item.size === file.size && item.sha256 === file.sha256), '相同内容的材料已经在本轮中。', 'duplicate_material');
+      requireValue(state.input.materials.length + (old ? 0 : 1) <= 6 && file.size <= 5 * 1024 * 1024 && state.input.materials.reduce((sum, item) => sum + item.size, 0) - (old?.size || 0) + file.size <= 20 * 1024 * 1024, '最多6份，单份5MiB，总计20MiB。', 'file_limit');
+      const material = { id: old?.id || context.newId(), name: file.name, mime: file.mime, size: file.size, status: 'received', sourceKind: 'user_file', blobKey: old?.id || null, error: null, version: (old?.version || 0) + 1, sha256: file.sha256 };
+      material.blobKey = material.id;
+      if (old) {
+        state.history.push({ type: 'material_replaced', at: context.now, material: clone(old) });
+        state.input.materials = state.input.materials.filter((item) => item.id !== old.id);
+        removeFactsAndDependents(state, state.input.facts.filter((fact) => fact.source.materialId === old.id).map((fact) => fact.id), context, [old.id]);
+      }
+      state.input.materials.push(material);
+      effects.putBlobs.push({ materialId: material.id, file: file.file });
+      inputChanged = true;
+      break;
+    }
+    case 'MATERIAL_REMOVE': {
+      const material = state.input.materials.find((entry) => entry.id === payload.materialId);
+      requireValue(material, '材料已经移除。', 'stale_input');
+      state.history.push({ type: 'material_removed', at: context.now, material: clone(material) });
+      state.input.materials = state.input.materials.filter((entry) => entry.id !== material.id);
+      const removedIds = new Set(state.input.facts.filter((fact) => fact.source.materialId === material.id).map((fact) => fact.id));
+      removeFactsAndDependents(state, removedIds, context, [material.id]);
+      effects.deleteBlobs.push(material.id);
+      inputChanged = true;
+      break;
+    }
+    case 'MATERIAL_RESULT_SET':
+    case 'ORGANIZATION_SET': {
+      const material = command.type === 'MATERIAL_RESULT_SET' ? state.input.materials.find((entry) => entry.id === payload.materialId) : null;
+      if (command.type === 'MATERIAL_RESULT_SET') requireValue(material, '材料已移除，旧结果不能恢复。', 'stale_input');
+      currentInput(payload, state, material);
+      if (material) requireValue((payload.facts || []).every((fact) => fact.source?.materialId === material.id && fact.source?.materialVersion === material.version), '解析事实与原材料版本不符。', 'invalid_structure');
+      const projected = prepareProjection(payload, state, context);
+      const before = semantic({ facts: state.input.facts, focus: state.input.focus, constraints: state.input.constraints, unknowns: state.input.unknowns });
+      if (material) {
+        requireValue(['received', 'parsed', 'needs_review', 'failed'].includes(projected.status), '解析状态不正确。');
+        material.status = projected.status;
+        material.error = projected.error ?? null;
+        const corrected = state.input.facts.filter((fact) => fact.source.materialId === material.id && fact.verification === 'user_corrected');
+        const projectedIds = new Set(projected.facts.map((fact) => fact.id));
+        state.input.facts = state.input.facts.filter((fact) => fact.source.materialId !== material.id && !projectedIds.has(fact.id));
+        state.input.facts.push(...projected.facts, ...corrected.filter((fact) => !projected.facts.some((item) => item.id === fact.id)));
+      } else {
+        requireValue(projected.focus === null || typeof projected.focus === 'string', '本轮问题应是一段文字。');
+        state.input.focus = projected.focus;
+        state.input.facts = projected.facts;
+        for (const corrected of original.input.facts.filter((fact) => fact.verification === 'user_corrected')) {
+          if (!state.input.facts.some((fact) => fact.id === corrected.id)) state.input.facts.push(clone(corrected));
+        }
+        state.input.constraints = projected.constraints || [];
+        state.input.unknowns = projected.unknowns || [];
+        for (const entry of state.input.unknowns) {
+          if (!entry.id) entry.id = context.newId();
+          requireValue(nonempty(entry.description) && ['not_provided', 'unknown', 'skipped', 'conflicting', 'unparsed'].includes(entry.reason), '未知项缺少说明。');
+        }
+      }
+      const after = semantic({ facts: state.input.facts, focus: state.input.focus, constraints: state.input.constraints, unknowns: state.input.unknowns });
+      inputChanged = hasDownstream && !same(before, after);
+      changed = !same(state.input, original.input);
+      break;
+    }
+    case 'FACT_PATCH': {
+      if (own(payload, 'inputVersion')) currentInput(payload, state);
+      requireValue(payload.fact && typeof payload.fact === 'object' && !Array.isArray(payload.fact), '更正缺少事实对象。', 'invalid_structure');
+      const previous = state.input.facts.find((fact) => fact.id === payload.fact?.id);
+      requireValue(payload.fact.id == null || previous, '这项事实已被删除或替换，不能用旧编辑恢复。', 'stale_input');
+      let next = normalizeFact(payload.fact, context);
+      if (previous && same(previous, next)) { changed = false; break; }
+      const reason = typeof payload.reason === 'string' ? payload.reason : '用户主动核对';
+      next.source = { kind: 'merchant_statement', materialId: null, materialVersion: null, locator: { type: 'correction', factId: next.id, inputVersion: state.round.inputVersion + 1 }, note: reason };
+      next.verification = 'user_corrected';
+      state.history.push({ type: 'fact_correction', factId: next.id, inputVersion: state.round.inputVersion + 1, reason, before: previous ? clone(previous) : null, after: clone(next), at: context.now });
+      state.input.facts = state.input.facts.filter((fact) => fact.id !== next.id);
+      state.input.facts.push(next);
+      inputChanged = true;
+      break;
+    }
+    case 'QUESTION_SET': {
+      if (own(payload, 'inputVersion')) currentInput(payload, state);
+      else if (own(payload, 'roundId')) requireValue(payload.roundId === state.round.id, '这份回答属于之前的一轮。', 'stale_input');
+      const clarification = state.round.clarification;
+      if (payload.status === 'asked') {
+        requireValue(payload.questionId === null && clarification.activeQuestionId === null && clarification.remaining > 0,
+          '本轮最多主动补问三次；先回答或跳过当前一问，不能替换已问内容。', 'invalid_transition');
+        requireValue(nonempty(payload.questionText) && payload.questionText.length <= 2000, '补问缺少正文或过长。');
+        requireValue(!clarification.questions.some((question) => question.questionText.trim() === payload.questionText.trim()), '同一问题已登记，请沿用原问题的回答入口。', 'invalid_transition');
+        checkRefs(payload.sourceFactIds || [], new Set(state.input.facts.map((fact) => fact.id)));
+        const question = { ...blankQuestion(), status: 'asked', questionId: context.newId(), questionText: payload.questionText,
+          sourceFactIds: clone(payload.sourceFactIds || []), askedAt: context.now };
+        clarification.questions.push(question);
+        event('clarification_asked', { questionId: question.questionId });
+      } else {
+        const question = clarification.questions.find((item) => item.questionId === payload.questionId);
+        requireValue(question, '请使用本轮已经保存的问题。', 'invalid_transition');
+        requireValue(!own(payload, 'questionText') || payload.questionText === question.questionText, '已问正文不能替换，请保留原题并记录回答。', 'invalid_transition');
+        requireValue(!own(payload, 'sourceFactIds') || same(payload.sourceFactIds, question.sourceFactIds), '已问来源不能替换。', 'invalid_transition');
+        if (payload.status === 'skipped') {
+          requireValue(question.status === 'asked' || question.status === 'skipped', '不能用跳过删除已经保存的答案。', 'invalid_transition');
+          changed = question.status !== 'skipped';
+          question.status = 'skipped';
+          question.answer = null;
+          if (changed) event('clarification_skipped', { questionId: question.questionId });
+        } else {
+          requireValue(payload.status === 'answered' && ['known', 'unknown'].includes(payload.answer?.availability), '答案状态不正确。');
+          requireValue(payload.answer.rawText == null || typeof payload.answer.rawText === 'string', '答案原话应为文字或未知。');
+          requireValue((payload.answer.rawText?.length || 0) <= 20000, '答案原话过长。');
+          requireValue(payload.answer.availability === 'unknown' || nonempty(payload.answer.rawText), '已知答案需要原话。');
+          const answer = { availability: payload.answer.availability, rawText: payload.answer.rawText ?? null };
+          changed = question.status !== 'answered' || !same(question.answer, answer);
+          inputChanged = !same(question.answer, answer);
+          question.status = 'answered';
+          question.answer = answer;
+          if (changed) { question.answeredAt = context.now; event('clarification_answered', { questionId: question.questionId }); }
+          if (inputChanged) removeFactsAndDependents(state, state.input.facts.filter((fact) => fact.source.locator?.questionId === question.questionId).map((fact) => fact.id), context);
+        }
+        const sourceId = 'question:' + question.questionId;
+        const previous = state.input.unknowns.find((entry) => entry.sourceId === sourceId);
+        state.input.unknowns = state.input.unknowns.filter((entry) => entry.sourceId !== sourceId);
+        if (question.status === 'skipped' || question.answer?.availability === 'unknown') {
+          state.input.unknowns.push({ id: previous?.id || context.newId(), description: question.questionText, reason: question.status === 'skipped' ? 'skipped' : 'unknown', sourceId });
+        }
+      }
+      state.round.clarification = normalizeClarification(clarification);
+      break;
+    }
+    case 'FOCUS_CONFIRM':
+      currentInput(payload, state);
+      requireValue(state.input.intake?.status !== 'stale', '经营信息已变化，请先重新核对并保存理解内容。', 'stale_input');
+      requireValue(nonempty(state.input.description) || state.input.materials.length > 0
+        || state.input.intake?.status === 'current' && (nonempty(state.input.intake.draft.transcript)
+          || state.input.facts.some((fact) => fact.intakeField && fact.availability === 'known')),
+        '先说一句，或交一份材料。', 'invalid_transition');
+      changed = state.input.confirmedVersion !== state.round.inputVersion;
+      state.input.focus ||= state.input.description.trim() || '先核对手头材料，明确这轮要解决的问题';
+      state.input.confirmedVersion = state.round.inputVersion;
+      break;
+    case 'ANALYSIS_SET': {
+      const analysis = mapDrafts(payload.analysis, context);
+      requireValue(analysis.roundId === state.round.id && analysis.inputVersion === state.round.inputVersion, '分析依据已过期。', 'stale_input');
+      requireValue(state.input.confirmedVersion === state.round.inputVersion, '请先确认这轮问题。', 'invalid_transition');
+      validateAnalysis(analysis, state);
+      if (state.analysis) state.history.push({ type: 'analysis', at: context.now, analysis: clone(state.analysis) });
+      archiveSelection(state, context);
+      analysis.id = analysis.id || context.newId();
+      analysis.savedAt = context.now;
+      analysis.inputSnapshot = clone(state.input);
+      analysis.clarificationSnapshot = clone(state.round.clarification);
+      state.analysis = analysis;
+      break;
+    }
+    case 'PATH_SELECT': {
+      const analysis = activeAnalysis(state);
+      requireValue(payload.analysisId === analysis.id && payload.inputVersion === state.round.inputVersion && analysis.paths.some((path) => path.id === payload.pathId), '请从当前有效分析选择路径。', 'stale_input');
+      if (state.selection?.analysisId === analysis.id && state.selection.pathId === payload.pathId) { changed = false; break; }
+      archiveSelection(state, context);
+      state.selection = { analysisId: analysis.id, pathId: payload.pathId, inputVersion: state.round.inputVersion, selectedAt: context.now };
+      event('path_selected', { analysisId: analysis.id, pathId: payload.pathId, inputVersion: state.round.inputVersion });
+      break;
+    }
+    case 'ARTIFACT_SAVE': {
+      const analysis = activeAnalysis(state);
+      requireValue(state.selection, '请先选择一条路径。', 'invalid_transition');
+      const draft = payload.artifact;
+      requireValue(draft && draft.analysisId === analysis.id && draft.pathId === state.selection.pathId && draft.roundId === state.round.id && draft.inputVersion === state.round.inputVersion, '执行内容所依赖的选择已变化。', 'stale_input');
+      requireValue(['copy', 'checklist', 'experiment_plan'].includes(draft.kind) && typeof draft.body === 'string' && nonempty(draft.title), '执行内容结构不正确。');
+      checkRefs(draft.sourceFactIds || [], new Set(state.input.facts.map((fact) => fact.id)));
+      if (draft.id !== null) {
+        const old = state.artifacts.find((artifact) => artifact.id === draft.id && artifact.version === draft.version);
+        requireValue(old && old.status === 'current', '编辑版本已经过期。', 'stale_input');
+        if (old.body === draft.body && old.title === draft.title && same(old.usage, draft.usage)) { changed = false; break; }
+        fail('invalid_transition', '基础版暂只读成品；涉及事实或承诺的修改请回第一页核对。');
+      }
+      const artifact = mapDrafts(draft, context);
+      Object.assign(artifact, { id: artifact.id || context.newId(), version: 1, status: 'current', savedAt: context.now, mode: analysis.mode, editedByUser: false });
+      state.artifacts.push(artifact);
+      event('artifact_saved', { artifactId: artifact.id, artifactVersion: artifact.version, analysisId: analysis.id, pathId: artifact.pathId, inputVersion: artifact.inputVersion });
+      break;
+    }
+    case 'FEEDBACK_SAVE': {
+      requireValue(payload.executionRecord || payload.feedbackRecord, '没有要保存的自愿反馈。');
+      state.fixtureId = null;
+      const submitted = payload.executionRecord || payload.feedbackRecord;
+      const artifact = state.artifacts.find((item) => item.id === submitted.artifactId && item.version === submitted.artifactVersion);
+      requireValue(artifact, '反馈需要关联已保存的行动内容。', 'invalid_transition');
+      const common = { roundId: artifact.roundId, analysisId: artifact.analysisId, pathId: artifact.pathId, inputVersion: artifact.inputVersion, artifactId: artifact.id, artifactVersion: artifact.version, reportedAt: context.now, savedAt: context.now };
+      function checkRecord(record) {
+        requireValue(record.id === null || record.id === undefined, '基础版只追加新的自述记录。');
+        for (const key of ['roundId', 'analysisId', 'pathId', 'inputVersion', 'artifactId', 'artifactVersion']) {
+          if (record[key] !== undefined) requireValue(record[key] === common[key], '反馈引用必须属于同一份已保存成品。', 'invalid_structure');
+        }
+      }
+      let executionId = null;
+      if (payload.executionRecord) {
+        const source = payload.executionRecord;
+        checkRecord(source);
+        requireValue(['unknown', 'intended', 'partial', 'declined'].includes(source.adoption ?? 'unknown') && ['unknown', 'not_started', 'partial', 'done'].includes(source.execution ?? 'unknown'), '执行状态不合法。');
+        const record = { ...common, id: context.newId(), adoption: source.adoption ?? 'unknown', execution: source.execution ?? 'unknown', scope: source.scope ?? null, executedAt: source.executedAt ?? null };
+        state.executionRecords.push(record);
+        executionId = record.id;
+        if (record.adoption !== 'unknown') event('adoption_reported', { executionRecordId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
+        if (record.execution !== 'unknown') event('execution_reported', { executionRecordId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
+      }
+      if (payload.feedbackRecord) {
+        const source = payload.feedbackRecord;
+        checkRecord(source);
+        requireValue(['unknown', 'better', 'unchanged', 'worse'].includes(source.observation ?? 'unknown'), '观察状态不合法。');
+        const record = { ...common, id: context.newId(), executionRecordId: executionId, observation: source.observation ?? 'unknown', rawText: source.rawText ?? '', metrics: source.metrics ?? [], observedWindow: source.observedWindow ?? { start: null, end: null } };
+        requireValue(typeof record.rawText === 'string' && Array.isArray(record.metrics), '反馈原话或指标格式不正确。');
+        state.feedbackRecords.push(record);
+        event('feedback_saved', { feedbackId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
+        if (record.observation !== 'unknown') event('observation_reported', { feedbackId: record.id, artifactId: artifact.id, artifactVersion: artifact.version });
+      } else event('feedback_saved', { executionRecordId: executionId, artifactId: artifact.id, artifactVersion: artifact.version });
+      break;
+    }
+    case 'ROUND_START': {
+      const feedback = state.feedbackRecords.find((record) => record.id === payload.feedbackId);
+      requireValue(feedback && feedback.roundId === state.round.id, '请先保存本轮反馈，再开始下一轮。', 'invalid_transition');
+      state.history.push({ type: 'round', sourceFeedbackId: feedback.id, at: context.now, round: clone(state.round), input: clone(state.input), analysis: clone(state.analysis), selection: clone(state.selection) });
+      const wasConfirmed = state.input.confirmedVersion === state.round.inputVersion;
+      state.round = { id: context.newId(), index: state.round.index + 1, inputVersion: state.round.inputVersion + 1, clarification: blankClarification() };
+      state.input.constraints = state.input.constraints.filter((constraint) => constraint.scope !== 'round');
+      state.input.facts = state.input.facts.filter((fact) => !fact.key.startsWith('round_constraint_'));
+      state.input.confirmedVersion = wasConfirmed ? state.round.inputVersion : null;
+      state.analysis = null;
+      state.selection = null;
+      state.artifacts.forEach((artifact) => { artifact.status = 'stale'; });
+      roundLink = { feedbackId: feedback.id, roundId: state.round.id };
+      event('round_started', { feedbackId: feedback.id });
+      break;
+    }
+    case 'EVENT_APPEND': {
+      const entry = payload.event;
+      requireValue(entry && allowedEvents.has(entry.type), '页面不能伪造业务保存或执行事件。', 'invalid_transition');
+      const refs = entry.refs || {};
+      for (const [key, value] of Object.entries(refs)) {
+        requireValue(refKeys.has(key), '操作记录包含不允许的字段。');
+        if (key === 'pageId') requireValue(PAGE_IDS.includes(value), '页面标识不合法。');
+        else if (key === 'format') requireValue(['html', 'txt'].includes(value), '导出格式不合法。');
+        else if (key === 'sourceId') requireValue(validSourceId(value, state), '来源已更新或不存在。', 'invalid_structure');
+        else if (['inputVersion', 'artifactVersion', 'stateRevision'].includes(key)) requireValue(Number.isInteger(value) && value >= 0, '版本不合法。');
+        else validId(value);
+      }
+      if (entry.roundId !== undefined) requireValue(entry.roundId === state.round.id || state.history.some((item) => item.round?.id === entry.roundId), '轮次引用不存在。', 'invalid_structure');
+      state.events.push({ id: context.newId(), type: entry.type, roundId: entry.roundId || state.round.id, at: context.now, refs: clone(refs) });
+      break;
+    }
+    case 'RESET_SESSION': {
+      requireValue(payload.confirmed === true, '清空需要明确确认。', 'invalid_transition');
+      const empty = createEmptyState(context);
+      empty.sessionId = state.sessionId;
+      empty.revision = state.revision;
+      empty.round.inputVersion = state.round.inputVersion + 1;
+      Object.assign(state, empty);
+      effects.clearSession = true;
+      break;
+    }
+    default: fail('invalid_transition', '未知共享命令，未写入本地记录。');
+  }
+  if (!changed) return { state: original, changed: false, effects, roundLink: null };
+  if (inputChanged) {
+    invalidate(state, context);
+    // The original facts retain their source notes; new user input is never relabelled as synthetic.
+    state.fixtureId = null;
+    if (state.input.intake && (command.type === 'INPUT_EDIT'
+      || command.type === 'FACT_PATCH' && payload.fact?.intakeField
+      || ['MATERIAL_REMOVE', 'MATERIAL_REPLACE'].includes(command.type)
+        && state.input.intake.sourceBindings.some((binding) => binding.materialId === payload.materialId))) {
+      state.input.intake.status = 'stale';
+    }
+  }
+  state.revision = original.revision + 1;
+  state.savedAt = context.now;
+  state.events.push(...events);
+  if (command.type !== 'EVENT_APPEND') state.events.push({ id: context.newId(), type: 'session_saved', roundId: state.round.id, at: context.now, refs: { stateRevision: state.revision } });
+  assertState(state);
+  return { state, changed: true, effects, roundLink };
+}

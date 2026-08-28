@@ -1,0 +1,47 @@
+{
+  "date": "2026-08-28",
+  "ownerTaskId": "01a04697-8ecd-7663-8d03-a5d59511abdd",
+  "latestRevision": "round-2",
+  "selectedRevision": null,
+  "status": "awaiting_user_review",
+  "temporaryImplementation": {"revision": "round-2", "authorization": "REQ-16", "finalVisualApproval": false},
+  "visualApproved": false,
+  "sharedReady": false,
+  "targetViewport": {"width": 1920, "height": 1080},
+  "revisions": [
+    {
+      "id": "round-1",
+      "image": "round-1.png",
+      "prompt": "round-1.prompt.txt",
+      "references": ["../intake-directions-20260828/candidate-1.png"],
+      "status": "superseded_proposal",
+      "width": 1672,
+      "height": 941,
+      "bytes": 902127,
+      "sha256": "dbf2f235089920d414ae7eac0827d521ba30789b8b9dcf9978acb5194f01d780",
+      "resampled": false,
+      "cropped": false,
+      "isBrowserScreenshot": false,
+      "displayedInOwnerTask": true
+    },
+    {
+      "id": "round-2",
+      "image": "round-2.png",
+      "prompt": "round-2.prompt.txt",
+      "references": [
+        "../intake-directions-20260828/candidate-1.png",
+        "../references-20260828/upload-reference.png",
+        "../references-20260828/input-reference.png"
+      ],
+      "status": "awaiting_user_review",
+      "width": 1672,
+      "height": 941,
+      "bytes": 970980,
+      "sha256": "f44b079ecaea691ac47387a0b6ddbf788631ba2a049e328dffd78789c56333c9",
+      "resampled": false,
+      "cropped": false,
+      "isBrowserScreenshot": false,
+      "displayedInOwnerTask": true
+    }
+  ]
+}

@@ -4,6 +4,14 @@
 
 ## 本机验证记录｜2026-08-28
 
+### 新统筹正式接任后的当前连接
+
+任务`01a04697-8ecd-7663-8d03-a5d59511abdd`已从可用工具发现并直接验证：`mcp__21st__search(query="file upload",type="component",limit=2)`返回6334、2716两项免费元信息；`mcp__reactbits__get_project_registries({})`返回`@shadcn`与`@react-bits`，随后`search_items_in_registries(query="FadeContent",registries=["@react-bits"],limit=2)`返回16个匹配中的前2项。当前连接检索通过，未修改配置、安装组件或调用计费源码接口；不可用的`Add command=[object Promise]`没有执行。
+
+用户随后在第一页任务重附接入文本，新统筹继续复用上述可用连接，不读取或复制接入凭据。资源检索不等于组件许可/兼容性、UI或产品模型验收。
+
+### 迁移前记录
+
 **接续更新：** 三个页面新对话均已实际完成21st检索、React Bits列注册表及命名搜索；见[Agent1](QA_AGENT_1.md)、[Agent2](QA_AGENT_2.md)、[Agent3](QA_AGENT_3.md)的前检记录。下面“当前旧会话”仅指迁移前统筹的缓存连接，不能再据此要求三个页面重复重装。新统筹按自己连接实测，不复制密钥。
 
 | 服务 | 实际检查 | 结果与边界 |

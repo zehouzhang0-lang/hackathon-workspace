@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>说清情况 · 路芽</title>
+    <link rel="stylesheet" href="shared/tokens.css">
+    <link rel="stylesheet" href="shared/base.css">
+    <link rel="stylesheet" href="shared/title-motion.css">
+    <link rel="stylesheet" href="pages/intake.css">
+  </head>
+  <body data-page="intake">
+    <div id="shared-shell"></div>
+
+    <main class="intake-main" id="main-content">
+      <header class="intake-intro">
+        <h1 id="intake-title" data-fold-title>用一分钟，把你的商品讲给我听</h1>
+        <p id="intake-lead">不必准备完整报表，不知道的可以直接说不知道。</p>
+      </header>
+
+      <section class="voice-panel" aria-labelledby="voice-heading">
+        <div class="voice-status-row">
+          <h2 id="voice-heading">像发一段语音一样，聊聊你的生意</h2>
+          <time id="voice-timer" datetime="PT0S" aria-live="off" aria-label="本次听取时长" hidden>00:00</time>
+        </div>
+        <ul class="voice-topics" aria-label="可以聊聊这五件事">
+          <li>卖什么、大概多少钱</li>
+          <li>你觉得谁会买</li>
+          <li>会在什么场景用</li>
+          <li>现在卡在哪里</li>
+          <li>做过什么、有哪些限制</li>
+        </ul>
+        <div class="voice-primary-actions">
+          <button id="voice-start" class="button voice-start" type="button" aria-describedby="voice-service-note" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M12 19v3" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <rect x="9" y="2" width="6" height="13" rx="3" />
+            </svg>
+            <span id="voice-start-label">直接说给我听</span>
+          </button>
+          <button id="voice-stop" class="button voice-stop" type="button" hidden>我说完了</button>
+        </div>
+        <p id="voice-stage" class="voice-stage" role="status" aria-live="polite">推荐说 60—90 秒，也可以随时停止。</p>
+        <div id="voice-live" class="voice-live" hidden>
+          <p class="voice-live-label">正在听取，文字可能继续修正</p>
+          <p id="voice-live-text" aria-live="off"></p>
+        </div>
+        <div class="entry-options">
+          <button id="open-upload" class="button button--secondary" type="button" aria-controls="upload-section" aria-expanded="false">上传商品资料</button>
+          <button id="open-manual" class="button button--quiet" type="button" aria-controls="manual-entry" aria-expanded="false">手动补充</button>
+          <button id="return-to-review" class="button button--quiet" type="button" hidden>返回核对</button>
+        </div>
+        <p id="voice-service-note" class="voice-service-note">语音使用浏览器识别服务，音频可能离开设备；开始前会请你确认。本页不保存音频文件。</p>
+      </section>
+
+      <form id="intake-form" class="intake-form" novalidate>
+        <section id="manual-entry" class="description-section" aria-labelledby="description-heading" hidden>
+          <h2 id="description-heading" class="input-heading">
+            <label for="description">补充或修改这段话</label>
+          </h2>
+          <div class="description-composer">
+            <textarea
+              id="description"
+              rows="5"
+              aria-describedby="intake-lead"
+              placeholder="可以说卖什么、谁可能会买、现在想改变什么。不知道的先留空。"
+            ></textarea>
+            <div class="composer-actions">
+              <button
+                id="organize-button"
+                class="composer-submit"
+                type="submit"
+                aria-label="整理并核对"
+                disabled
+              >
+                <span>整理并核对</span>
+                <span class="submit-icon" aria-hidden="true">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                    <path d="m5 12 7-7 7 7" />
+                    <path d="M12 19V5" />
+                  </svg>
+                </span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="upload-section" class="materials-section" aria-labelledby="materials-heading" hidden>
+          <h2 id="materials-heading" class="input-heading">商品资料</h2>
+          <div id="drop-zone" class="material-drop-zone" role="group" aria-labelledby="drop-zone-title" aria-describedby="image-note" tabindex="0">
+            <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+              <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+              <path d="M12 12v6" />
+              <path d="m15 15-3-3-3 3" />
+            </svg>
+            <p id="drop-zone-title">拖入 TXT、CSV 或 JSON</p>
+            <button id="choose-files" class="button button--secondary choose-files" type="button">选择文件</button>
+          </div>
+          <input id="file-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" multiple hidden>
+          <input id="replacement-input" type="file" accept="text/plain,text/csv,application/json,.txt,.csv,.json" hidden>
+
+          <details class="file-details">
+            <summary>
+              <span>格式与大小</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </summary>
+            <div class="file-details-content">
+              <p>TXT、CSV、JSON，文本须为 UTF-8。</p>
+              <p>最多 6 份，每份 5 MiB，总计 20 MiB。</p>
+            </div>
+          </details>
+          <p id="image-note" class="image-note">尚未接通图片理解，本轮不接收新图片；历史原件仍可查看。</p>
+          <div id="materials-list" class="materials-list" hidden></div>
+          <button id="organize-materials" class="button button--secondary" type="button" disabled>整理这些资料</button>
+        </section>
+      </form>
+
+      <p id="operation-status" class="status operation-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      <section id="error-panel" class="intake-error" role="alert" hidden>
+        <p id="page-error"></p>
+        <button id="retry-button" class="button button--secondary" type="button" hidden>重试</button>
+        <button id="stop-retry-button" class="button button--quiet" type="button" hidden>停止重试</button>
+      </section>
+
+      <section id="organization" class="organization" aria-labelledby="organization-title" tabindex="-1" hidden>
+        <header class="organization-heading">
+          <h2 id="organization-title">我先确认一下，我有没有听懂你的生意</h2>
+          <p id="understanding-note" class="muted">确认表示与你的讲述一致，不代表已经外部核实。</p>
+        </header>
+
+        <div id="understanding-grid" class="understanding-grid"></div>
+
+        <section id="review-cautions" class="review-cautions" aria-labelledby="review-cautions-title" hidden>
+          <h3 id="review-cautions-title">先保留这些待核对项</h3>
+          <div id="review-cautions-list"></div>
+        </section>
+
+        <details class="evidence-details">
+          <summary>查看这次讲述</summary>
+          <h3>原始语音转写</h3>
+          <pre id="review-transcript" class="review-text"></pre>
+          <h3>补充和修改后的文字</h3>
+          <pre id="review-description" class="review-text"></pre>
+        </details>
+
+        <div class="focus-editor">
+          <label for="focus-input">本轮想解决的问题</label>
+          <textarea id="focus-input" class="field" rows="2"></textarea>
+        </div>
+
+        <details class="evidence-details">
+          <summary>查看材料、来源与待核对项</summary>
+          <section class="review-section" aria-labelledby="facts-heading">
+          <h3 id="facts-heading">已整理的信息与来源</h3>
+          <div id="facts-list" class="review-list"></div>
+        </section>
+
+        <div class="review-columns">
+          <section class="review-section" aria-labelledby="constraints-heading">
+            <h3 id="constraints-heading">本轮的限制</h3>
+            <div id="constraints-list" class="review-list"></div>
+          </section>
+          <section class="review-section" aria-labelledby="unknowns-heading">
+            <h3 id="unknowns-heading">还不清楚的</h3>
+            <div id="unknowns-list" class="review-list"></div>
+          </section>
+          </div>
+          <section class="review-section" aria-labelledby="question-history-heading">
+            <h3 id="question-history-heading">已经补充的内容</h3>
+            <div id="question-history" class="review-list"></div>
+          </section>
+        </details>
+
+        <div class="organization-actions">
+          <button id="edit-understanding" class="button button--secondary" type="button">有一项不对</button>
+          <button id="back-to-input" class="button button--secondary" type="button">再补充一句</button>
+          <button id="confirm-button" class="button" type="button">理解正确，继续</button>
+        </div>
+      </section>
+
+      <section id="clarification-section" class="clarification-section" aria-labelledby="clarification-heading" tabindex="-1" hidden>
+        <p id="clarification-progress" class="muted"></p>
+        <h2 id="clarification-heading">再确认一件事</h2>
+        <p id="clarification-question"></p>
+        <button id="clarification-back" class="button button--quiet" type="button">回到理解核对</button>
+        <form id="clarification-form">
+          <label for="clarification-answer">你的补充</label>
+          <textarea id="clarification-answer" class="field" rows="3"></textarea>
+          <div class="clarification-actions">
+            <button id="clarification-discard-draft" class="button button--quiet" type="button" hidden>放弃这份未提交草稿</button>
+            <button id="clarification-unknown" class="button button--secondary" type="button">我还不知道</button>
+            <button id="clarification-skip" class="button button--quiet" type="button">先跳过</button>
+            <button id="clarification-submit" class="button" type="submit">记下这句</button>
+          </div>
+        </form>
+      </section>
+
+      <noscript>
+        <p class="intake-error">需要启用 JavaScript 才能整理材料和保存本轮内容。</p>
+      </noscript>
+    </main>
+
+    <div id="shared-footer"></div>
+
+    <dialog id="voice-consent" class="intake-dialog voice-consent" aria-labelledby="voice-consent-title" aria-describedby="voice-consent-description">
+      <h2 id="voice-consent-title">开始前，确认语音处理方式</h2>
+      <p id="voice-consent-description">浏览器可能把麦克风音频发送给其语音识别服务处理，无法保证离线。开始后会申请麦克风权限；你可以随时停止。本页不保存音频文件。保存时会保留转写原文和你编辑后的文字。</p>
+      <p class="muted">这不授权向 MoneyAI 或其他模型发送材料，也不会安装语言包或调用付费转写接口。</p>
+      <div class="dialog-actions">
+        <button id="voice-consent-cancel" class="button button--secondary" type="button">改用文字</button>
+        <button id="voice-consent-start" class="button" type="button">同意并开始语音</button>
+      </div>
+    </dialog>
+
+    <dialog id="context-dialog" class="intake-dialog correction-dialog" aria-labelledby="context-dialog-title">
+      <form id="context-form" class="correction-form" method="dialog">
+        <h2 id="context-dialog-title">修改这一项</h2>
+        <label for="context-field">要修改什么</label>
+        <select id="context-field" class="field"></select>
+        <label for="context-value">实际内容（不知道可留空）</label>
+        <textarea id="context-value" class="field" rows="4"></textarea>
+        <p id="context-field-note" class="muted"></p>
+        <p id="context-error" role="alert" class="field-error"></p>
+        <div class="dialog-actions">
+          <button id="context-cancel" class="button button--secondary" type="button">取消</button>
+          <button id="context-save" class="button" type="submit">保存这处修改</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="preview-dialog" class="intake-dialog preview-dialog" aria-labelledby="preview-title">
+      <header class="dialog-heading">
+        <h2 id="preview-title">原件预览</h2>
+        <button id="close-preview" class="button button--quiet dialog-close" type="button" aria-label="关闭原件预览">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+      </header>
+      <div id="preview-body" class="preview-body"></div>
+    </dialog>
+
+    <dialog id="correction-dialog" class="intake-dialog correction-dialog" aria-labelledby="correction-title">
+      <form id="correction-form" class="correction-form" method="dialog">
+        <header class="dialog-heading">
+          <h2 id="correction-title">更正这条信息</h2>
+        </header>
+        <div class="correction-field">
+          <label for="correction-availability">这项信息</label>
+          <select id="correction-availability" class="field">
+            <option value="known">已知</option>
+            <option value="unknown">还不清楚</option>
+            <option value="not_applicable">本轮不适用</option>
+          </select>
+        </div>
+        <div class="correction-field">
+          <label for="correction-value">数值或内容</label>
+          <input id="correction-value" class="field" type="text" autocomplete="off">
+        </div>
+        <div class="correction-field">
+          <label for="correction-unit">单位（可留空）</label>
+          <input id="correction-unit" class="field" type="text" autocomplete="off">
+        </div>
+        <div class="correction-field">
+          <label for="correction-reason">更正说明</label>
+          <input id="correction-reason" class="field" type="text" autocomplete="off">
+        </div>
+        <p id="correction-error" class="field-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="cancel-correction" class="button button--secondary" type="button">取消</button>
+          <button class="button" type="submit">保存更正</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!--
+      Official Lucide SVG paths, retrieved 2026-08-28; no runtime CDN.
+      https://github.com/lucide-icons/lucide/blob/main/icons/file-up.svg
+      https://github.com/lucide-icons/lucide/blob/main/icons/arrow-up.svg
+      https://github.com/lucide-icons/lucide/blob/main/icons/chevron-down.svg
+      https://github.com/lucide-icons/lucide/blob/main/icons/x.svg
+      https://github.com/lucide-icons/lucide/blob/main/icons/mic.svg
+      https://github.com/lucide-icons/lucide/blob/main/LICENSE
+
+      ISC License
+      Copyright (c) 2026 Lucide Icons and Contributors
+      Permission to use, copy, modify, and/or distribute this software for any
+      purpose with or without fee is hereby granted, provided that the above
+      copyright notice and this permission notice appear in all copies.
+      THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+      WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+      MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+      ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+      WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+      ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+      OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+      Arrow-up, chevron-down and x are derived from Feather.
+      The MIT License (MIT)
+      Copyright (c) 2013-present Cole Bemis
+      Permission is hereby granted, free of charge, to any person obtaining a copy
+      of this software and associated documentation files (the "Software"), to deal
+      in the Software without restriction, including without limitation the rights
+      to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+      copies of the Software, and to permit persons to whom the Software is
+      furnished to do so, subject to the following conditions:
+      The above copyright notice and this permission notice shall be included in all
+      copies or substantial portions of the Software.
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+      FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+      AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+      LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+      SOFTWARE.
+    -->
+    <script type="module" src="pages/intake.js"></script>
+  </body>
+</html>

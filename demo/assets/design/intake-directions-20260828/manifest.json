@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-08-28",
+  "surface": "第一页空会话完整首屏",
+  "generator": "built-in image_gen",
+  "status": "unselected",
+  "selectedDisplayOrder": null,
+  "visualApproved": false,
+  "sharedReady": false,
+  "isBrowserScreenshot": false,
+  "displayOrderBasis": "本任务中实际生成图片的显示顺序；三个独立结果分别展示一次。",
+  "requestedViewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "nativeOutput": {
+    "width": 1586,
+    "height": 992
+  },
+  "resampled": false,
+  "scope": "共同风格候选；选定后扩展三页及必要状态。本批没有应用代码、实际接收或处理商家材料。",
+  "items": [
+    {
+      "displayOrder": 1,
+      "file": "candidate-1.png",
+      "prompt": "candidate-1.prompt.txt",
+      "sha256": "5b940c3a8f736b502d9fbeb4c523e6bb6f326e7c53b6fa6363b13320d510f5a5"
+    },
+    {
+      "displayOrder": 2,
+      "file": "candidate-2.png",
+      "prompt": "candidate-2.prompt.txt",
+      "sha256": "e32bd11137c40fe462e5db1770f7611d8080462744209123067f6b7578328aa0"
+    },
+    {
+      "displayOrder": 3,
+      "file": "candidate-3.png",
+      "prompt": "candidate-3.prompt.txt",
+      "sha256": "42bddb855b9329ee45f09bf24d469cd2cf394c303a0008b19d0afcac225b4851"
+    }
+  ],
+  "notVerified": [
+    "browser interactions",
+    "responsive layout",
+    "keyboard and focus",
+    "computed color contrast",
+    "storage and file parsing",
+    "motion",
+    "cross-page integration"
+  ]
+}

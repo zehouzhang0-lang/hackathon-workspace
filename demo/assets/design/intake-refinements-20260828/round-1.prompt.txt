@@ -1,0 +1,26 @@
+Use case: ui-mockup
+Asset type: revised full primary screen of a Chinese desktop web application.
+Input image 1 is the edit target: the existing candidate-1 empty intake screen. This is a single focused revision, NOT three alternatives and NOT a new product direction.
+Primary request: carry forward the reference's quiet editorial two-area intake concept, but make it feel like a carefully designed human product rather than a template. Remove the old challenge title from the brand/header; remove redundant small copy and unnecessary boxed controls. Recompose the full screen for a 1920 x 1080 desktop viewport, exactly 16:9. Do not stretch or crop the input to fill the new frame. Keep the entire screen and all essential actions within the frame.
+Current date: 2026-08-28; do not display a date.
+
+Preserve:
+- A calm nearly-white paper surface, ink-dark typography, and restrained warm vermilion accent from the reference. No new palette, gradients, illustrations, or brand.
+- A modest editorial Chinese heading and excellent readable Chinese sans-serif UI text. Main heading about40px, field labels22px, body/control18-20px, helper text no smaller than16px at the target viewport.
+- One obvious primary action and the same two main regions: own-words problem description at left, optional existing material at right. A sentence OR one file is enough, never both required.
+- The three-step vocabulary: "说清问题", "看清选择", "拿去执行". Only the first is current; later steps are subdued.
+- First-page EMPTY input state only. This is a design proposal, not a live screenshot and not evidence of real data processing.
+
+Precise changes:
+- Remove the header product-name string "抖音做了不出单怎么办" entirely. It is a challenge topic, NOT the product brand. No new product name, fake logo, placeholder brand label, avatar, account menu, decorative badge, or marketing headline. The header contains only quiet three-step navigation, a subtle current-step accent, and open space.
+- Keep this exact primary heading: "最近做抖音，哪件事最让你头疼？"
+- Use exactly one short supporting line beneath it: "说一句，或交一份材料。"
+- Use the left region label "用自己的话描述问题". The writing area is generous, calm, and clearly editable, with only a very light border or bottom rule and natural resize affordance. Placeholder: "比如：有人咨询，后来没下文". Remove the entire old "试试这样说" row and both suggested-query buttons; the placeholder is sufficient.
+- Use the right region label "交一份手头材料". Replace the huge dashed rectangle and oversized upload symbol with an open, lightly separated material area on the same page surface: a small purposeful outline paperclip, the clear outlined action "选择文件", and one concise drop/paste affordance "拖入文件，或粘贴截图". No large enclosing dashed box, no nested panels.
+- Below the material entry show one compact, readable line "PNG / JPG / WebP / TXT / CSV / JSON" and a quiet text disclosure "格式与限制". The implementation will disclose 6 files / 5MiB per file / 20MiB total there; do not duplicate these numbers elsewhere on this empty-screen concept.
+- Keep one short truthfulness/privacy line by the material region: "仅本机处理，图片内容需核对。"
+- Show one primary vermilion button "整理一下" near the end of the working area, with a small faithful outline right arrow. It is visibly disabled for empty input. Do not repeat the supporting sentence next to it.
+- Keep only one quiet footer note: "演示界面 · 尚未处理材料". Remove all other repetitive footer copy and unnecessary divider bands.
+
+Composition: a well-balanced open desktop canvas, about1440px-wide centered working area with generous side margins. Keep the two input regions aligned and comfortably separated; description gets modestly more width. Heading/nav/input/action form a clear vertical rhythm with intentional negative space, not oversized empty form panels. Keep labels, helper copy, and controls optically aligned. No cards-inside-cards, no generic rounded app wrapper, no floating shadows, no giant hero, no excessive mini-labels.
+All UI text and controls are intended for real HTML/CSS implementation later, not an image pasted over the app. No diagnosis, probabilities, fake statistics, reports, merchant facts, sample uploads, progress bars, fake success, or extra features. Do not show browser chrome, device frames, annotations, option numbers, multiple alternatives, or a comparison collage. Return one complete revised interface image.

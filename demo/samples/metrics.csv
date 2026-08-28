@@ -1,0 +1,4 @@
+metric,value,unit,subject,window_start,window_end,channel,cohort
+product_detail_visitors,186,人,合成商品,2026-08-18,2026-08-24,短视频,
+paid_orders,0,笔,合成商品,2026-08-18,2026-08-24,短视频,
+shipping_fee,,元,合成商品,,,,

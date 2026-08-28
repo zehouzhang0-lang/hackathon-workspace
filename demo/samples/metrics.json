@@ -1,0 +1,1 @@
+{"schema":"demo.metrics.v1","metrics":[{"metric":"product_detail_visitors","value":186,"unit":"人","subject":"合成商品","window_start":"2026-08-18","window_end":"2026-08-24","channel":"短视频","cohort":null},{"metric":"paid_orders","value":0,"unit":"笔","subject":"合成商品","window_start":"2026-08-18","window_end":"2026-08-24","channel":"短视频","cohort":null}]}

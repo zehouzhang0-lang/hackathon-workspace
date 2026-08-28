@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享层隔离测试</title>
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="../shared/base.css">
+</head>
+<body>
+  <main class="page-container">
+    <h1>共享层隔离测试</h1>
+    <p>仅在新的独立浏览器配置运行。此页不自动执行；发现已有保存记录会拒绝开始。测试会写入、删除本机合成数据，不访问MoneyAI。</p>
+    <p>此宿主不代表产品UI、中文输入法、跨标签、剪贴板或下载验收。</p>
+    <button id="run-tests" class="button" type="button">在空测试会话执行</button>
+    <p id="test-summary" role="status">尚未执行</p>
+    <ol id="test-results"></ol>
+  </main>
+  <script type="module" src="./shared-browser.js"></script>
+</body>
+</html>

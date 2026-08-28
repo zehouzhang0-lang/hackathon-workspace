@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>看清选择 · 经营路径</title>
+    <link rel="stylesheet" href="./shared/tokens.css">
+    <link rel="stylesheet" href="./shared/base.css">
+    <link rel="stylesheet" href="./pages/decisions.css">
+    <script type="module" src="./pages/decisions.js"></script>
+  </head>
+  <body data-page="decisions">
+    <a class="decisions-skip" href="#decisions-main">跳到主要内容</a>
+    <div id="shared-shell"></div>
+    <main id="decisions-main" class="decisions-main" tabindex="-1">
+      <header class="decisions-intro">
+        <div>
+          <h1>看清选择，再决定下一步</h1>
+          <p>比较要做的事、需要的投入，以及还不能确定的部分。</p>
+        </div>
+        <button type="button" class="button button--quiet" data-action="return">返回补充</button>
+      </header>
+
+      <div id="decisions-message" class="status decisions-message" role="status" aria-live="polite" hidden></div>
+      <div id="decisions-log-warning" class="status decisions-log-warning" role="status" hidden>
+        <p id="decisions-log-message"></p>
+        <button type="button" class="button button--quiet" id="retry-event">重试保存操作记录</button>
+      </div>
+
+      <section id="decisions-start" class="decisions-empty" aria-labelledby="start-title">
+        <h2 id="start-title">正在读取本轮资料</h2>
+        <p id="start-description">只读取当前浏览器中已保存的内容，不会自动载入演示商家。</p>
+        <div class="decisions-actions">
+          <button type="button" class="button" data-action="return" id="start-return" hidden>先说说情况</button>
+          <button type="button" class="button button--secondary" id="retry-load" hidden>重新读取</button>
+        </div>
+        <noscript>本页需要 JavaScript 才能读取共享资料。请启用后重新打开，不会自动生成分析或选择路径。</noscript>
+      </section>
+
+      <div id="decisions-content" hidden>
+        <section class="decisions-scope" aria-labelledby="scope-title">
+          <div>
+            <h2 id="scope-title">这次看的问题</h2>
+            <p id="scope-question" class="scope-question"></p>
+          </div>
+          <dl id="scope-meta" class="scope-meta"></dl>
+        </section>
+
+        <section id="stale-notice" class="status decisions-stale" aria-labelledby="stale-title" hidden>
+          <h2 id="stale-title">这份判断已是旧版</h2>
+          <p id="stale-description"></p>
+          <button type="button" class="button button--secondary" data-action="return">返回核对当前资料</button>
+        </section>
+
+        <section class="decisions-observation" aria-labelledby="observation-title">
+          <div class="decisions-section-heading">
+            <h2 id="observation-title">现有材料说明什么</h2>
+            <button type="button" class="button button--quiet" id="refresh-analysis">更新本轮判断</button>
+          </div>
+          <p id="analysis-summary" class="analysis-summary"></p>
+          <ul id="analysis-limitations" class="decisions-notes"></ul>
+        </section>
+
+        <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>
+          <h2 id="no-paths-title">暂时没有足够依据给出可选行动</h2>
+          <p>先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>
+          <ul id="no-paths-unknowns" class="decisions-notes"></ul>
+          <button type="button" class="button button--secondary" data-action="return">返回补充</button>
+        </section>
+
+        <div id="path-workspace" class="path-workspace" hidden>
+          <aside class="path-comparison" aria-labelledby="paths-title">
+            <div class="decisions-section-heading">
+              <h2 id="paths-title">可走的路</h2>
+              <span id="paths-count" class="muted"></span>
+            </div>
+            <p class="muted path-comparison-note">点开查看，不会替你选定。</p>
+            <div id="path-list" class="path-list"></div>
+          </aside>
+
+          <article id="path-detail" class="path-detail" aria-labelledby="path-title">
+            <header class="path-detail-heading">
+              <p id="path-selection-note" class="muted"></p>
+              <h2 id="path-title" tabindex="-1"></h2>
+              <p id="path-action" class="path-action"></p>
+            </header>
+            <section class="path-section" aria-labelledby="cost-title">
+              <h3 id="cost-title">投入与适用条件</h3>
+              <dl id="path-costs" class="path-costs"></dl>
+              <ul id="path-prerequisites" class="decisions-notes"></ul>
+            </section>
+            <section class="path-section" aria-labelledby="estimate-title">
+              <h3 id="estimate-title">可能看到什么结果</h3>
+              <div id="path-estimate"></div>
+            </section>
+            <section class="path-section path-risk-section" aria-labelledby="risk-title">
+              <h3 id="risk-title">选择前，先看代价与风险</h3>
+              <div id="path-risks"></div>
+            </section>
+            <details class="path-disclosure" id="evidence-disclosure">
+              <summary>查看依据与反面线索</summary>
+              <div id="path-evidence" class="path-disclosure-content"></div>
+            </details>
+            <details class="path-disclosure" id="experiment-disclosure">
+              <summary>怎么观察，何时停止或恢复</summary>
+              <div id="path-experiment" class="path-disclosure-content"></div>
+            </details>
+            <details class="path-disclosure" id="tree-disclosure">
+              <summary>展开完整业务树</summary>
+              <div id="path-tree" class="path-disclosure-content"></div>
+            </details>
+
+            <section class="path-next-step" aria-label="报告与下一步">
+              <div class="report-consent" id="report-consent-row" hidden>
+                <label><input type="checkbox" id="report-consent"> 我已核对，同意在本次报告中包含当前问题与必要依据摘要。</label>
+                <p class="muted">不勾选时隐藏未确认摘要；原始附件不会导出。文件只下载到本机，不自动上传。</p>
+              </div>
+              <div class="decisions-actions">
+                <button type="button" class="button" id="choose-path">就做这件事</button>
+                <button type="button" class="button button--secondary" id="download-report">下载这条路径的报告（HTML）</button>
+                <button type="button" class="button button--quiet" id="defer-choice">暂不选</button>
+              </div>
+              <p class="muted">选择后进入下一页准备行动内容，不代表已经采用或执行。</p>
+            </section>
+          </article>
+        </div>
+      </div>
+    </main>
+    <div id="shared-footer"></div>
+  </body>
+</html>

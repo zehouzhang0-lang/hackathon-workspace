@@ -1,0 +1,31 @@
+/* Project-native FoldText-inspired heading trial; no React/GSAP dependency. */
+:root { --fold-title-style-ready: 1; }
+.fold-title-positioned { position: relative; }
+.fold-title-active { color: transparent !important; text-shadow: none !important; }
+.fold-title-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: start;
+}
+.fold-title-piece {
+  position: absolute;
+  display: block;
+  white-space: pre;
+  transform-origin: 50% 0;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+.fold-title-crease {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgb(0 0 0 / .4), transparent 80%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fold-title-active { color: inherit !important; text-shadow: inherit !important; }
+  .fold-title-layer { display: none; }
+}

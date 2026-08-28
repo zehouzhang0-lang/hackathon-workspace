@@ -1,0 +1,20 @@
+:root {
+  color-scheme: light;
+  --color-bg: #faf9f6;
+  --color-surface: #ffffff;
+  --color-text: #262621;
+  --color-muted: #6a6a60;
+  --color-accent: #ce431c;
+  --color-line: #dad8cf;
+  --color-danger: #aa2f2f;
+  --color-success: #32624b;
+  --radius-control: 14px;
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-5: 48px;
+  /* The shell includes 24px padding per side; PC content aligns to 90% / 1728px. */
+  --content-width: min(calc(90% + 48px), 1776px);
+}

@@ -1,5 +1,9 @@
 # 项目进度
 
+## REQ-30新增共享进度：榨汁杯与确认身份
+
+在已核对远端的7e63699基础上，C3首批已实现juicer_cup_v1首次资料、四种子完整草稿初始化及原样确认不丢演示身份，当前66项Node与P3限定10组通过。公共壳已更新三步标题／导航和榨汁杯菜单；新首页C2接线turn实际active，C3专用按钮待其接线。用户可试的MT30四例已写入[手工用例](docs/development/demo/MANUAL_TEST_CASES.md)，均未执行。C4/C5专用A/B、C6—C8闭环和真实浏览器／MoneyAI仍未完成。
+
 ## REQ-30共享与页面接线进度（2026-08-28）
 
 C2首批实际代码已实现：材料格式能力查询、单文件10,000,000字节、6份／20MiB及用户来源分类，61项Node回归通过；新首页下一批接线，图片实际上传／存储仍未验，Excel和OCR未接通。第三页原四文件／18项QA阶段性交回停写，统筹核对hash并实际复跑10组限定测试通过；P1新任务也已交回本批局部交互与九项QA。详见[集成检查](docs/development/demo/QA_INTEGRATION.md)和[共享契约](docs/development/demo/SHARED_CONTRACT.md)。仍不是整页完成、运行图、浏览器或MoneyAI业务通过。

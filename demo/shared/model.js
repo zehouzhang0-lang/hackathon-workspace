@@ -1,4 +1,4 @@
-import { makeFixtureInput } from './seeds.js';
+import { makeFixtureInput, makeFixtureIntake } from './seeds.js';
 import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeReferencesFact } from './intake-draft.js';
 
 export const CONTRACT_VERSION = 'demo.v1';
@@ -385,13 +385,19 @@ export function reduceCommand(original, command, context) {
   const hasDownstream = original.input.confirmedVersion !== null || (original.analysis && original.analysis.status !== 'stale') || !!original.selection;
   switch (command.type) {
     case 'LOAD_FIXTURE': {
-      const input = makeFixtureInput(payload.fixtureId, context, state.round.id);
       const fresh = createEmptyState(context);
       fresh.sessionId = state.sessionId;
       fresh.revision = state.revision;
       fresh.round.inputVersion = state.round.inputVersion + 1;
-      fresh.input = input;
+      fresh.input = makeFixtureInput(payload.fixtureId, context, fresh.round.id);
       fresh.fixtureId = payload.fixtureId;
+      const draft = makeFixtureIntake(payload.fixtureId);
+      fresh.input.intake = { draft, sourceBindings: [], status: 'current',
+        roundId: fresh.round.id, inputVersion: fresh.round.inputVersion, savedAt: context.now };
+      const merged = mapConfirmedIntakeToAnalysisInput(draft, { state: fresh, sourceBindings: [] });
+      if (!merged.ok) fail(merged.code, merged.message);
+      Object.assign(fresh.input, prepareProjection(merged.projection, fresh, context, true));
+      fresh.input.focus ??= fresh.input.description.trim() || null;
       Object.assign(state, fresh);
       effects.clearSession = true;
       break;

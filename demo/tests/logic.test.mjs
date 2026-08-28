@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createEmptyState, getMaterialCapability, normalizeSessionState, reduceCommand, validSourceId } from '../shared/model.js';
 import { buildDemoAnalysis, buildDemoArtifact } from '../shared/demo-data.js';
+import { FIXTURE_IDS } from '../shared/seeds.js';
 import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
 import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
   getIntakeCorrectionConflicts, editIntakeField, isIntakeCorrectionSnapshotCurrent } from '../pages/intake.js';
@@ -39,8 +40,8 @@ function selectAndSave(h, pathIndex = 0) {
   result.artifacts.forEach((artifact) => h.send('ARTIFACT_SAVE', { artifact }));
 }
 
-test('three seeds start without analysis, selection, execution or future feedback', () => {
-  for (const fixtureId of ['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1']) {
+test('all explicit fixtures start without analysis, selection, execution or future feedback', () => {
+  for (const fixtureId of FIXTURE_IDS) {
     const h = harness(fixtureId);
     assert.equal(h.state.analysis, null);
     assert.equal(h.state.selection, null);
@@ -50,6 +51,161 @@ test('three seeds start without analysis, selection, execution or future feedbac
     assert.equal(h.state.round.clarification.status, 'unused');
   }
 });
+test('unchanged fixture intake confirmation preserves provenance, IDs and input version', () => {
+  for (const fixtureId of FIXTURE_IDS) {
+    const h = harness(fixtureId);
+    const before = h.state;
+    const draft = before.input.intake?.draft || createMerchantIntakeDraft({ sources: ['manual'] });
+    const payload = { roundId: before.round.id, inputVersion: before.round.inputVersion,
+      draft: structuredClone(draft), description: before.input.description, sourceBindings: [] };
+    const result = h.send('INTAKE_SET', payload);
+    assert.equal(h.state.fixtureId, fixtureId);
+    assert.equal(result.changed, false);
+    assert.equal(h.state, before);
+    h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+    const confirmed = h.state;
+    assert.equal(h.send('INTAKE_SET', payload).changed, false);
+    assert.equal(h.state, confirmed);
+    assert.equal(h.state.input.confirmedVersion, before.round.inputVersion);
+  }
+});
+
+test('juicer fixture contains one scoped five-stage dataset and no prerecorded business results', () => {
+  const h = harness('juicer_cup_v1');
+  const input = h.state.input;
+  const draft = input.intake.draft;
+  assert.equal(draft.productName, '350ml便携榨汁杯');
+  assert.equal(draft.price, '69.9元');
+  assert.match(draft.specifications, /350ml/);
+  assert.match(draft.specifications, /USB-C/);
+  const values = { video_views: 58000, product_clicks: 1450, add_to_carts: 96, created_orders: 54, paid_orders: 42 };
+  for (const [key, value] of Object.entries(values)) {
+    const matches = input.facts.filter((fact) => fact.key === key);
+    assert.equal(matches.length, 1);
+    const fact = matches[0];
+    assert.equal(fact.value, value);
+    assert.equal(fact.subject, draft.productName);
+    assert.ok(fact.unit);
+    assert.match(fact.channel, /合成/);
+    assert.match(fact.cohort, /嵌套事件/);
+    assert.deepEqual(fact.window, { start: '2026-08-21', end: '2026-08-27' });
+    assert.equal(fact.source.kind, 'merchant_statement');
+    assert.equal(fact.source.materialId, null);
+    assert.match(fact.source.locator.quote, /合成演示/);
+    assert.equal(fact.verification, 'unreviewed');
+  }
+  assert.equal(input.facts.some((fact) => fact.key === 'product_detail_visitors'), false);
+  assert.equal(input.facts.some((fact) => /refund/.test(fact.key) && fact.value === 0), false);
+  assert.ok(input.unknowns.some((entry) => entry.description.includes('退款')));
+  assert.ok(input.unknowns.some((entry) => entry.description.includes('投流')));
+  const problem = input.facts.find((fact) => fact.intakeField === 'currentProblem');
+  assert.equal(problem.evidenceStatus, 'owner_hypothesis');
+  assert.equal(problem.verification, 'unreviewed');
+  assert.deepEqual(input.materials, []);
+  assert.equal(draft.transcript, '');
+  assert.equal(input.confirmedVersion, null);
+  assert.equal(input.intake.roundId, h.state.round.id);
+  assert.equal(input.intake.inputVersion, h.state.round.inputVersion);
+  assert.equal(JSON.stringify(input).includes('draft_intake_'), false);
+  assert.equal(h.state.analysis, null);
+  assert.equal(h.state.selection, null);
+  assert.deepEqual(h.state.executionRecords, []);
+  assert.deepEqual(h.state.feedbackRecords, []);
+});
+
+function fixtureEditPayload(h, field, value) {
+  const input = h.state.input;
+  const draft = structuredClone(input.intake.draft);
+  const target = field.startsWith('metrics.') ? draft.metrics : draft;
+  const key = field.startsWith('metrics.') ? field.slice(8) : field;
+  const before = target[key];
+  target[key] = value;
+  draft.userCorrections.push({ field, before, after: value });
+  return { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion, draft,
+    description: input.description, sourceBindings: structuredClone(input.intake.sourceBindings) };
+}
+
+test('first substantive edits to a fixture remove canned provenance and keep explicit corrections', () => {
+  for (const [field, value] of [['price', '79.9元'], ['metrics.addToCarts', 100], ['description', '用户实际补充的新资料']]) {
+    const h = harness('juicer_cup_v1');
+    const beforeVersion = h.state.round.inputVersion;
+    const payload = field === 'description' ? { roundId: h.state.round.id, inputVersion: beforeVersion,
+      draft: structuredClone(h.state.input.intake.draft), description: value, sourceBindings: [] } : fixtureEditPayload(h, field, value);
+    h.send('INTAKE_SET', payload);
+    assert.equal(h.state.fixtureId, null);
+    assert.equal(h.state.round.inputVersion, beforeVersion + 1);
+    assert.equal(h.state.input.confirmedVersion, null);
+    if (field !== 'description') {
+      const fact = h.state.input.facts.find((entry) => entry.intakeField === field);
+      assert.equal(fact.value, value);
+      assert.equal(fact.verification, 'user_corrected');
+    }
+    analyze(h);
+    assert.equal(h.state.analysis.mode, 'local_limited');
+    assert.equal(h.state.analysis.paths.some((path) => /补全商品购买问答区|调整视频前几秒/.test(path.title)), false);
+  }
+});
+
+test('unchanged measured fields retain their scope but edited values, product, window or source do not inherit it', () => {
+  for (const [field, value] of [['price', '79.9元'], ['metrics.productClicks', 1500], ['metrics.windowStart', '2026-08-20'],
+    ['productName', '另一款商品'], ['platform', '另一平台']]) {
+    const h = harness('juicer_cup_v1');
+    const before = structuredClone(h.state.input.facts.filter((fact) => fact.intakeField?.startsWith('metrics.') && typeof fact.value === 'number'));
+    h.send('INTAKE_SET', fixtureEditPayload(h, field, value));
+    for (const old of before) {
+      const fact = h.state.input.facts.find((entry) => entry.id === old.id);
+      const unchanged = field === 'price' || field === 'metrics.productClicks' && old.intakeField !== field;
+      if (unchanged) {
+        assert.equal(fact.unit, old.unit);
+        assert.equal(fact.channel, old.channel);
+        assert.equal(fact.cohort, old.cohort);
+      } else {
+        assert.equal(fact.unit, null);
+        assert.equal(fact.channel, null);
+        assert.equal(fact.cohort, null);
+      }
+    }
+  }
+  const h = harness('juicer_cup_v1');
+  const payload = fixtureEditPayload(h, 'price', '79.9元');
+  payload.draft.evidenceLedger.find((entry) => entry.field === 'metrics.productClicks').quote = '另一份未经核对的来源';
+  h.send('INTAKE_SET', payload);
+  const changed = h.state.input.facts.find((fact) => fact.intakeField === 'metrics.productClicks');
+  assert.equal(changed.channel, null);
+  assert.equal(changed.cohort, null);
+  const hypothetical = harness('juicer_cup_v1');
+  const hypothesisPayload = fixtureEditPayload(hypothetical, 'price', '79.9元');
+  hypothesisPayload.draft.evidenceLedger.find((entry) => entry.field === 'metrics.productClicks').status = 'owner_hypothesis';
+  hypothetical.send('INTAKE_SET', hypothesisPayload);
+  const hypothesis = hypothetical.state.input.facts.find((fact) => fact.intakeField === 'metrics.productClicks');
+  assert.equal(hypothesis.evidenceStatus, 'owner_hypothesis');
+  assert.equal(hypothesis.unit, null);
+  assert.equal(hypothesis.channel, null);
+  const reverted = harness('juicer_cup_v1');
+  reverted.send('INTAKE_SET', fixtureEditPayload(reverted, 'metrics.productClicks', 1500));
+  reverted.send('INTAKE_SET', fixtureEditPayload(reverted, 'metrics.productClicks', 1450));
+  assert.equal(reverted.state.fixtureId, null);
+  const restoredValue = reverted.state.input.facts.find((fact) => fact.intakeField === 'metrics.productClicks');
+  assert.equal(restoredValue.value, 1450);
+  assert.equal(restoredValue.unit, null);
+  assert.equal(restoredValue.channel, null);
+  assert.equal(restoredValue.cohort, null);
+});
+
+test('a normal merchant input named juicer never loads the synthetic fixture or its missing data', () => {
+  const h = harness();
+  const draft = createMerchantIntakeDraft({ sources: ['manual'], productName: '350ml便携榨汁杯', price: '69.9元' });
+  h.send('INTAKE_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    draft, description: '真实商品同名，但没有提供经营数据', sourceBindings: [] });
+  assert.equal(h.state.fixtureId, null);
+  assert.equal(h.state.input.facts.some((fact) => fact.key === 'video_views' && fact.value === 58000), false);
+  assert.equal(h.state.input.facts.some((fact) => fact.key === 'paid_orders' && fact.value === 42), false);
+  analyze(h);
+  assert.equal(h.state.analysis.mode, 'local_limited');
+  assert.equal(h.state.analysis.status, 'limited');
+  assert.equal(h.state.analysis.paths[0].estimate.kind, 'unavailable');
+});
+
 test('full synthetic flow creates valid trees and maps draft IDs before selection', () => {
   const h = harness('underbed_complete_v1');
   const snapshot = structuredClone(h.state);
@@ -85,6 +241,11 @@ test('user changes remove all-synthetic provenance and invalidate selected conte
   assert.equal(h.state.input.confirmedVersion, null);
   assert.equal(h.state.analysis.status, 'stale');
   assert(h.state.artifacts.every((artifact) => artifact.status === 'stale'));
+  assert.equal(h.state.input.intake.status, 'stale');
+  assert.throws(() => h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion }), { code: 'stale_input' });
+  h.send('INTAKE_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    draft: structuredClone(h.state.input.intake.draft), description: h.state.input.description,
+    sourceBindings: structuredClone(h.state.input.intake.sourceBindings) });
   analyze(h);
   assert.equal(h.state.analysis.mode, 'local_limited');
 });

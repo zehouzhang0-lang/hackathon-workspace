@@ -16,6 +16,7 @@ export function buildDemoAnalysis(state) {
     const completeDemo = state.fixtureId === 'underbed_complete_v1' && hasSpecs;
     const limitations = ['本结果由本地规则生成，不是MoneyAI或真实模型分析。', '观察到的订单变化不能直接归因于建议。'];
     if (!comparable) limitations.push('数据缺少可比口径，不能计算成交漏斗或确定根因。');
+    if (state.fixtureId === 'juicer_cup_v1') limitations.push('榨汁杯仅载入首次合成资料；五阶段判断、专用A/B路径与执行稿仍待共享后续交付，当前只给本机核对步骤。');
     if (state.input.materials.some((material) => material.status !== 'parsed')) limitations.push('有材料尚未提取或核对，当前路径不能代表已经读懂全部附件。');
     if (state.input.unknowns.length) limitations.push('仍有' + state.input.unknowns.length + '项重要信息未知。');
     const condition = (text, factIds = [], assumptionIds = []) => ({ text, sourceFactIds: factIds, assumptionIds });

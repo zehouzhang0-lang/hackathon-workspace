@@ -1,6 +1,9 @@
 import { loadSession } from './state.js';
 import { registerGuard, resolveDrafts, hasDirtyDrafts } from './draft-guards.js';
 
+// Reuse the same guard registry for explicit fixture/session replacement.
+export { resolveDrafts };
+
 const paths = { intake: '01-intake.html', decisions: '02-decisions.html', action: '03-action.html' };
 export function registerNavigationGuard(guard) {
   return registerGuard(guard);

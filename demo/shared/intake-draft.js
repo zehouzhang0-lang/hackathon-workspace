@@ -581,12 +581,29 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
         continue;
       }
     }
+    const priorLocator = prior?.source?.locator, nextLocator = resolution.sourceInfo.locator;
+    const sameSource = prior?.source?.kind === resolution.sourceInfo.kind
+      && prior.source.materialId === resolution.sourceInfo.materialId
+      && prior.source.materialVersion === resolution.sourceInfo.materialVersion
+      && record(priorLocator) && record(nextLocator)
+      && Object.keys(priorLocator).length === Object.keys(nextLocator).length
+      && Object.keys(nextLocator).every((name) => Object.is(priorLocator[name], nextLocator[name]));
+    // Preserve an existing measured scope only for the unchanged immediate field.
+    // Never infer a scope from a product name, a fixture template or a new value.
+    const keepMeasuredScope = prior && owned(prior, draft)
+      && field.startsWith('metrics.') && COUNT_FIELDS.includes(field.slice(8))
+      && prior.availability === 'known' && prior.value !== null
+      && Object.is(prior.value, resolution.value) && prior.key === key
+      && prior.evidenceStatus === resolution.evidenceStatus && !resolution.corrected && !resolution.conflicting
+      && prior.subject === subject && prior.window?.start === window.start && prior.window?.end === window.end
+      && input.intake?.draft?.platform === draft.platform && sameSource;
     const fact = {
       id: previous.get(field)?.id ?? localId('f', field), intakeField: field, key,
       value: resolution.value, availability: resolution.value === null ? 'unknown' : 'known',
-      unit: null, subject: typeof subject === 'string' ? subject : null,
+      unit: keepMeasuredScope ? prior.unit ?? null : null, subject: typeof subject === 'string' ? subject : null,
       window: field.startsWith('metrics.') && COUNT_FIELDS.includes(field.slice(8)) ? clone(window) : { start: null, end: null },
-      channel: null, cohort: null, source: resolution.sourceInfo, evidenceStatus: resolution.evidenceStatus,
+      channel: keepMeasuredScope ? prior.channel ?? null : null, cohort: keepMeasuredScope ? prior.cohort ?? null : null,
+      source: resolution.sourceInfo, evidenceStatus: resolution.evidenceStatus,
       verification: resolution.evidenceStatus === 'owner_hypothesis' ? 'unreviewed' :
         resolution.corrected ? 'user_corrected' : resolution.conflicting ? 'conflicting' : 'unreviewed'
     };

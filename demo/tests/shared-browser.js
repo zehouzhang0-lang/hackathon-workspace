@@ -61,12 +61,23 @@ button.addEventListener('click', async () => {
         state.round.clarification.questions].every((items) => items.length === 0),
       '已有保存记录或输入；请使用新的独立浏览器配置，不会重置或替换现有数据。');
     summary.textContent = '正在真实调用此测试浏览器的IndexedDB';
-    await run('空会话与首轮合成种子', async () => {
-      await send('LOAD_FIXTURE', { fixtureId: 'underbed_complete_v1' });
-      check(!state.analysis && !state.selection && !state.feedbackRecords.length, '不应提前载入结果或反馈');
-      const revision = state.revision;
-      await read();
-      check(state.revision === revision && state.savedAt, '必须实际读回已提交记录');
+    await run('空会话、四种子与首次原样核对', async () => {
+      for (const fixtureId of ['juicer_cup_v1', 'one_sentence_v1', 'scope_conflict_v1', 'underbed_complete_v1']) {
+        await send('LOAD_FIXTURE', { fixtureId });
+        check(!state.analysis && !state.selection && !state.feedbackRecords.length && !state.executionRecords.length, '不应提前载入结果或反馈');
+        check(state.input.confirmedVersion === null, '载入草稿不能代替用户确认');
+        check(state.input.intake.roundId === state.round.id && state.input.intake.inputVersion === state.round.inputVersion, '草稿须绑定新轮次');
+        const original = structuredClone(state);
+        const unchanged = command('INTAKE_SET', scoped({ draft: structuredClone(state.input.intake.draft),
+          description: state.input.description, sourceBindings: structuredClone(state.input.intake.sourceBindings) }));
+        const first = await dispatch(unchanged);
+        check(first.ok, first.message || '原样核对未保存');
+        equal(first.state, original, '无修改核对不能清演示身份或生成重复指标');
+        await readBack(original, '必须实际读回同一版本、口径及演示身份');
+        const retried = await dispatch(unchanged);
+        check(retried.ok, retried.message || '原操作重试失败');
+        equal(retried.state, original, '相同命令重试不能改变资料');
+      }
     });
     await run('提交前中止保持原版本', async () => {
       const previous = structuredClone(state);

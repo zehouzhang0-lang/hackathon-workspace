@@ -1,6 +1,36 @@
 import { requireValue } from './model.js';
+import { createMerchantIntakeDraft } from './intake-draft.js';
 
-export const FIXTURE_IDS = ['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1'];
+export const FIXTURE_IDS = Object.freeze(['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1', 'juicer_cup_v1']);
+export function makeFixtureIntake(fixtureId) {
+  requireValue(FIXTURE_IDS.includes(fixtureId), '未知演示案例，未创建经营草稿。');
+  if (fixtureId !== 'juicer_cup_v1') return createMerchantIntakeDraft({ sources: ['manual'] });
+  const draft = createMerchantIntakeDraft({
+    sources: ['manual'], transcript: '',
+    productName: '350ml便携榨汁杯', price: '69.9元', specifications: '容量350ml；USB-C充电',
+    platform: '抖音', desiredAction: '先验证商品点击后的加购问题',
+    confirmedProductFacts: ['容量为350ml', '充电接口为USB-C'],
+    currentProblem: '可能是商品介绍和信任说明不够清楚，想先验证点击后的加购问题。',
+    constraints: ['不能降价', '不能编造性能', '不能复杂重拍'],
+    unknowns: ['加购少是否真的是信任问题，尚未证实', '投流来源与投流花费未提供',
+      '退款和投诉数据未提供', '能否打冰块、续航与清洗细则未确认', '真实售后规则未提供', '之前做过哪些经营动作未提供'],
+    metrics: { windowStart: '2026-08-21', windowEnd: '2026-08-27',
+      videoViews: 58000, productClicks: 1450, addToCarts: 96, createdOrders: 54, paidOrders: 42 }
+  });
+  const values = [
+    ...['productName', 'price', 'specifications', 'platform', 'desiredAction', 'currentProblem'].map((field) => [field, draft[field]]),
+    ...Object.entries(draft.metrics).map(([field, value]) => ['metrics.' + field, value]),
+    ...['confirmedProductFacts', 'constraints', 'unknowns'].flatMap((field) => draft[field].map((value, index) => [field + '.' + index, value]))
+  ];
+  draft.evidenceLedger = values.map(([field, value]) => ({
+    field, value: field.startsWith('unknowns.') ? null : value,
+    status: field.startsWith('unknowns.') ? 'unknown' : field === 'currentProblem' ? 'owner_hypothesis' : 'confirmed_fact',
+    source: 'manual', quote: '合成演示首次资料｜' + field + '：' + value
+  }));
+  return createMerchantIntakeDraft(draft);
+}
+
+
 export function makeFixtureInput(fixtureId, context, roundId) {
   requireValue(FIXTURE_IDS.includes(fixtureId), '未知演示案例，未加载任何预写结果。');
   const input = { description: '', focus: null, confirmedVersion: null, materials: [], facts: [], constraints: [], unknowns: [], intake: null };
@@ -13,6 +43,30 @@ export function makeFixtureInput(fixtureId, context, roundId) {
     };
     input.facts.push(entry);
     return entry;
+  }
+  if (fixtureId === 'juicer_cup_v1') {
+    const draft = makeFixtureIntake(fixtureId);
+    input.description = '【合成演示，不代表真实商家效果】350ml便携榨汁杯，69.9元，USB-C充电。'
+      + '2026-08-21至2026-08-27的合成嵌套事件链：播放58000、商品点击1450、加购96、创建订单54、支付42。'
+      + '老板判断可能是商品介绍和信任说明不够清楚，尚未证实。不能降价、不能编造性能、不能复杂重拍；缺少投流来源、退款和投诉数据。';
+    for (const [field, key, unit] of [
+      ['videoViews', 'video_views', '次播放'], ['productClicks', 'product_clicks', '次商品点击'],
+      ['addToCarts', 'add_to_carts', '次加购'], ['createdOrders', 'created_orders', '笔创建订单'],
+      ['paidOrders', 'paid_orders', '笔支付订单']
+    ]) {
+      const intakeField = 'metrics.' + field;
+      const quote = draft.evidenceLedger.find((entry) => entry.field === intakeField).quote;
+      fact(key, draft.metrics[field], unit, 'REQ-30首次资料', {
+        intakeField, evidenceStatus: 'confirmed_fact', subject: draft.productName,
+        window: { start: draft.metrics.windowStart, end: draft.metrics.windowEnd },
+        channel: '抖音短视频（合成；投流来源未拆分）',
+        cohort: '合成演示的同一商品、同窗嵌套事件链；逐阶段次数，不代表独立用户数',
+        source: { kind: 'merchant_statement', materialId: null, materialVersion: null,
+          locator: { type: 'intake', field: intakeField, source: 'manual', quote },
+          note: '合成演示首次资料，不是真实上传或平台核验。' }
+      });
+    }
+    return input;
   }
   if (fixtureId === 'one_sentence_v1') {
     input.description = '做了一段时间抖音，说不清卡在哪里，想先看看该检查什么。';

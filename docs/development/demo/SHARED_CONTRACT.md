@@ -1,12 +1,12 @@
 # 三页共享契约｜demo.v1
 
-## REQ-30 共享增量边界（C2首批已交付，其余逐项跟踪）
+## REQ-30 共享增量边界（C2/C3首批已交付，其余逐项跟踪）
 
 [四图功能锁定](WIREFRAME_FUNCTION_LOCK.md)第8节列出C1—C9：公共壳、截图／Excel能力矩阵、榨汁杯种子与六组投影、分析互动、执行稿／实验卡、反馈附件原子保存、再判断、显式幂等下一轮以及MoneyAI业务通路。统筹逐项实现并追加接口后才由页面调用，不能把目标字段或名字当成已经存在的API。保留demo.v1和现有接口，不重建共享状态。
 
 本批允许新增截图和Excel目标，覆盖下文旧产品限制；共享C2首批已更新能力矩阵、用户分类和单文件限额，首页接线尚待交回。Excel和OCR仍未接通，不以格式入口存在声明解析完成。图示单文件≤10MB目标定义为10000000字节，最多6份／总量20MiB暂保留并明示。接收／预览／解析／确认／Blob保存分别验收；反馈新材料必须绑定原轮次和稿件，不能先MATERIAL_ADD破坏当前输入。路径实验计划、候选稿与已选稿、候选轮与已开始轮必须分开；真实MoneyAI外发许可未因本次派单扩大。
 
-P1签收后的最小接线依赖已登记：C2必须提供实际格式能力／限额查询、图片来源类别的用户标注及修改命令、统一Excel解析入口；C3必须给出确切fixtureId与九组／草稿初始化映射。现阶段这些新增接口均未发出，页面不得猜名称、写私有字段或硬编码榨汁杯数值。
+P1签收后的最小接线依赖按下方C2/C3分批发布：材料能力／限额／类别已提供，榨汁杯fixtureId与草稿投影已提供；Excel解析、C4—C8等仍待交付。页面只能使用实际出口，不猜名称、写私有字段或硬编码榨汁杯数值。
 
 状态：2026-08-28新统筹已完成文档审查，本文与[补充细则](CONTRACT_DETAILS.md)一并作为本轮实施约定；契约版本仍为demo.v1；保留原公开API与命令，REQ-25追加INTAKE_SET及草稿/提取辅助接口，不另建状态库。用户已要求先跑通基础版本，实施与完整验收状态分开登记在[入口READY表](README.md)。变更只能由统筹同步通知三页，不能由一页私自改接口。
 
@@ -47,6 +47,26 @@ dispatch({
 类别仅为用户自述，不改 `sourceKind:'user_file'`、事实、事实verification、channel或cohort，不生成解析值，不改变Blob、blobKey、sha256或material.version。真实变更记录 `material_category_changed` 历史（前后类别、材料版本、旧输入版本），inputVersion+1并失效旧确认／分析／选择；迟到解析必须按原启动版本拒绝，不能偷换成新版本重试。失败保留当前原件与页面草稿。
 
 本批已通过61项Node纯逻辑回归、6项Node实际File预检和独立8项增量复核；前者包含原53项。预检刻意无IndexedDB，**不是保存或浏览器通过**。现有浏览器宿主13组定义中扩展了分类／Blob读回断言，实际运行仍为0。首页尚需移除旧5MiB／新图禁用并接线；P3反馈仍必须等待C6，不能借C2调用MATERIAL_ADD。C3榨汁杯、Excel解析、真实MoneyAI均未由本批交付。
+
+### C3 首批接口：榨汁杯首次资料与原样确认
+
+首页通过原 `dispatch({type:'LOAD_FIXTURE',payload:{fixtureId:'juicer_cup_v1'},expectedRevision,commandId})` 显式载入。继续执行已有替换确认和未保存草稿处理；页面不自行创建种子、材料、分析或选择。公共壳的合成案例菜单也提供“合成案例 · 榨汁杯”，另保留原三种子，默认空会话仍不自动载入。
+
+显式替换复用 `import { resolveDrafts } from '../shared/navigation.js'`。该公开出口原样转出既有守卫，公共壳也改走此出口；不增加另一份registry。先让用户确认替换，再 `await resolveDrafts({notify})`；返回false即中止，保留草稿。返回true后重新loadSession获取最新revision，再dispatch，不能沿用保存草稿之前的版本。`notify(message)`用于显示失败原因；默认原生确认保留保存／放弃／继续编辑选择，页面不得传恒真confirm绕过它。此出口本身不载入案例、不保存业务状态、不导航。
+
+种子首次资料：350ml便携榨汁杯、69.9元、USB-C；2026-08-21至2026-08-27，播放58000／商品点击1450／加购96／创建订单54／支付42。五个计数字段各只有一份事实，单位为对应阶段次数／订单笔数，不是独立用户人数。渠道写明“抖音短视频（合成；投流来源未拆分）”，cohort明确为同一商品、同窗的合成嵌套事件链；这不是对真实商家嵌套关系的核验。
+
+种子使用原v0.5完整draft及其evidenceLedger，没有增加另一套六组schema。productName／price／specifications与confirmedProductFacts为合成商品资料；currentProblem是老板假设，不能展示为已证实根因；constraints为不能降价／编造性能／复杂重拍；unknowns保留信任问题是否成立、投流、退款／投诉、性能细则、售后与既往动作的缺口。transcript为空、sources为manual，ledger quote逐项注明“合成演示首次资料”，没有伪造录音、文件上传或平台来源。
+
+LOAD_FIXTURE先取得新round与inputVersion，再初始化完整intake、来源及canonical投影；intake.roundId/inputVersion必须匹配当前轮，confirmedVersion仍为null。没有分析、选择、产物、执行或未来反馈。旧三种子也初始化与首页一致的完整manual空草稿，原事实不丢弃；不会再因为第一次保存草稿容器或默认focus而清fixtureId。
+
+原样INTAKE_SET以及确认后的同内容保存为无变化，保持原ID、口径和fixtureId；实际改原文、字段、来源或证据状态仍递增输入版本／降级并失效下游。INPUT_EDIT会把现有intake标stale，必须重新核对保存后再FOCUS_CONFIRM，不能放松门槛以恢复旧测试捷径。
+
+映射仅对紧邻已有的intake-owned五计数字段保留测量口径：已知原值、key/evidenceStatus、对象、窗口、平台以及来源kind/materialId/materialVersion/locator均不变，且没有冲突／更正时，才沿用原unit/channel/cohort。任何改变都不从种子模板补回；恢复旧数字也不复活旧口径。文件解析事实的归属和更正优先级不变。
+
+**C3不等于C4/C5完成。** 新种子当前仍只得到明确标注的本机有限核对步骤，五阶段专用判断、A/B路径及问答稿另待共享交付。普通同名商品不能触发合成种子或补入五个数；榨汁杯案例不能冒充MoneyAI调用。
+
+本批66项Node通过（含新增5项C3组合），先实际复现原样确认丢fixtureId再修复；P3原10组限定回归仍通过。浏览器宿主既有13组中扩展四种子及原样确认／同命令重试读回定义，实际执行0组。首页专用按钮、六组可见表现及真实确认／刷新待页面接线和运行验收。
 
 ## 1. 文件归属与依赖
 
@@ -226,7 +246,7 @@ materials仅可为当前已保存TXT/CSV/JSON的`{materialId,materialVersion,mim
 
 `ok:false`仍可含需要保留的可编辑draft；页面应进入手动核对，不显示“AI提取完成”。返回requestContext绑定启动session/round/inputVersion，采用结果前重新核对；外部变化时不得自动覆盖。超时/取消或丢回执且POST已发出时sentToMoneyAI=null，不谎称未发送。客户端8秒预算；取消不等于撤回已发送材料。导航保存必须等原文、编辑文字、来源、更正及其他待保存项全部成功，不能只保存description便离页。
 
-`shared/navigation.js`公开`navigateTo(pageId,{sourceId}={})`，只用允许的三个相对HTML路径，并检查已保存状态与跳转门槛；另公开`registerNavigationGuard({isDirty,onSave,onDiscard})`返回注销函数，页头与页面内导航统一处理内存草稿。浏览器关闭/刷新使用beforeunload标准提示；后退/前进恢复时重读已保存版本，不保证浏览器能执行异步离开保存。
+`shared/navigation.js`公开`navigateTo(pageId,{sourceId}={})`，只用允许的三个相对HTML路径，并检查已保存状态与跳转门槛；另公开`registerNavigationGuard({isDirty,onSave,onDiscard})`返回注销函数，以及用于显式会话替换的`resolveDrafts({notify}={})`，页头与页面内导航统一处理同一份内存草稿守卫。浏览器关闭/刷新使用beforeunload标准提示；后退/前进恢复时重读已保存版本，不保证浏览器能执行异步离开保存。
 
 `shared/shell.js`公开`mountShell(pageId)`，填充各HTML的`#shared-shell`与`#shared-footer`，统一导航、当前步骤与来源提示。`shared/demo-data.js`公开`buildDemoAnalysis(state)`和`buildDemoArtifact(state)`：返回显式演示/有限结果，不自行写存储或切页。
 
@@ -260,7 +280,7 @@ REQ-30覆盖旧REQ-25禁新图与5MiB限制：共享C2支持PNG/JPEG/WebP接收�
 
 共用主案例取自既有[床底收纳箱合成素材](../../../fixtures/underbed-storage.demo.json)：2只69.90元、单只外尺寸60×40×16cm，186名商品详情访客、0笔支付，5条精选咨询涉及适配。所有数据均为虚构；不能由5条咨询推断全体顾客比例。仅复用首轮允许字段，不能把文件里的下一轮反馈提前注入。
 
-统筹提供三种独立测试种子：完整合成资料、仅一句描述、存在时间/渠道冲突。页面只通过LOAD_FIXTURE显式载入。原V0.4案例可后续另登记，不混成此案例的前后增长。
+统筹提供四种独立测试种子：juicer_cup_v1（榨汁杯首次资料）、underbed_complete_v1（床底合成资料）、one_sentence_v1（仅一句描述）、scope_conflict_v1（时间／渠道冲突）。页面只通过LOAD_FIXTURE显式载入。原V0.4案例可后续另登记，不混成此案例的前后增长。
 
 `estimate`至少含`kind,target,horizon,assumptions,calculation,values,limitations,incrementalEffect`。本轮只交付`scenario`或`unavailable`：例如“若未来100名可比访客，支付率分别假设0%/1%/2%，则期望订单分别为0/1/2”。这只是条件计算，不是实际订单必在0–2的保证，更不是该动作提升0–2单。必须同时显示假设来源；没有足够依据时只显示不可估，不为每条路造不同收益。
 
@@ -274,6 +294,6 @@ Agent3只导出所选行动的TXT执行包，不另做第二套分析报告。�
 
 ## 8. SHARED_READY的最低证据
 
-统筹需在本目录入口登记：契约版本、视觉参考、共享文件清单、同源地址、实际验证项。至少验证空会话、三种种子、事务保存/失败/读回、Blob持久与删除、版本失效、补问限额、重复提交、新轮次、数据安全转义及纯函数情景计算；浏览器检查与静态检查分开报告。
+统筹需在本目录入口登记：契约版本、视觉参考、共享文件清单、同源地址、实际验证项。至少验证空会话、四种种子、事务保存/失败/读回、Blob持久与删除、版本失效、补问限额、重复提交、新轮次、数据安全转义及纯函数情景计算；浏览器检查与静态检查分开报告。
 
 READY前不得让页面Agent靠假状态运行；READY后共享文件冻结，有必要修正时由统筹单独提交变更说明，三页统一更新再测试。

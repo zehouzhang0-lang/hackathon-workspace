@@ -1,7 +1,6 @@
 import { dispatch, loadSession, subscribeSession } from './state.js';
-import { navigateTo } from './navigation.js';
+import { navigateTo, resolveDrafts } from './navigation.js';
 import { getMoneyAIStatus } from './moneyai.js';
-import { resolveDrafts } from './draft-guards.js';
 
 export function mountShell(pageId) {
   const host = document.querySelector('#shared-shell');
@@ -13,12 +12,12 @@ export function mountShell(pageId) {
   const brand = document.createElement('span');
   brand.className = 'shared-brand';
   brand.textContent = '路芽';
-  const pageTitles = { intake: '说清情况', decisions: '选择下一步', action: '行动内容' };
+  const pageTitles = { intake: '资料确认', decisions: '找到优先问题', action: '执行并记录' };
   if (pageTitles[pageId]) document.title = pageTitles[pageId] + ' · 路芽';
   const navigation = document.createElement('nav');
   navigation.className = 'shared-steps';
   navigation.setAttribute('aria-label', '本轮工作步骤');
-  [['intake', '1 说清情况'], ['decisions', '2 选择下一步'], ['action', '3 拿内容使用']].forEach(([id, text]) => {
+  [['intake', '1 资料确认'], ['decisions', '2 找到优先问题'], ['action', '3 执行并记录']].forEach(([id, text]) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'shared-step';
@@ -31,7 +30,7 @@ export function mountShell(pageId) {
   controls.className = 'shared-fixtures';
   const select = document.createElement('select');
   select.setAttribute('aria-label', '选择合成演示案例');
-  [['underbed_complete_v1', '合成案例 · 床底收纳箱'], ['one_sentence_v1', '合成案例 · 仅一句话'], ['scope_conflict_v1', '合成案例 · 口径冲突']].forEach(([value, label]) => {
+  [['juicer_cup_v1', '合成案例 · 榨汁杯'], ['underbed_complete_v1', '合成案例 · 床底收纳箱'], ['one_sentence_v1', '合成案例 · 仅一句话'], ['scope_conflict_v1', '合成案例 · 口径冲突']].forEach(([value, label]) => {
     const option = document.createElement('option');
     option.value = value; option.textContent = label; select.append(option);
   });

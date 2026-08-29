@@ -1,21 +1,35 @@
 import { requireValue } from './model.js';
 import { createMerchantIntakeDraft } from './intake-draft.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_REQUIRED_FACTS,
-  ROADSHOW_SHOE_SOURCE_SHA256 } from './roadshow-shoe-fixture.js';
+  ROADSHOW_SHOE_SOURCE_SHA256, ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS } from './roadshow-shoe-fixture.js';
 
 export const FIXTURE_IDS = Object.freeze(['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1', 'juicer_cup_v1', ROADSHOW_SHOE_FIXTURE_ID]);
 export function makeFixtureIntake(fixtureId) {
   requireValue(FIXTURE_IDS.includes(fixtureId), '未知演示案例，未创建经营草稿。');
   if (fixtureId === ROADSHOW_SHOE_FIXTURE_ID) {
-    return createMerchantIntakeDraft({
+    const draft = createMerchantIntakeDraft({
       sources: ['manual'], transcript: '',
-      merchantName: '路演固定样例｜鞋店商品报告', productName: '鞋店60个商品（路演固定样例）',
+      merchantName: '鞋店商品报告', productName: '鞋店60个商品',
       category: '鞋靴', platform: '抖音电商', currentProblem: ROADSHOW_SHOE_QUESTION,
-      desiredAction: '先看清货盘结构、累计转化表现与下一步验证',
+      desiredAction: '先看清三个账号的内容问题并选择下一步行动',
       confirmedProductFacts: ['可见报告含60行商品记录、26个字段', '累计支付GMV为506.4万元、支付订单为11,246单'],
-      constraints: ['只使用已静态读取的可见报告内容', '统计周期未注明，不判断趋势', '价格带图与全店GMV口径冲突，不采用该图结论'],
+      constraints: ['只使用已静态读取的可见报告内容和用户指定的预设演示答案', '统计周期未注明，不判断趋势', '价格带图与全店GMV口径冲突，不采用该图结论'],
       unknowns: ['底层鞋店商品数据.xlsx未随样例提供', '渠道×成交、停留、退款与投流成本未提供', '商品ID字段60行仅20个唯一值，商品主键口径待核对']
     });
+    const values = [
+      ...['merchantName', 'productName', 'category', 'platform', 'desiredAction', 'currentProblem']
+        .map((field) => [field, draft[field]]),
+      ...['confirmedProductFacts', 'constraints', 'unknowns']
+        .flatMap((field) => draft[field].map((value, index) => [field + '.' + index, value]))
+    ];
+    draft.evidenceLedger = values.map(([field, value]) => ({
+      field,
+      value: field.startsWith('unknowns.') ? null : value,
+      status: field.startsWith('unknowns.') ? 'unknown' : 'confirmed_fact',
+      source: 'manual',
+      quote: '预设演示数据｜' + field + '：' + value
+    }));
+    return createMerchantIntakeDraft(draft);
   }
   if (fixtureId !== 'juicer_cup_v1') return createMerchantIntakeDraft({ sources: ['manual'] });
   const draft = createMerchantIntakeDraft({
@@ -89,13 +103,25 @@ export function makeFixtureInput(fixtureId, context, roundId) {
         || key.endsWith('_aov_cny') || key.endsWith('_gross_margin_rate');
       const conflicting = key === 'price_band_chart_gmv_cny';
       fact(key, value, units[key] ?? null, sourceSections[key] || '可见报告', {
-        subject: '鞋店60个商品（路演固定样例）',
+        subject: '鞋店60个商品',
         evidenceStatus: reportedConclusion ? 'reported_conclusion' : 'confirmed_fact',
         verification: conflicting ? 'conflicting' : 'checked',
         source: {
           kind: 'file_extract', materialId: null, materialVersion: null,
           locator: { type: 'html_visible_report', fileName: '鞋店商品数据分析报告.html', section: sourceSections[key] || '可见报告', sha256: ROADSHOW_SHOE_SOURCE_SHA256 },
-          note: '路演固定样例／伪数据兜底；仅静态读取HTML可见报告，未执行脚本、链接或外部操作；不代表真实商家实时数据。'
+          note: '预设演示数据／伪数据兜底；仅静态读取HTML可见报告，未执行脚本、链接或外部操作；不代表真实商家实时数据。'
+        }
+      });
+    }
+    for (const [key, value] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
+      fact(key, value, null, '用户指定的预设演示答案', {
+        subject: '鞋店账号诊断',
+        evidenceStatus: 'reported_conclusion',
+        verification: 'checked',
+        source: {
+          kind: 'merchant_statement', materialId: null, materialVersion: null,
+          locator: { type: 'fixed_demo_prompt', field: key },
+          note: '该诊断文本由用户明确指定用于预设演示；不代表从鞋店HTML提取、平台实时核验或现场AI生成。'
         }
       });
     }

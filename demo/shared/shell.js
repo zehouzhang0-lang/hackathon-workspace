@@ -211,7 +211,7 @@ export function mountShell(pageId) {
     dialogBody.append(steps);
     const controls = el('div', undefined, 'shared-fixtures');
     const select = el('select'); select.setAttribute('aria-label', '选择合成演示案例');
-    for (const [value, label] of [['shoe_store_report_fixed_v1', '路演固定样例 · 鞋店商品数据'], ['juicer_cup_v1', '合成案例 · 榨汁杯'], ['underbed_complete_v1', '合成案例 · 床底收纳箱'], ['one_sentence_v1', '合成案例 · 仅一句话'], ['scope_conflict_v1', '合成案例 · 口径冲突']]) {
+    for (const [value, label] of [['shoe_store_report_fixed_v1', '鞋店商品数据'], ['juicer_cup_v1', '合成案例 · 榨汁杯'], ['underbed_complete_v1', '合成案例 · 床底收纳箱'], ['one_sentence_v1', '合成案例 · 仅一句话'], ['scope_conflict_v1', '合成案例 · 口径冲突']]) {
       const option = el('option', label); option.value = value; select.append(option);
     }
     const load = button('载入示例', 'button', async () => {

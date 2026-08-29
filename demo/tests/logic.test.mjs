@@ -20,7 +20,8 @@ import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, 
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_SOURCE_SHA256,
-  matchesRoadshowShoeQuestion, hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
+  ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, matchesRoadshowShoeQuestion,
+  hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -78,11 +79,12 @@ test('unchanged fixture intake confirmation preserves provenance, IDs and input 
   }
 });
 
-test('shoe roadshow fixture contains only reviewed visible-report data and no downstream result', () => {
+test('shoe fixed fixture separates file facts from user-specified diagnosis answers', () => {
   const h = harness(ROADSHOW_SHOE_FIXTURE_ID);
   assert.equal(h.state.input.description, '');
   assert.equal(hasRoadshowShoeFixtureCore(h.state), true);
   assert.equal(h.state.input.intake.draft.currentProblem, ROADSHOW_SHOE_QUESTION);
+  assert.equal(h.state.input.intake.draft.productName, '鞋店60个商品');
   const expected = {
     report_product_rows: 60, product_exposure_people: 6398404, product_click_people: 223696,
     add_to_cart_people: 27331, buyer_people: 9679, report_paid_gmv_cny: 5064000,
@@ -93,8 +95,18 @@ test('shoe roadshow fixture contains only reviewed visible-report data and no do
     assert.equal(fact.value, value);
     assert.equal(fact.source.kind, 'file_extract');
     assert.equal(fact.source.locator.sha256, ROADSHOW_SHOE_SOURCE_SHA256);
-    assert.match(fact.source.note, /固定样例／伪数据兜底/);
+    assert.match(fact.source.note, /预设演示数据／伪数据兜底/);
   }
+  for (const [key, value] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
+    const fact = h.state.input.facts.find((entry) => entry.key === key);
+    assert.equal(fact.value, value);
+    assert.equal(fact.source.kind, 'merchant_statement');
+    assert.equal(fact.source.locator.type, 'fixed_demo_prompt');
+    assert.equal(fact.evidenceStatus, 'reported_conclusion');
+  }
+  const ledger = h.state.input.intake.draft.evidenceLedger;
+  assert.ok(ledger.some((entry) => entry.field === 'merchantName' && entry.status === 'confirmed_fact'));
+  assert.ok(ledger.some((entry) => entry.field === 'productName' && entry.status === 'confirmed_fact'));
   assert.ok(h.state.input.unknowns.some((entry) => entry.description.includes('统计周期')));
   assert.ok(h.state.input.unknowns.some((entry) => entry.description.includes('291.0万元')));
   assert.equal(h.state.analysis, null);
@@ -115,7 +127,7 @@ test('roadshow question guard is exact apart from trim and one terminal punctuat
   }
 });
 
-test('explicit shoe fixture plus the fixed P1 question builds one stable local P2 analysis', () => {
+test('explicit shoe fixture plus the fixed P1 question builds the requested two-path local P2 analysis', () => {
   const h = harness(ROADSHOW_SHOE_FIXTURE_ID);
   const version = h.state.round.inputVersion;
   h.send('INTAKE_SET', { roundId: h.state.round.id, inputVersion: version,
@@ -128,26 +140,24 @@ test('explicit shoe fixture plus the fixed P1 question builds one stable local P
   assert.equal(generated.ok, true, generated.message);
   const analysis = generated.analysis;
   assert.equal(analysis.mode, 'demo_fixture');
-  assert.equal(analysis.status, 'limited');
+  assert.equal(analysis.status, 'ready');
   assert.equal(analysis.analysisSource, 'local_fallback');
   assert.equal(Object.hasOwn(analysis, 'providerReceipt'), false);
   assert.equal(Object.hasOwn(analysis, 'skillIds'), false);
-  assert.equal(analysis.paths.length, 1);
-  assert.match(analysis.summary, /60个商品累计曝光6,398,404人/);
-  assert.match(analysis.summary, /506\.4万元、11,246单/);
-  assert.match(analysis.priority.title, /大众40款贡献52\.9% GMV和10,104单/);
-  assert.match(analysis.priority.title, /高端20款贡献47\.1%和1,142单/);
-  assert.match(analysis.priority.reason, /3\.50%/);
-  assert.match(analysis.priority.reason, /12\.22%/);
-  assert.match(analysis.priority.reason, /4\.33%/);
-  assert.match(analysis.priority.hypothesis.text, /506\.4万元、11,246单/);
-  assert.match(analysis.priority.hypothesis.text, /本机推断（待验证）/);
-  assert.match(analysis.paths[0].action, /只改主图或标题其中一项/);
-  const evidence = analysis.paths[0].evidenceRefs.map((entry) => entry.summary + ' ' + (entry.calculation || '')).join('\n');
-  assert.match(evidence, /真实读取值与本机算术复核/);
-  assert.match(evidence, /报告已有结论（仅转述）/);
-  assert.match(evidence, /本机推断（待验证）/);
-  assert.doesNotMatch(analysis.summary + '\n' + analysis.priority.reason, /43\.9%|4\.5%/);
+  assert.equal(analysis.paths.length, 2);
+  assert.deepEqual(analysis.paths.map((path) => path.optionLabel), ['A', 'B']);
+  assert.equal(analysis.priority.title, '三个账号的优先问题已经定位');
+  assert.match(analysis.priority.reason, /17 条视频中位播放仅 1\.07 万/);
+  assert.match(analysis.priority.reason, /固定 20:30 发布、完播率稳定 35%~52%/);
+  assert.match(analysis.priority.reason, /年轻潮流人群（男75%）错位/);
+  assert.match(analysis.priority.reason, /搬运混剪 70% 导致疑似降权/);
+  assert.match(analysis.paths[0].action, /立即停发搬运\/混剪内容/);
+  assert.match(analysis.paths[0].action, /固定发布时间到粉丝活跃时段/);
+  assert.match(analysis.paths[0].action, /本周必入 Top3/);
+  assert.match(analysis.paths[1].action, /德训鞋百搭/);
+  assert.match(analysis.paths[1].action, /评论区需求回应/);
+  assert.match(analysis.paths[1].action, /货源透明/);
+  assert.ok(analysis.paths.every((path) => !Object.hasOwn(path, 'skillId')));
   assert.ok(analysis.limitations.some((entry) => entry.includes('291.0万元')));
   assert.ok(analysis.processing.every((entry) => entry.kind === 'local_rule'));
   h.send('ANALYSIS_SET', { analysis });

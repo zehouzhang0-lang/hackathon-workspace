@@ -1,7 +1,7 @@
 import { getAcceptedExperimentRound } from './experiment-round.js';
 import { buildFunnelSnapshot, latestAnalysisReview, analysisReviewPolicy, applyAnalysisReviewPolicy, juicerProductFacts, buildDemoBreakpoint, buildDemoDataQuality } from './analysis-evidence.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, matchesRoadshowShoeQuestion,
-  hasRoadshowShoeFixtureCore } from './roadshow-shoe-fixture.js';
+  hasRoadshowShoeFixtureCore, ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS } from './roadshow-shoe-fixture.js';
 
 const errorResult = (code, message) => ({ ok: false, code, message });
 const valid = (state) => state?.input?.confirmedVersion === state?.round?.inputVersion;
@@ -37,7 +37,7 @@ export function buildDemoAnalysis(state) {
     if (!comparable && funnel.status !== 'comparable') limitations.push('数据缺少可比口径，不能计算成交漏斗或确定根因。');
     if (state.fixtureId === 'juicer_cup_v1') limitations.push('榨汁杯为显式合成首次资料；A/B仅为本机待验证方案，未调用专家Skill、真实模型或外部 AI。');
     if (shoeReady) limitations.unshift(
-      '路演固定样例／伪数据兜底：以下为本机固定展示，不是现场AI实时分析，也不代表真实商家效果。',
+      '预设演示数据／伪数据兜底：以下为本机固定展示，不是现场AI实时分析，也不代表真实商家效果。',
       '报告未注明统计周期；底层鞋店商品数据.xlsx未随样例提供，只能核对HTML可见报告与本机算术。',
       '报告共60行但商品ID仅20个唯一值；商品名虽为60个唯一值，商品主键口径仍待核对。',
       '价格带图五档GMV合计291.0万元，与全店506.4万元范围不一致；本轮排除“43.9%”等价格带贡献结论。',
@@ -117,78 +117,63 @@ export function buildDemoAnalysis(state) {
       };
     }
 
-    function shoePath() {
-      const keys = ['product_exposure_people', 'product_click_people', 'add_to_cart_people', 'buyer_people',
-        'report_paid_gmv_cny', 'report_paid_order_count', 'mass_product_count', 'mass_paid_gmv_cny',
-        'mass_paid_order_count', 'high_end_product_count', 'high_end_paid_gmv_cny', 'high_end_paid_order_count'];
-      const result = path('先挑一款高曝光低转化商品做单变量测试',
-        '先补同一商品、同一渠道、同一固定观察窗的基线；只改主图或标题其中一项，不追加投放，再比较曝光到点击率。', keys);
-      const raw = Object.fromEntries(keys.map((key) => [key, availableFact(state, key)]));
-      const ids = keys.map((key) => raw[key]?.id).filter(Boolean);
-      const flowIds = ['product_exposure_people', 'product_click_people', 'add_to_cart_people', 'buyer_people']
-        .map((key) => raw[key].id);
-      const splitIds = ['mass_product_count', 'mass_paid_gmv_cny', 'mass_paid_order_count',
-        'high_end_product_count', 'high_end_paid_gmv_cny', 'high_end_paid_order_count'].map((key) => raw[key].id);
-      const reportIds = ['report_dual_engine_conclusion', 'report_search_share', 'report_search_conversion_correlation',
-        'report_product_card_share', 'report_product_card_conversion_correlation']
-        .map((key) => availableFact(state, key).id);
-      const conflict = availableFact(state, 'price_band_chart_gmv_cny');
-      const exposureToClick = raw.product_click_people.value / raw.product_exposure_people.value;
-      const clickToCart = raw.add_to_cart_people.value / raw.product_click_people.value;
-      const clickToBuyer = raw.buyer_people.value / raw.product_click_people.value;
-      const cartToBuyer = raw.buyer_people.value / raw.add_to_cart_people.value;
-      const exposureToBuyer = raw.buyer_people.value / raw.product_exposure_people.value;
-      result.validationMetric = '曝光到点击率（同商品、同窗口、同渠道的点击人数 / 曝光人数）';
+    function shoePath(optionLabel) {
+      const diagnosisKeys = Object.keys(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS);
+      const diagnoses = diagnosisKeys.map((key) => availableFact(state, key));
+      const ids = diagnoses.map((fact) => fact.id);
+      const isA = optionLabel === 'A';
+      const title = isA ? '先稳住账号健康与内容节奏' : '复用爆款结构并回应评论需求';
+      const action = isA
+        ? '运动户外鞋旗舰店：立即停发搬运/混剪内容，补齐头像、昵称、简介基础设置（当前全缺），消除疑似降权风险，并去创作者中心核查违规记录，确认健康度状态后再谈内容；女鞋工厂直营店：固定发布时间到粉丝活跃时段（10:00 或 21:00），一周内停止随机发布，统一封面模板，封面加大字号人群标签（如「妈妈鞋」「学生党通勤」），让算法知道推给谁；国潮球鞋实验室：测评与推荐二选一——推荐向固定「本周必入 Top3」栏目，测评向固定「实测拆解」栏目，一周内停止内容类型摇摆，昵称保留「实验室」但简介补一句价值主张（如「每周三实测 3 双国潮鞋」）。'
+        : '把「德训鞋百搭」和「AJ平替实测」两条爆款逐帧拆解，提炼成自家选题模板（标题公式 + 前3秒钩子 + 结尾引导），产出 10 个备选选题；导出全部评论按需求聚类，选出下周一期的「评论区需求回应」选题并拍出来；女鞋工厂直营店拍第一条「货源透明」内容（仓库随手拍 + 29.9指向），发布后置顶评论区「工厂实拍」旧链接。';
+      const result = path(title, action, diagnosisKeys);
+      result.optionLabel = optionLabel;
+      result.validationMetric = isA ? '账号健康状态、发布节奏与内容栏目是否按计划完成'
+        : '10个备选选题、评论需求聚类与首条货源透明内容是否按计划完成';
       result.prerequisites = [
-        { ...condition('补齐明确统计周期，并确认曝光与点击来自同一商品、同一渠道和同一观察窗', flowIds), status: 'unknown' },
-        { ...condition('只选主图或标题一个变量；保存原版本，价格、投流和其他页面保持不变'), status: 'unknown' }
+        { ...condition('先核对三份账号诊断来自用户指定的预设演示答案，不冒充平台实时读取或AI现场结论', ids), status: 'unknown' },
+        { ...condition('执行前由账号负责人核对违规记录、素材权利、商品信息和可公开范围'), status: 'unknown' }
       ];
-      result.cost.money.note = '计划不追加投放；实际制作、机会成本与潜在损失仍未知。';
-      result.cost.time.note = '只改一个变量，但实际准备与观察耗时取决于流量，当前不可估。';
+      result.cost.money.note = '本轮未预设新增投流；制作、人工与机会成本仍需现场核对。';
+      result.cost.time.note = '一周内完成是演示计划，不是效果或工期保证。';
       result.risk = [{
-        id: id(), description: '统计窗口、渠道或流量结构变化会破坏可比性；短期波动不能当作因果效果。',
-        trigger: condition('同期改价、追加投放、换渠道或出现退款／投诉异常时，停止比较', ids),
-        stop: condition('暂停下结论，先记录同期变化与风险'),
-        restore: condition('保留实验前主图或标题，由商家核对后决定是否恢复'), sourceFactIds: ids, assumptionIds: []
+        id: id(),
+        description: '诊断未经过平台实时核验；不得把疑似降权、受众错位或发布时间差异写成已确认因果。',
+        trigger: condition('账号后台、违规记录或真实发布数据与预设答案不一致', ids),
+        stop: condition('停止沿用不一致的诊断，保留原记录并重新核对'),
+        restore: condition('由账号负责人确认真实状态后再决定是否恢复原内容安排'),
+        sourceFactIds: ids,
+        assumptionIds: []
       }];
-      result.evidenceRefs = [
-        { id: id(), kind: 'calculation', factIds: flowIds, sourceIds: flowIds.map((factId) => 'fact:' + factId),
-          summary: '真实读取值与本机算术复核：曝光6,398,404人、点击223,696人、加购27,331人、成交9,679人。',
-          calculation: '223,696 / 6,398,404 = ' + (exposureToClick * 100).toFixed(2)
-            + '%；27,331 / 223,696 = ' + (clickToCart * 100).toFixed(2)
-            + '%；9,679 / 223,696 = ' + (clickToBuyer * 100).toFixed(2)
-            + '%；9,679 / 27,331 = ' + (cartToBuyer * 100).toFixed(2)
-            + '%；9,679 / 6,398,404 = ' + (exposureToBuyer * 100).toFixed(2) + '%。' },
-        { id: id(), kind: 'observation', factIds: splitIds, sourceIds: splitIds.map((factId) => 'fact:' + factId),
-          summary: '真实读取值：大众40款贡献267.7万元GMV、10,104单；高端20款贡献238.7万元GMV、1,142单。', calculation: null },
-        { id: id(), kind: 'inference', factIds: reportIds, sourceIds: reportIds.map((factId) => 'fact:' + factId),
-          summary: '报告已有结论（仅转述）：大众款承担销量、高端款承担高客单；报告还写到搜索占比29.4%、r=0.70，商品卡占44%、r=-0.75。相关不等于因果。', calculation: null },
-        { id: id(), kind: 'inference', factIds: flowIds, sourceIds: flowIds.map((factId) => 'fact:' + factId),
-          summary: '本机推断（待验证）：先从高曝光商品的点击承接入手；价格、流量匹配、详情页承接仍可能共同影响结果，不能定因。', calculation: null }
-      ];
-      result.counterEvidence = [
-        { id: id(), kind: 'observation', factIds: [conflict.id, raw.report_paid_gmv_cny.id],
-          sourceIds: ['fact:' + conflict.id, 'fact:' + raw.report_paid_gmv_cny.id],
-          summary: '数据冲突：价格带图五档GMV仅合计291.0万元，未覆盖或无法对应全店506.4万元；不采用43.9%等贡献判断。', calculation: '291.0万元 ≠ 506.4万元。' },
-        { id: id(), kind: 'inference', factIds: [], sourceIds: ['input:description'],
-          summary: '统计周期、渠道×成交、停留、退款和投流成本缺失；当前不能判断趋势、利润质量或行动增量。', calculation: null }
-      ];
-      result.estimate.target = { metric: 'exposure_to_click_rate', unit: '比例',
-        subject: '选定的一款鞋类商品', channel: null, cohort: null };
-      result.estimate.horizon.description = '需先补同一商品、同一渠道的固定观察窗';
-      result.estimate.limitations = ['没有统计周期、流量分层或同口径基线，不能估计未来结果、成功概率或行动增量。'];
+      result.evidenceRefs = [{
+        id: id(), kind: 'observation', factIds: ids, sourceIds: ids.map((factId) => 'fact:' + factId),
+        summary: '以下三账号诊断为用户指定的预设演示答案，已按原文保存来源；未从鞋店HTML提取，也未做平台实时核验。',
+        calculation: null
+      }];
+      result.counterEvidence = [{
+        id: id(), kind: 'inference', factIds: [], sourceIds: ['input:description'],
+        summary: '真实账号后台、违规记录、逐条视频明细与评论原文尚未在本轮读取；执行前仍需核对。',
+        calculation: null
+      }];
+      result.estimate.target = {
+        metric: isA ? 'account_health_and_content_consistency' : 'topic_and_comment_response_delivery',
+        unit: '完成状态', subject: '三个鞋类账号', channel: '抖音', cohort: null
+      };
+      result.estimate.horizon.description = '预设演示计划为一周；真实观察窗由账号负责人确认';
+      result.estimate.limitations = ['只列执行动作，不估计播放、成交、成功概率或行动增量。'];
       result.experiment = {
-        change: '只修改主图或标题其中一项',
-        keepFixed: ['商品与价格', '投流预算与来源', '另一项未选变量', '详情页其他内容'],
+        change: isA ? '先修账号健康、发布节奏与内容栏目' : '拆解爆款结构、聚类评论需求并制作货源透明内容',
+        keepFixed: ['不伪造平台结论', '不自动发布', '不自动修改账号资料或投流'],
         target: { ...result.estimate.target },
-        window: { description: '先约定同一商品、同一渠道的固定观察窗；窗口未满时保持未知。', start: null, end: null },
-        minSample: null, sourceFactIds: ids, assumptionIds: [],
-        limitations: ['当前没有可证明统计充分的最低样本；观察窗、渠道或投流变化时不判胜负。',
-          '订单或GMV变化不能直接归因于本次单变量修改。'],
-        guardrails: [condition('退款、投诉或有效流量明显恶化时先暂停，缺失不视为安全', ids)],
-        stopConditions: [condition('出现不实描述、口径变化或同期追加投流时停止比较', ids)],
-        restoreConditions: [condition('确认风险或表现恶化且有原版本时，由商家决定恢复')],
-        restoreSteps: [condition('实验前保存原主图或标题与修改时间'), condition('需要恢复时手动使用原版本；应用不会自动修改商品页')]
+        window: { description: '演示计划：一周内完成动作并记录结果；未执行或未读取时保持未知。', start: null, end: null },
+        minSample: null,
+        sourceFactIds: ids,
+        assumptionIds: [],
+        limitations: ['预设答案不是实时AI分析、平台诊断或效果保证。', '行动完成与业务改善是两个不同事件。'],
+        guardrails: [condition('发现侵权、违规或账号健康风险时先暂停并核对', ids)],
+        stopConditions: [condition('真实后台事实与预设诊断不一致时停止沿用该判断', ids)],
+        restoreConditions: [condition('保留修改前账号与内容版本，由负责人决定是否恢复')],
+        restoreSteps: [condition('执行前记录账号资料、发布节奏和内容版本'), condition('需要恢复时由负责人手动恢复；应用不会自动发布或改号')]
       };
       return result;
     }
@@ -291,7 +276,7 @@ export function buildDemoAnalysis(state) {
         path('先统一尺寸咨询回复', '先使用一份不保证适配的测量与核对回复，记录顾客仍不清楚的地方。', ['external_length', 'external_width', 'external_height', 'dimension_scope', 'selected_inquiries'])
       ]
       : juicerReady ? [juicerPath('juicer_first_screen'), juicerPath('juicer_question_video')]
-      : shoeReady ? [shoePath()]
+      : shoeReady ? [shoePath('A'), shoePath('B')]
       : state.fixtureId || hasTraceableFact
         ? [path('先留一份可核对的记录', '选择同一商品、同一渠道和同一时间窗口的一份现有记录，保留原值与出处，再比较变化。', ['product_detail_visitors', 'paid_orders'])]
         : [];
@@ -302,47 +287,46 @@ export function buildDemoAnalysis(state) {
         : '当前路径均不可执行或原路径无法核对，本机规则尚无有依据的替代方案；已保留原因，不自动选路。');
     }
     const priorityActive = juicerReady && paths.some((entry) => entry.actionKey);
-    const shoeFacts = shoeReady ? Object.fromEntries(['product_exposure_people', 'product_click_people', 'add_to_cart_people',
-      'buyer_people', 'report_paid_gmv_cny', 'report_paid_order_count', 'mass_product_count', 'mass_paid_gmv_cny',
-      'mass_paid_order_count', 'high_end_product_count', 'high_end_paid_gmv_cny', 'high_end_paid_order_count',
-      'report_dual_engine_conclusion'].map((key) => [key, availableFact(state, key)])) : null;
+    const shoeFacts = shoeReady ? Object.fromEntries(Object.keys(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)
+      .map((key) => [key, availableFact(state, key)])) : null;
     const priority = {
       status: priorityActive ? 'hypothesis' : 'unavailable',
       stage: priorityActive ? 'click_cart' : null,
       fromKey: priorityActive ? 'product_clicks' : null, toKey: priorityActive ? 'add_to_carts' : null,
       title: priorityActive ? '这轮先看：商品点击后的价值与信任承接'
-        : shoeReady ? '路演固定样例｜大众40款贡献52.9% GMV和10,104单；高端20款贡献47.1%和1,142单' : '当前不确定优先验证环节',
+        : shoeReady ? '三个账号的优先问题已经定位' : '当前不确定优先验证环节',
       reason: priorityActive ? routing.reason + ' ' + routing.rule.description + ' 在不能降价、不编造性能、不复杂重拍的限制下，一轮只改一个变量。'
-        : shoeReady ? '本机复算：曝光到点击3.50%、点击到加购12.22%、点击到成交4.33%、加购到成交35.41%、曝光到成交0.15%。这些是累计横截面，不是趋势或因果结论。'
+        : shoeReady ? [
+          ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS.female_factory_diagnosis,
+          ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS.sneaker_lab_diagnosis,
+          ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS.outdoor_flagship_diagnosis
+        ].join('\n\n')
         : reviewPolicy.withdrawn ? '已撤回被质疑的假设，等待可核对的新依据。' : routing.reason + ' 商品事实或可执行路径不足时不生成固定A/B。',
       rootCauseConfirmed: false,
       facts: priorityActive ? [{ text: '当前合成资料记录' + funnel.stages[1].value + '次商品点击、' + funnel.stages[2].value + '次加购。', sourceFactIds: [...funnel.stages[1].factIds, ...funnel.stages[2].factIds] }]
-        : shoeReady ? [
-          { text: '真实读取值：60个商品累计曝光6,398,404人、点击223,696人、加购27,331人、成交9,679人；支付GMV 506.4万元、11,246单。',
-            sourceFactIds: ['product_exposure_people', 'product_click_people', 'add_to_cart_people', 'buyer_people', 'report_paid_gmv_cny', 'report_paid_order_count'].map((key) => shoeFacts[key].id) },
-          { text: '真实读取值：大众40款贡献52.9% GMV和10,104单；高端20款贡献47.1% GMV和1,142单。',
-            sourceFactIds: ['mass_product_count', 'mass_paid_gmv_cny', 'mass_paid_order_count', 'high_end_product_count', 'high_end_paid_gmv_cny', 'high_end_paid_order_count'].map((key) => shoeFacts[key].id) },
-          { text: '报告已有结论（未独立验证）：大众款承担销量，高端款承担高客单。', sourceFactIds: [shoeFacts.report_dual_engine_conclusion.id] }
-        ] : [],
+        : shoeReady ? Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS).map(([key, value]) => ({
+          text: value,
+          sourceFactIds: [shoeFacts[key].id],
+          sourceIds: ['fact:' + shoeFacts[key].id]
+        })) : [],
       hypothesis: priorityActive ? { text: '商品价值、适用边界或购买风险说明不足，可能增加点击后的犹豫；尚未证实。', sourceFactIds: ownerHypothesis ? [ownerHypothesis.id] : [], sourceIds: ownerHypothesis ? ['fact:' + ownerHypothesis.id] : ['input:description'] }
-        : shoeReady ? { text: '读取值：60个商品累计曝光639.8万人、点击22.37万人、成交9,679人，支付GMV 506.4万元、11,246单；复算曝光到点击3.50%、点击到成交4.33%。本机推断（待验证）：先挑一款高曝光低转化商品，只改主图或标题一个变量；高端线表现可能同时受价格、流量匹配或详情页承接影响，现有报告不能定因。',
-          sourceFactIds: ['product_exposure_people', 'product_click_people', 'buyer_people'].map((key) => shoeFacts[key].id),
-          sourceIds: ['product_exposure_people', 'product_click_people', 'buyer_people'].map((key) => 'fact:' + shoeFacts[key].id) } : null,
-      unknowns: shoeReady ? ['统计周期、日均与趋势未知。', '渠道×成交、停留、退款与投流成本未知。', '底层xlsx和商品主键口径待核对。']
+        : null,
+      unknowns: shoeReady
+        ? ['预设诊断尚未通过账号后台、违规记录、逐条视频与评论原文做现场核验。']
         : ['价格、商品吸引力或流量质量是否影响加购仍未知。', '投流、退款、投诉与真实顾客疑问资料未提供。']
     };
 
     const lastFeedback = state.feedbackRecords.at(-1);
     let summary = completeDemo ? '先把顾客反复问到的信息说清楚，是当前可以比较的两种小动作；它们不是已证实的成交原因。'
       : priorityActive ? '先验证商品点击后的价值与信任承接：A只改详情页首屏，B围绕一个真实问题做实测内容；仍不是根因结论。'
-        : shoeReady ? '报告显示60个商品累计曝光6,398,404人、点击223,696人、加购27,331人、成交9,679人；支付GMV 506.4万元、11,246单。报告未注明统计周期，不能据此判断趋势。'
+        : shoeReady ? '已按用户指定的预设演示答案定位三个鞋类账号的主要问题，并给出A/B两组行动；未调用真实AI或专家Skill。'
         : paths.length ? '现有资料不足以判断唯一原因，先给出一个可以执行的核对步骤。' : '已保留商家反馈，当前没有足够依据给出可执行的新方案。';
     if (review) summary += review.stance === 'agree' ? ' 商家认可当前感受，不代表根因已被证实。'
       : review.stance === 'uncertain' ? ' 商家表示不确定，事实和假设保持分开。'
         : review.stance === 'disagree' ? ' 已按异议撤回原假设，重新判断仍需要资料。' : ' 已排除明确做不了的方案，未记录为执行失败。';
     if (lastFeedback) summary += ' 本轮读取了已保存的本地反馈；执行与观察仍按原自述保留，不代表外部服务已读取历史。';
     return { ok: true, analysis: { id: null, savedAt: null, roundId: state.round.id, inputVersion: state.round.inputVersion,
-      status: paths.length && (completeDemo || priorityActive) ? 'ready' : 'limited', mode, summary, paths, limitations,
+      status: paths.length && (completeDemo || priorityActive || shoeReady) ? 'ready' : 'limited', mode, summary, paths, limitations,
       prdVersion: '1.0', analysisSource: 'local_fallback', routing, dataQuality,
       funnel, priority, reviewId: review?.id ?? null, reviewIds: reviewPolicy.reviewIds,
       processing: shoeReady ? [

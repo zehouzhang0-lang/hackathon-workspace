@@ -1490,7 +1490,7 @@ function startIntakePage() {
       && hasRoadshowShoeFixtureCore(state) && matchesRoadshowShoeQuestion(ui.description.value);
     if (roadshowFixed) {
       contextDraft = local.draft; contextBindings = local.sourceBindings; contextOrigin = origin; contextDirty = true;
-      reviewMessage = "路演固定样例／伪数据兜底：已载入经静态审查的可见报告摘录；本次未请求外部AI，也未执行HTML脚本、链接或外部操作。";
+      reviewMessage = "预设演示数据／伪数据兜底：已载入经静态审查的可见报告摘录；本次未请求外部AI，也未执行HTML脚本、链接或外部操作。";
       organizationVisible = true; readyToAnalyze = false;
       setIntakeStage("confirming", "固定样例已在本机整理，等待核对；尚未开始分析。");
       render();
@@ -1931,7 +1931,7 @@ function startIntakePage() {
     ui.imageMaterials.hidden = !state.input.materials.some((material) => material.mime.startsWith("image/"));
     ui.demoNotice.hidden = !state.fixtureId;
     ui.demoNotice.textContent = state.fixtureId === ROADSHOW_SHOE_FIXTURE_ID
-      ? "路演固定样例／伪数据兜底：仅用于预定展示，不代表现场AI实时分析或真实商家效果"
+      ? "预设演示数据／伪数据兜底：仅用于预定展示，不代表现场AI实时分析或真实商家效果"
       : "演示案例为合成数据，不代表真实商家效果";
     for (const material of state.input.materials) {
       const card = element("article", undefined, "material-card");

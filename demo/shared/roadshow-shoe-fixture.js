@@ -33,6 +33,12 @@ export const ROADSHOW_SHOE_REQUIRED_FACTS = Object.freeze({
   report_dual_engine_conclusion: '大众款承担销量，高端款承担高客单'
 });
 
+export const ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS = Object.freeze({
+  female_factory_diagnosis: '女鞋工厂直营店：平均播放 5.1 万是假象——17 条视频中位播放仅 1.07 万，靠 2 条爆款拉动。发布时段随机（10:00~21:20 乱发）、混剪占 40%、封面版式乱。对照手工皮鞋工坊：固定 20:30 发布、完播率稳定 35%~52%、播放无低位塌方——这就是「稳定出量 vs 碰运气」的差距。',
+  sneaker_lab_diagnosis: '国潮球鞋实验室：测评/穿搭/品牌故事无主次，封面三种风格混用，人设「实验室」与年轻潮流人群（男75%）错位。',
+  outdoor_flagship_diagnosis: '运动户外鞋旗舰店：最紧急——搬运混剪 70% 导致疑似降权（播放长期三位数、搜索偶现异常）。账号基础（头像/昵称/简介）全缺，先解决健康度再谈内容。'
+});
+
 export function normalizeRoadshowShoeQuestion(value) {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/[？?。]$/u, '').trim();
@@ -50,6 +56,12 @@ export function hasRoadshowShoeFixtureCore(state) {
     if (matches.length !== 1 || !Object.is(matches[0].value, expected)
       || matches[0].source?.kind !== 'file_extract' || !matches[0].source?.locator) return false;
   }
-  return state.input.intake?.draft?.productName === '鞋店60个商品（路演固定样例）'
+  for (const [key, expected] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
+    const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
+    if (matches.length !== 1 || matches[0].value !== expected
+      || matches[0].source?.kind !== 'merchant_statement'
+      || matches[0].source?.locator?.type !== 'fixed_demo_prompt') return false;
+  }
+  return state.input.intake?.draft?.productName === '鞋店60个商品'
     && Array.isArray(state.input.intake.sourceBindings) && state.input.intake.sourceBindings.length === 0;
 }

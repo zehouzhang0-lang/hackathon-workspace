@@ -1353,7 +1353,7 @@ async function generateAnalysis() {
     const fixed = generated?.analysis;
     if (!generated?.ok || fixed?.mode !== 'demo_fixture' || fixed.analysisSource !== 'local_fallback'
       || fixed.sourceFixtureId !== snapshot.fixtureId || Object.hasOwn(fixed, 'providerReceipt')
-      || Object.hasOwn(fixed, 'skillIds') || fixed.paths?.length !== 1) {
+      || Object.hasOwn(fixed, 'skillIds') || fixed.paths?.length !== 2) {
       fail(generated, '固定样例身份、问题或数据哈希不匹配；没有生成预定答案。');
     }
     const key = `analysis:${snapshot.round.id}:${snapshot.round.inputVersion}`;
@@ -1361,7 +1361,7 @@ async function generateAnalysis() {
     if (saved.analysis?.mode !== 'demo_fixture' || saved.analysis?.sourceFixtureId !== snapshot.fixtureId) {
       throw reviewError('固定样例保存后身份不一致；未把它当作真实AI结果。', 'read_failed');
     }
-    message('路演固定样例／伪数据兜底已在本机生成；未调用真实AI或专家Skill。', 'success');
+    message('预设演示数据／伪数据兜底已在本机生成；未调用真实AI或专家Skill。', 'success');
     return;
   }
   const summaryResult = buildMoneyAIAnalysisSummary(snapshot);

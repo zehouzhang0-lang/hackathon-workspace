@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$MoneyAIHome = $env:MONEYAI_HOME,
     [string]$ProjectDir,

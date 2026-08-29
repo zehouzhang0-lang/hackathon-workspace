@@ -20,7 +20,8 @@ import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, 
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_SOURCE_SHA256,
-  ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, ROADSHOW_SHOE_PLAN_A_STEPS, ROADSHOW_SHOE_PLAN_B_STEPS,
+  ROADSHOW_SHOE_REQUIRED_FACTS, ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS,
+  ROADSHOW_SHOE_PLAN_A_STEPS, ROADSHOW_SHOE_PLAN_B_STEPS,
   matchesRoadshowShoeQuestion,
   canUpgradeRoadshowShoeFixture, hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
 
@@ -131,6 +132,27 @@ test('legacy shoe fixture state is eligible for one safe upgrade but ordinary in
   wrongDigest.input.facts.find((fact) => fact.key === 'roadshow_source_sha256').value = 'WRONG';
   assert.equal(canUpgradeRoadshowShoeFixture(wrongDigest), false);
   assert.equal(canUpgradeRoadshowShoeFixture(harness().state), false);
+});
+
+test('legacy shoe fixture recovery tolerates only exact duplicate fixed facts', () => {
+  const legacy = structuredClone(harness(ROADSHOW_SHOE_FIXTURE_ID).state);
+  legacy.fixtureId = null;
+  legacy.input.facts = legacy.input.facts.filter((fact) =>
+    !Object.hasOwn(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, fact.key));
+  const requiredKeys = new Set(Object.keys(ROADSHOW_SHOE_REQUIRED_FACTS));
+  legacy.input.facts.push(...legacy.input.facts
+    .filter((fact) => requiredKeys.has(fact.key))
+    .map((fact, index) => ({ ...structuredClone(fact), id: `legacy_duplicate_${index}` })));
+  legacy.input.intake.draft.productName = '鞋店60个商品（旧版标识）';
+  assert.equal(canUpgradeRoadshowShoeFixture(legacy), true);
+
+  const conflictingValue = structuredClone(legacy);
+  conflictingValue.input.facts.find((fact) => fact.id === 'legacy_duplicate_0').value = 'WRONG';
+  assert.equal(canUpgradeRoadshowShoeFixture(conflictingValue), false);
+
+  const conflictingSource = structuredClone(legacy);
+  conflictingSource.input.facts.find((fact) => fact.id === 'legacy_duplicate_1').source.locator.sha256 = 'WRONG';
+  assert.equal(canUpgradeRoadshowShoeFixture(conflictingSource), false);
 });
 
 test('P2 legacy shoe recovery dispatches load, exact intake and confirmation before returning', async () => {

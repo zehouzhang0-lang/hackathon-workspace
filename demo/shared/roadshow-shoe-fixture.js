@@ -60,6 +60,12 @@ export function matchesRoadshowShoeQuestion(value) {
   return normalizeRoadshowShoeQuestion(value) === ROADSHOW_SHOE_QUESTION;
 }
 
+function everyMatchingFactIsExact(facts, key, expected, sourceMatches) {
+  const matches = facts.filter((fact) => fact?.key === key && fact.availability === 'known');
+  return matches.length > 0 && matches.every((fact) => Object.is(fact.value, expected)
+    && sourceMatches(fact.source));
+}
+
 export function canUpgradeRoadshowShoeFixture(state) {
   // Older saved sessions may have lost fixtureId after the intake was edited. The complete
   // source digest + required fact set below is the fixture identity; never infer it from a
@@ -67,10 +73,12 @@ export function canUpgradeRoadshowShoeFixture(state) {
   if (!Array.isArray(state?.input?.facts)
     || !Array.isArray(state.input?.materials) || state.input.materials.length) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_SHOE_REQUIRED_FACTS)) {
-    const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
-    if (matches.length !== 1 || !Object.is(matches[0].value, expected)
-      || matches[0].source?.kind !== 'file_extract'
-      || matches[0].source?.locator?.sha256 !== ROADSHOW_SHOE_SOURCE_SHA256) return false;
+    // Several historical reducers retained an identical copy when the same fixed sample was
+    // confirmed again. Accept those byte-identical/source-identical copies, but fail closed if
+    // even one matching fact disagrees with the fixed report.
+    if (!everyMatchingFactIsExact(state.input.facts, key, expected, (source) =>
+      source?.kind === 'file_extract'
+      && source?.locator?.sha256 === ROADSHOW_SHOE_SOURCE_SHA256)) return false;
   }
   return Array.isArray(state.input.intake?.sourceBindings) && state.input.intake.sourceBindings.length === 0;
 }
@@ -78,10 +86,9 @@ export function canUpgradeRoadshowShoeFixture(state) {
 export function hasRoadshowShoeFixtureCore(state) {
   if (state?.fixtureId !== ROADSHOW_SHOE_FIXTURE_ID || !canUpgradeRoadshowShoeFixture(state)) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
-    const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
-    if (matches.length !== 1 || matches[0].value !== expected
-      || matches[0].source?.kind !== 'merchant_statement'
-      || matches[0].source?.locator?.type !== 'fixed_demo_prompt') return false;
+    if (!everyMatchingFactIsExact(state.input.facts, key, expected, (source) =>
+      source?.kind === 'merchant_statement'
+      && source?.locator?.type === 'fixed_demo_prompt')) return false;
   }
   return state.input.intake?.draft?.productName === '鞋店60个商品';
 }

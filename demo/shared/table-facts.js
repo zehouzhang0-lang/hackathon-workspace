@@ -9,8 +9,8 @@ import { readWorkbookSheets } from "./xlsx-reader.js";
 
 const MAX_ROWS = 500;
 const CALIBER_SHEET_NAMES = new Set(["口径说明", "数据说明", "说明", "备注"]);
-const WINDOW_SOURCE_HEADERS = new Set(["发布时间", "发布日期"]);
-const SUBJECT_HEADERS = ["主播/达人名", "达人名", "主播", "账号名称", "账号", "商家名称", "店铺名", "作品id", "视频id", "名称"];
+const WINDOW_SOURCE_HEADERS = new Set(["发布时间", "发布日期", "日期"]);
+const SUBJECT_HEADERS = ["主播/达人名", "达人名", "主播", "账号名称", "账号", "商家名称", "店铺名", "作品id", "视频id", "名称", "商品名称", "所属账号", "标题"];
 const IGNORED_HEADERS = new Set(["序号", "抖音号", "作品标题", "作品类型", "作品作者", "作品网址", "作者主页", "是否全屏",
   "是否购物车", "有无本地生活", "主页备注", "合集备注", "关键词备注", "作品备注", "作者uid", "作者secuid", "封面网址",
   "视频源网址", "话题内容", "作品时长", "作品质量", "直播间标题", "案例类型"]);
@@ -34,7 +34,16 @@ const COLUMN_ALIASES = [
   { headers: ["点赞量", "获赞量"], key: "likes", unit: "次" },
   { headers: ["评论量"], key: "comments", unit: "条" },
   { headers: ["收藏量"], key: "collects", unit: "次" },
-  { headers: ["分享量"], key: "shares", unit: "次" }
+  { headers: ["分享量"], key: "shares", unit: "次" },
+  // 商家自有导出（抖店商品明细、账号诊断视频表、评论互动表）的常见列名。
+  // 人数/件数与次数口径不同，单位按来源列如实标注，不互相折算。
+  { headers: ["商品点击人数"], key: "product_clicks", unit: "人" },
+  { headers: ["商品点击次数"], key: "product_clicks", unit: "次" },
+  { headers: ["商品加购人数"], key: "add_to_carts", unit: "人" },
+  { headers: ["商品加购件数"], key: "add_to_carts", unit: "件" },
+  { headers: ["商品收藏人数"], key: "collects", unit: "人" },
+  { headers: ["点赞数"], key: "likes", unit: "次" },
+  { headers: ["回复数"], key: "replies", unit: "条" }
 ];
 
 const normalizeHeader = (header) => String(header ?? "").replace(/\s+/g, "").replace(/[（）]/g, "()").trim();

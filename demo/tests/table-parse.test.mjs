@@ -355,3 +355,44 @@ test('organization aggregates repeated caliber gaps and the six groups show Exce
   const unconfirmed = groups.find((group) => group.id === 'unconfirmed');
   assert(unconfirmed.items.some((item) => item.note.includes('口径说明·数据来源')));
 });
+
+test('merchant export sheets (抖店商品明细/账号视频表/评论互动) parse with subjects, units and row windows', async () => {
+  const productRows = [
+    ['商品ID', 'SKU ID', '商品名称', '售价(元)', '商品点击人数', '商品点击次数', '商品加购人数', '商品加购件数', '商品收藏人数', '成交订单数'],
+    ['SPU0001', 'SKU001', '轻量透气跑步鞋', 208, 1997, 2530, 286, 301, 76, 42],
+    ['SPU0002', 'SKU002', '百搭玛丽珍单鞋', 43.1, 655, 820, 90, 97, 21, 15]
+  ];
+  const videoRows = [
+    ['日期', '发布时间', '标题', '视频时长(s)', '播放量', '评论量'],
+    ['2026-07-31', '12:30', '百元档通勤潮鞋实测', 55, 273108, 120],
+    ['2026-08-02', '20:30', '工厂源头直发单鞋', 45, 6559, 18]
+  ];
+  const commentRows = [
+    ['序号', '所属账号', '内容场景', '评论类型', '点赞数', '回复数'],
+    [1, '潮流运动鞋集合店', '通勤鞋测评', '尺码咨询', 12, 3],
+    [2, '女鞋工厂直营店', '单鞋测评', '价格咨询', 5, 1]
+  ];
+  const bytes = buildXlsx([
+    { name: '商品明细', rows: productRows },
+    { name: '视频表', rows: videoRows },
+    { name: '用户评论互动数据', rows: commentRows }
+  ]);
+  const result = await parseWorkbookFacts(bytes, { id: 'm6', version: 1, name: '鞋店诊断数据.xlsx' });
+  assert.equal(result.status, 'parsed');
+  assert.equal(result.error, null);
+  // 商品明细：主体=商品名称；人数/次数各自成事实，单位按来源列如实区分。
+  const clicks = factOf(result.facts, 'product_clicks', '轻量透气跑步鞋');
+  assert.deepEqual(clicks.map((fact) => [fact.unit, fact.value]).sort(), [['人', 1997], ['次', 2530]]);
+  assert.equal(factOf(result.facts, 'paid_orders', '轻量透气跑步鞋')[0].value, 42);
+  assert.equal(factOf(result.facts, 'add_to_carts', '百搭玛丽珍单鞋')[0].value, 90);
+  assert.equal(factOf(result.facts, 'collects', '百搭玛丽珍单鞋')[0].unit, '人');
+  assert.equal(result.facts.some((fact) => fact.key === '售价'), false);
+  // 视频表：主体=标题；窗口取该行发布日期（文件名无日期，结束日保持未知）。
+  const views = factOf(result.facts, 'video_views', '百元档通勤潮鞋实测');
+  assert.equal(views[0].value, 273108);
+  assert.deepEqual(views[0].window, { start: '2026-07-31', end: null });
+  assert.equal(views[0].cohort, '单条记录累计（至导出时点）');
+  // 评论互动：主体=所属账号；点赞数/回复数都成为带来源的事实。
+  assert.equal(factOf(result.facts, 'likes', '潮流运动鞋集合店')[0].value, 12);
+  assert.equal(factOf(result.facts, 'replies', '女鞋工厂直营店')[0].value, 1);
+});

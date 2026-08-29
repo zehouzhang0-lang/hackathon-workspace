@@ -478,7 +478,7 @@ class MoneyAIAdapter:
                 return 502, self._outcome(False, False, code=error.code, message="MoneyAI模型会话预检失败，未发送正文。")
             try:
                 status, queued = self._json_request("POST", "/chat/send", {
-                    "text": prompt, "images": [], "permissionMode": "plan",
+                    "text": prompt, "images": [], "permissionMode": "auto",
                 }, timeout=10.0)
             except TransportFailure as error:
                 return 502, self._outcome(False, error.sent, code=error.code, message="MoneyAI模型请求未取得回执。")
@@ -486,7 +486,7 @@ class MoneyAIAdapter:
                 return 502, self._outcome(False, True, code="moneyai_model_rejected", message="MoneyAI未接受本次模型请求。")
             baseline = before.get("latestResult")
             deadline = time.monotonic() + self.model_timeout
-            skill_followup_at = time.monotonic() + 3.0 if operation == "analysis.run" else None
+            skill_followup_at = time.monotonic() + 8.0 if operation == "analysis.run" else None
             skill_followup_sent = False
             saw_candidate = False
             while time.monotonic() < deadline:
@@ -521,7 +521,7 @@ class MoneyAIAdapter:
                     try:
                         followup_status, followup = self._json_request("POST", "/chat/send", {
                             "text": "已完成本次指定项目Skill的读取。现在不要再调用任何工具；直接按上一条请求返回最终JSON对象，不要解释或代码围栏。",
-                            "images": [], "permissionMode": "plan",
+                            "images": [], "permissionMode": "auto",
                         }, timeout=10.0)
                     except TransportFailure as error:
                         return 502, self._outcome(False, True, code=error.code, message="MoneyAI已读取Skill，但最终结果请求未取得回执。")

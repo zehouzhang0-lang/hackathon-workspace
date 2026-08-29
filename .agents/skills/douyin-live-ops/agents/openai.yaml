@@ -1,0 +1,4 @@
+interface:
+  display_name: "抖音直播运营"
+  short_description: "基于已核验商业事实起草直播执行稿，并完成证据化复盘"
+  default_prompt: "使用 $douyin-live-ops 基于已核验的商品资料起草直播执行稿，或对上次直播做证据化复盘。"

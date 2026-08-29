@@ -1,0 +1,595 @@
+.mode-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 16px 0;
+  padding: 10px;
+  border: 1px solid rgba(134, 164, 197, 0.18);
+  border-radius: 16px;
+  background: rgba(6, 16, 28, 0.72);
+}
+
+.mode-switch,
+.mode-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-switch button,
+.mode-actions button {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid rgba(134, 164, 197, 0.18);
+  border-radius: 10px;
+  color: #9eb1c5;
+  background: rgba(11, 25, 42, 0.82);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-switch button.active {
+  border-color: rgba(83, 214, 231, 0.55);
+  color: #eafcff;
+  background: linear-gradient(135deg, rgba(83, 214, 231, 0.22), rgba(107, 140, 255, 0.2));
+  box-shadow: 0 0 0 1px rgba(83, 214, 231, 0.08) inset;
+}
+
+.mode-actions button:hover,
+.mode-switch button:hover {
+  border-color: rgba(83, 214, 231, 0.42);
+  color: #dffcff;
+}
+
+.boss-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(350px, 0.9fr);
+  grid-template-areas:
+    "canvas journey"
+    "proof proof";
+  gap: 16px;
+  align-items: stretch;
+}
+
+.decision-canvas-card {
+  grid-area: canvas;
+}
+
+.boss-journey-card {
+  grid-area: journey;
+}
+
+.professional-proof {
+  grid-area: proof;
+}
+
+.decision-canvas-card,
+.boss-journey-card,
+.professional-proof {
+  border: 1px solid rgba(134, 164, 197, 0.18);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(12, 28, 47, 0.94), rgba(7, 18, 32, 0.96));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.2);
+}
+
+.decision-canvas-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.decision-canvas-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(134, 164, 197, 0.12);
+}
+
+.decision-canvas-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.decision-canvas-heading span {
+  color: #76e3e9;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.decision-canvas-heading strong {
+  color: #e9f4ff;
+  font-size: 15px;
+}
+
+.decision-canvas-heading small {
+  color: #71869b;
+  font-size: 11px;
+}
+
+.decision-canvas {
+  height: 680px;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(55, 116, 146, 0.12), transparent 48%),
+    #071321;
+}
+
+.react-flow__node-decision {
+  width: 220px;
+}
+
+.decision-node {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  min-height: 98px;
+  padding: 15px 17px;
+  border: 1px solid rgba(125, 151, 180, 0.24);
+  border-radius: 14px;
+  color: #b5c4d3;
+  background: linear-gradient(145deg, rgba(17, 34, 55, 0.98), rgba(10, 22, 38, 0.98));
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+  transition: border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+}
+
+.decision-node span {
+  color: #6f859a;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.decision-node strong {
+  color: #dce9f6;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.decision-node small {
+  overflow: hidden;
+  color: #8297aa;
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.decision-node.upcoming {
+  opacity: 0.48;
+}
+
+.decision-node.completed {
+  border-color: rgba(95, 225, 168, 0.48);
+  background: linear-gradient(145deg, rgba(24, 74, 62, 0.88), rgba(12, 37, 38, 0.95));
+}
+
+.decision-node.completed span,
+.decision-node.completed small {
+  color: #8fcfb0;
+}
+
+.decision-node.current {
+  border-color: #ffb664;
+  background: linear-gradient(145deg, rgba(98, 58, 21, 0.94), rgba(45, 35, 30, 0.97));
+  box-shadow: 0 0 0 2px rgba(255, 182, 100, 0.12), 0 0 34px rgba(255, 168, 75, 0.18);
+}
+
+.decision-node.current span,
+.decision-node.current small {
+  color: #ffd09c;
+}
+
+.decision-node .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #0a1725;
+  background: #6f8498;
+}
+
+.decision-node.current .react-flow__handle {
+  background: #ffb664;
+}
+
+.decision-node.completed .react-flow__handle {
+  background: #5fe1a8;
+}
+
+.react-flow__edge-path {
+  stroke: rgba(104, 128, 151, 0.42);
+  stroke-width: 1.6;
+}
+
+.decision-edge.active .react-flow__edge-path {
+  stroke: #5fe1a8;
+  stroke-width: 2.4;
+}
+
+.decision-edge.active.negative .react-flow__edge-path {
+  stroke: #ffad63;
+}
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid rgba(134, 164, 197, 0.2);
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  border-color: rgba(134, 164, 197, 0.14);
+  color: #9eb2c5;
+  background: #101f30;
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.boss-journey-card {
+  min-height: 430px;
+  padding: 28px;
+}
+
+.boss-question-kicker {
+  margin: 0 0 10px;
+  color: #64dce5;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.boss-journey-card h2 {
+  margin: 0;
+  color: #f2f8ff;
+  font-size: clamp(22px, 2vw, 32px);
+  line-height: 1.22;
+}
+
+.boss-journey-card h3 {
+  margin: 24px 0 10px;
+  color: #d8e6f3;
+  font-size: 15px;
+}
+
+.boss-question-copy {
+  margin: 14px 0 20px;
+  color: #a4b6c7;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.boss-product-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(83, 214, 231, 0.18);
+  border-radius: 12px;
+  background: rgba(83, 214, 231, 0.06);
+}
+
+.boss-product-line strong {
+  color: #e7f5ff;
+  font-size: 13px;
+}
+
+.boss-product-line span {
+  color: #8196aa;
+  font-size: 11px;
+}
+
+.boss-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 7px;
+  margin-bottom: 22px;
+}
+
+.boss-metrics > div {
+  display: grid;
+  gap: 5px;
+  padding: 11px 8px;
+  border: 1px solid rgba(134, 164, 197, 0.14);
+  border-radius: 10px;
+  text-align: center;
+  background: rgba(3, 12, 22, 0.44);
+}
+
+.boss-metrics span {
+  color: #71869b;
+  font-size: 10px;
+}
+
+.boss-metrics strong {
+  color: #e0edf8;
+  font-size: 13px;
+}
+
+.boss-choice-row {
+  display: grid;
+  gap: 10px;
+}
+
+.boss-choice-row.three-choices {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.boss-choice-row.four-choices {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.boss-choice {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 106px;
+  padding: 14px;
+  border: 1px solid rgba(134, 164, 197, 0.2);
+  border-radius: 14px;
+  color: #a9bbcc;
+  text-align: left;
+  background: rgba(8, 21, 36, 0.82);
+  cursor: pointer;
+}
+
+.boss-choice:hover {
+  border-color: rgba(83, 214, 231, 0.55);
+  transform: translateY(-1px);
+}
+
+.boss-choice b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: #dffcff;
+  background: rgba(83, 214, 231, 0.14);
+  font-size: 13px;
+}
+
+.boss-choice span {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.boss-choice.primary {
+  border-color: rgba(95, 225, 168, 0.48);
+  background: linear-gradient(145deg, rgba(26, 91, 70, 0.44), rgba(9, 35, 34, 0.72));
+}
+
+.boss-choice.primary b {
+  color: #baffdc;
+  background: rgba(95, 225, 168, 0.2);
+}
+
+.boss-choice.danger {
+  border-color: rgba(255, 117, 120, 0.34);
+}
+
+.boss-help-card,
+.boss-verdict,
+.boss-tradeoff {
+  display: grid;
+  gap: 7px;
+  margin: 16px 0;
+  padding: 15px 16px;
+  border: 1px solid rgba(83, 214, 231, 0.18);
+  border-radius: 13px;
+  background: rgba(83, 214, 231, 0.06);
+}
+
+.boss-help-card.warning,
+.boss-tradeoff {
+  border-color: rgba(255, 174, 93, 0.24);
+  background: rgba(255, 174, 93, 0.06);
+}
+
+.boss-help-card.success {
+  border-color: rgba(95, 225, 168, 0.3);
+  background: rgba(95, 225, 168, 0.08);
+}
+
+.boss-help-card strong,
+.boss-verdict > span {
+  color: #dff8fa;
+  font-size: 12px;
+}
+
+.boss-help-card span,
+.boss-verdict strong,
+.boss-tradeoff span {
+  color: #afc0d0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.boss-verdict small {
+  color: #788da1;
+  font-size: 10px;
+}
+
+.boss-button-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.boss-button-row.wrap {
+  flex-wrap: wrap;
+}
+
+.boss-button-row button {
+  min-height: 44px;
+  padding-inline: 17px;
+}
+
+.boss-output {
+  max-height: 230px;
+  overflow: auto;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid rgba(83, 214, 231, 0.18);
+  border-radius: 13px;
+  color: #c7d7e5;
+  white-space: pre-wrap;
+  background: rgba(3, 11, 20, 0.6);
+  font: 12px/1.7 inherit;
+}
+
+.boss-experiment-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.boss-experiment-strip > div {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid rgba(95, 225, 168, 0.18);
+  border-radius: 10px;
+  background: rgba(95, 225, 168, 0.06);
+}
+
+.boss-experiment-strip span {
+  color: #789084;
+  font-size: 10px;
+}
+
+.boss-experiment-strip strong {
+  color: #cdebdc;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.boss-proof {
+  margin-top: 12px;
+  color: #8fcfb0;
+  font-size: 11px;
+}
+
+.professional-proof {
+  overflow: hidden;
+}
+
+.professional-proof > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 17px 20px;
+  color: #c7d8e7;
+  cursor: pointer;
+  list-style: none;
+}
+
+.professional-proof > summary::-webkit-details-marker {
+  display: none;
+}
+
+.professional-proof > summary span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.professional-proof > summary small {
+  color: #71879c;
+  font-size: 11px;
+}
+
+.professional-proof[open] > summary {
+  border-bottom: 1px solid rgba(134, 164, 197, 0.12);
+}
+
+.professional-proof .analysis-panel {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+@media (max-width: 1180px) {
+  .boss-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "journey"
+      "canvas"
+      "proof";
+  }
+
+  .decision-canvas {
+    height: 600px;
+  }
+
+  .boss-journey-card {
+    min-height: 420px;
+    padding: 22px;
+  }
+
+  .boss-choice-row.three-choices {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .mode-toolbar,
+  .decision-canvas-heading,
+  .professional-proof > summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mode-switch,
+  .mode-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .boss-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .decision-canvas {
+    height: 590px;
+  }
+
+  .boss-journey-card {
+    min-height: 0;
+    padding: 22px 18px;
+  }
+
+  .boss-product-line,
+  .boss-button-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .boss-metrics {
+    grid-template-columns: repeat(5, minmax(70px, 1fr));
+    overflow-x: auto;
+  }
+
+  .boss-choice-row.four-choices,
+  .boss-experiment-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .boss-choice-row.three-choices {
+    grid-template-columns: 1fr;
+  }
+
+  .boss-choice {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    min-height: 64px;
+  }
+}

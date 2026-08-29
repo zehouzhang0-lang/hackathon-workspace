@@ -435,10 +435,19 @@ class MoneyAIAdapter:
 
     def _run_model(self, envelope, result_fields):
         operation = envelope["operation"]
+        operation_instruction = ""
+        if operation == "analysis.run":
+            operation_instruction = (
+                "本次result必须精确为analysis一个字段。analysis只需返回适合不同模型稳定生成的小型建议结构："
+                "mode固定real_model；status只能是ready、limited或insufficient；summary为不超过2000字的总结；"
+                "limitations为最多20条、每条不超过500字的字符串；paths为1至2条，"
+                "每条精确只有title和action两个非空字符串。只依据payload中的focus、facts、constraints和unknowns；"
+                "不得声称根因已确认，不得编造缺失数据、概率、收入或效果，不得输出内部状态树、来源原件或额外字段。"
+            )
         prompt = (
             "你是路芽项目的受限JSON处理器。禁止调用工具、文件、网络或个人历史；只使用下列获准摘要。"
             "只返回一个JSON对象，精确字段为contractVersion、operation、operationId、result。"
-            "必须原样回显身份；不得把未知补成0或事实。请求：" + canonical_json({
+            "必须原样回显身份；不得把未知补成0或事实。" + operation_instruction + "请求：" + canonical_json({
                 "contractVersion": CONTRACT_VERSION,
                 "operation": operation,
                 "operationId": envelope["operationId"],
@@ -498,7 +507,30 @@ class MoneyAIAdapter:
         status, outcome = self._run_model(envelope, {"analysis"})
         if status == 200:
             analysis = outcome["result"].get("analysis")
-            if not isinstance(analysis, dict) or analysis.get("mode") != "real_model":
+            paths = analysis.get("paths") if isinstance(analysis, dict) else None
+            limitations = analysis.get("limitations") if isinstance(analysis, dict) else None
+            if (
+                not isinstance(analysis, dict)
+                or analysis.get("mode") != "real_model"
+                or analysis.get("status") not in {"ready", "limited", "insufficient"}
+                or not isinstance(analysis.get("summary"), str)
+                or len(analysis["summary"]) > 2000
+                or not isinstance(paths, list)
+                or not 1 <= len(paths) <= 2
+                or any(
+                    not isinstance(path, dict)
+                    or not isinstance(path.get("title"), str)
+                    or not path["title"].strip()
+                    or len(path["title"]) > 160
+                    or not isinstance(path.get("action"), str)
+                    or not path["action"].strip()
+                    or len(path["action"]) > 1200
+                    for path in paths
+                )
+                or not isinstance(limitations, list)
+                or len(limitations) > 20
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in limitations)
+            ):
                 return 502, self._outcome(False, True, code="moneyai_model_schema_invalid", message="真实分析缺少严格real_model标识。")
         return status, outcome
 

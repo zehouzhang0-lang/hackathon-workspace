@@ -353,6 +353,49 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(result["analysisReady"])
         self.assertFalse(result["historyWriteReady"])
 
+    def test_analysis_accepts_compact_provider_proposal_for_non_demo_facts(self):
+        with tempfile.TemporaryDirectory() as project:
+            adapter = MoneyAIAdapter(
+                "http://127.0.0.1:31416", project, analysis_enabled=True, model_timeout=5
+            )
+            request = envelope("analysis.run", payload={
+                "version": "analysis.request.v1",
+                "focus": "验证手工香薰礼盒的香型与发货说明",
+                "facts": [{"id": "fact_clicks", "key": "product_clicks", "value": 320}],
+                "constraints": [{"id": "constraint_price", "description": "本周不能改价"}],
+                "unknowns": [{"id": "unknown_window", "description": "缺少可比时间窗口"}],
+            })
+            proposal = {
+                "contractVersion": "luya.moneyai.v1",
+                "operation": "analysis.run",
+                "operationId": request["operationId"],
+                "result": {"analysis": {
+                    "mode": "real_model", "status": "limited",
+                    "summary": "先验证说明，不确认根因。",
+                    "limitations": ["缺少可比时间窗口。"],
+                    "paths": [{"title": "补全香型与发货说明", "action": "只修改这一段并记录加购变化。"}],
+                }},
+            }
+            latest = iter([
+                {"latestResult": "previous"},
+                {"latestResult": json.dumps(proposal, ensure_ascii=False)},
+            ])
+
+            def fake_request(method, path, payload=None, timeout=5.0):
+                if method == "GET" and path == "/api/session-latest-result":
+                    return 200, next(latest)
+                if method == "POST" and path == "/chat/send":
+                    self.assertIn("手工香薰礼盒", payload["text"])
+                    self.assertIn("每条精确只有title和action", payload["text"])
+                    return 200, {"success": True}
+                raise AssertionError((method, path))
+
+            with patch.object(adapter, "_json_request", side_effect=fake_request):
+                status, result = adapter.business_request("analysis.run", request)
+            self.assertEqual(status, 200)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["result"]["analysis"]["paths"][0]["title"], "补全香型与发货说明")
+
     def test_valid_unconfigured_calls_fail_before_provider_and_keep_identity(self):
         adapter = MoneyAIAdapter()
         with patch("moneyai_adapter.build_opener") as opener:

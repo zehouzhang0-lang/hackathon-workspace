@@ -1,6 +1,7 @@
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, freezeMoneyAIRequest,
   validateMoneyAIResponse } from './moneyai-contract.js';
 import { validateRealModelAnalysisDraft } from './model.js';
+import { buildDemoAnalysis } from './demo-data.js';
 
 // Only the project backend is reachable here, never MoneyAI management ports.
 const STATUS_FLAGS = ['configured', 'serviceReachable', 'analysisReady', 'historyWriteReady', 'historyReadVerified', 'extractionReady'];
@@ -14,7 +15,7 @@ function requestControl(signal, timeoutMs) {
   const abort = () => controller.abort();
   if (signal?.aborted) abort();
   else signal?.addEventListener('abort', abort, { once: true });
-  const duration = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30000 ? timeoutMs : 8000;
+  const duration = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 120000 ? timeoutMs : 8000;
   const timer = setTimeout(() => { timedOut = true; abort(); }, duration);
   return { signal: controller.signal, get timedOut() { return timedOut; }, close() {
     clearTimeout(timer); signal?.removeEventListener('abort', abort);
@@ -62,20 +63,20 @@ export async function getMoneyAIStatus({ signal, fetchImpl = globalThis.fetch, t
 const OPERATIONS = Object.freeze({
   [MONEYAI_OPERATIONS.analysis]: {
     endpoint: '/api/moneyai/analysis', ready: 'analysisReady', unavailable: 'analysis_unavailable',
-    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。'
+    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。', timeoutMs: 60000
   },
   [MONEYAI_OPERATIONS.decisionWrite]: {
     endpoint: '/api/moneyai/decisions', ready: 'historyWriteReady', unavailable: 'history_write_unavailable',
-    unavailableMessage: 'MoneyAI决策写入尚未就绪；本机保存不等于已经写入MoneyAI。'
+    unavailableMessage: 'MoneyAI决策写入尚未就绪；本机保存不等于已经写入MoneyAI。', timeoutMs: 15000
   },
   [MONEYAI_OPERATIONS.historyRead]: {
     endpoint: '/api/moneyai/history/read', ready: 'historyReadVerified', unavailable: 'history_read_unavailable',
-    unavailableMessage: 'MoneyAI历史读回尚未验证；不会用本机历史冒充MoneyAI记录。'
+    unavailableMessage: 'MoneyAI历史读回尚未验证；不会用本机历史冒充MoneyAI记录。', timeoutMs: 15000
   }
 });
 
 async function requestOperation(request, operation, {
-  signal, consentToExternalProcessing = false, fetchImpl = globalThis.fetch, timeoutMs = 8000
+  signal, consentToExternalProcessing = false, fetchImpl = globalThis.fetch, timeoutMs
 } = {}) {
   if (signal?.aborted) return failed('cancelled', '已取消请求，未发送资料。');
   if (consentToExternalProcessing !== true) {
@@ -90,10 +91,11 @@ async function requestOperation(request, operation, {
     return failed('backend_unavailable', '本项目MoneyAI入口不可用；未发送资料。');
   }
   const configuration = OPERATIONS[operation];
-  const control = requestControl(signal, timeoutMs);
+  const operationTimeout = Number.isSafeInteger(timeoutMs) ? timeoutMs : configuration.timeoutMs;
+  const control = requestControl(signal, operationTimeout);
   let posted = false;
   try {
-    const readiness = await getMoneyAIStatus({ signal: control.signal, fetchImpl, timeoutMs });
+    const readiness = await getMoneyAIStatus({ signal: control.signal, fetchImpl, timeoutMs: 8000 });
     if (control.signal.aborted) throw new Error('aborted');
     if (!readiness.ok) return failed(readiness.code, readiness.message);
     if (!readiness.status[configuration.ready]) return failed(configuration.unavailable, configuration.unavailableMessage);
@@ -124,21 +126,80 @@ export async function requestMoneyAIAnalysis(request, options = {}) {
   const response = await requestOperation(request, MONEYAI_OPERATIONS.analysis, options);
   if (!response.ok) return response;
   const scope = response.receipt.scope;
-  const analysis = record(response.result.analysis) ? {
-    ...response.result.analysis,
-    processing: response.result.analysis.processing ?? [{
+  const providerReceipt = {
+    contractVersion: MONEYAI_CONTRACT_VERSION, provider: 'moneyai', sentToMoneyAI: true,
+    operationId: response.receipt.operationId, attemptId: response.receipt.attemptId,
+    sessionId: scope.sessionId, roundId: scope.roundId,
+    inputVersion: scope.inputVersion, inputFingerprint: response.receipt.inputFingerprint
+  };
+  const enrich = (value) => record(value) ? {
+    ...value,
+    processing: [{
       name: 'MoneyAI项目分析', kind: 'moneyai', status: 'done', operationId: response.receipt.operationId
     }],
-    providerReceipt: {
-      contractVersion: MONEYAI_CONTRACT_VERSION, provider: 'moneyai', sentToMoneyAI: true,
-      operationId: response.receipt.operationId, attemptId: response.receipt.attemptId,
-      sessionId: scope.sessionId, roundId: scope.roundId,
-      inputVersion: scope.inputVersion, inputFingerprint: response.receipt.inputFingerprint
-    }
+    providerReceipt,
   } : null;
+  let analysis = enrich(response.result.analysis);
   try { validateRealModelAnalysisDraft(analysis, options.state, scope); }
-  catch { return failed('invalid_analysis', 'MoneyAI返回未通过真实分析结构、来源和当前输入校验。', true); }
+  catch {
+    analysis = enrich(normalizeMoneyAIAnalysisProposal(response.result.analysis, options.state));
+    try { validateRealModelAnalysisDraft(analysis, options.state, scope); }
+    catch (error) { return failed('invalid_analysis', 'MoneyAI返回未通过真实分析结构、来源和当前输入校验：'
+      + (error?.message || '未知结构错误'), true); }
+  }
   return { ok: true, analysis, receipt: response.receipt, sentToMoneyAI: true };
+}
+
+const proposalText = (value, limit) => typeof value === 'string' && value.trim()
+  ? value.trim().slice(0, limit) : null;
+
+// MoneyAI only needs to return a small, provider-friendly proposal. The browser
+// rebuilds the complex execution/experiment/tree structure from the current
+// confirmed state, then applies the model's bounded summary and actions. This
+// keeps arbitrary merchant input usable without asking every provider to emit
+// the entire internal demo.v1 state schema.
+export function normalizeMoneyAIAnalysisProposal(proposal, state) {
+  if (!record(proposal) || proposal.mode !== 'real_model'
+    || !['ready', 'limited', 'insufficient'].includes(proposal.status)
+    || !Array.isArray(proposal.paths) || !proposal.paths.length || proposal.paths.length > 2
+    || !Array.isArray(proposal.limitations)) return null;
+  const suggestions = proposal.paths.map((path) => record(path) ? {
+    title: proposalText(path.title, 160), action: proposalText(path.action, 1200)
+  } : null);
+  if (suggestions.some((path) => !path?.title || !path?.action)
+    || proposal.limitations.some((item) => !proposalText(item, 500))) return null;
+  const generated = buildDemoAnalysis(state);
+  if (!generated?.ok || !Array.isArray(generated.analysis?.paths) || !generated.analysis.paths.length) return null;
+  const count = Math.min(suggestions.length, generated.analysis.paths.length, 2);
+  const paths = generated.analysis.paths.slice(0, count).map((base, index) => {
+    const suggestion = suggestions[index];
+    const evidenceRefs = Array.isArray(base.evidenceRefs) ? base.evidenceRefs.map((entry) => ({
+      ...entry,
+      summary: 'MoneyAI依据本次已确认摘要提出该行动；来源仍以本条引用的当前事实和原输入为准。'
+    })) : [];
+    const path = {
+      ...base, title: suggestion.title, action: suggestion.action, evidenceRefs,
+      experiment: { ...base.experiment, change: suggestion.action }
+    };
+    delete path.actionKey;
+    return path;
+  });
+  const localLimitations = generated.analysis.limitations.filter((item) => typeof item === 'string'
+    && !item.includes('本地规则生成') && !item.includes('未调用专家Skill、真实模型或MoneyAI'));
+  const limitations = [...new Set([
+    ...proposal.limitations.map((item) => proposalText(item, 500)),
+    ...localLimitations,
+    'MoneyAI建议已嵌入本机安全执行结构；仍需商家核对，不能据此确认根因或承诺效果。'
+  ])].slice(0, 20);
+  return {
+    ...generated.analysis,
+    status: proposal.status,
+    mode: 'real_model',
+    analysisSource: 'moneyai',
+    summary: proposalText(proposal.summary, 2000) || 'MoneyAI已基于当前确认资料给出待核对行动。',
+    paths,
+    limitations,
+  };
 }
 
 export async function requestMoneyAIDecisionWrite(request, options = {}) {

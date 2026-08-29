@@ -788,7 +788,23 @@ export function reduceCommand(original, command, context) {
         || state.input.intake?.status === 'current' && (nonempty(state.input.intake.draft.transcript)
           || state.input.facts.some((fact) => fact.intakeField && fact.availability === 'known')),
         '先说一句，或交一份材料。', 'invalid_transition');
-      changed = state.input.confirmedVersion !== state.round.inputVersion;
+      // Confirm every provenance-bound parser fact from the current material version, not
+      // only the small subset mapped into intake cards. P2 still rejects conflicting facts.
+      // No cell value is created or changed here; this records the user's explicit confirmation.
+      let confirmedMaterialFacts = false;
+      state.input.facts = state.input.facts.map((fact) => {
+        const source = fact?.source;
+        const currentMaterial = source?.kind === 'file_extract'
+          && typeof source.materialId === 'string' && Number.isSafeInteger(source.materialVersion)
+          && source.locator && typeof source.locator === 'object'
+          && state.input.materials.some((material) => material.id === source.materialId
+            && material.version === source.materialVersion);
+        if (!currentMaterial || fact.availability !== 'known' || fact.value === null
+          || fact.verification === 'conflicting' || fact.evidenceStatus === 'confirmed_fact') return fact;
+        confirmedMaterialFacts = true;
+        return { ...fact, evidenceStatus: 'confirmed_fact' };
+      });
+      changed = state.input.confirmedVersion !== state.round.inputVersion || confirmedMaterialFacts;
       state.input.focus ||= state.input.description.trim() || '先核对手头材料，明确这轮要解决的问题';
       state.input.confirmedVersion = state.round.inputVersion;
       break;

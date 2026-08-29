@@ -229,7 +229,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
   let sentMaterialTexts = !digestBlock
-    ? materialTexts.map((entry) => ({ name: entry.name, text: clip(entry.text, 12000) })) : [];
+    ? materialTexts.map((entry) => ({ name: entry.name, text: clip(entry.text, 48000) })) : [];
   const materialBlock = sentMaterialTexts.length
     ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + sentMaterialTexts
         .map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n')
@@ -237,7 +237,6 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   let descriptionText = clip(request.description);
   let transcriptText = clip(request.transcript);
   let contextText = structuredContext;
-  let materialLimit = 12000;
   const composeUserContent = () => '【商家描述】\n' + descriptionText
     + '\n\n【语音或粘贴原文】\n' + transcriptText
     + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
@@ -250,7 +249,6 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     + '。fields与challenges都可以为空对象/空数组。';
   let userContent = composeUserContent();
   if (userContent.length > 38000) {
-    materialLimit = 6000;
     sentMaterialTexts = !digestBlock
       ? materialTexts.map((entry) => ({ name: entry.name, text: clip(entry.text, 6000) })) : [];
     const shrunkMaterialBlock = sentMaterialTexts.length
@@ -403,13 +401,16 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     const { transcript, description, sources } = request;
     if (!ID.test(snapshot.round.id) || !Number.isSafeInteger(snapshot.round.inputVersion)
       || snapshot.round.inputVersion < 1 || !text(transcript, 20000) || !text(description, 20000)) throw new Error('context');
-    // 直连数据提取：仅当用户逐次勾选同意，页面才附带材料文本（每份≤12000字符、最多4份）。
+    // 直连数据提取：仅当用户逐次勾选同意，页面才附带材料文本（每份≤48000字符、合计≤180000字符）。
     let materialTexts = [];
     if (request.materialTexts !== undefined) {
       if (!Array.isArray(request.materialTexts) || request.materialTexts.length > 6) throw new Error('context');
+      let materialTextChars = 0;
       for (const entry of request.materialTexts) {
         if (!entry || typeof entry.name !== 'string' || !text(entry.name, 200)
-          || typeof entry.text !== 'string' || !text(entry.text, 12000)) throw new Error('context');
+          || typeof entry.text !== 'string' || !text(entry.text, 48000)) throw new Error('context');
+        materialTextChars += entry.text.length;
+        if (materialTextChars > 180000) throw new Error('context');
         materialTexts.push({ name: entry.name, text: entry.text });
       }
     }

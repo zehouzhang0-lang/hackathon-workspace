@@ -1079,6 +1079,20 @@ test('fresh reparse and organization preserve the corrected fact without duplica
   assert.equal(h.state.input.facts.length, 1);
   assert.equal(h.state.input.facts[0].value, 59.9);
 });
+
+test('confirming the current round confirms provenance-bound table facts but not conflicts', () => {
+  const h = harness('one_sentence_v1');
+  const material = addTextMaterial(h);
+  const known = parsedFact(material, '成交订单数');
+  const conflict = { ...parsedFact(material, '支付订单数'), id: 'conflicting_fact', verification: 'conflicting' };
+  h.send('MATERIAL_RESULT_SET', { materialId: material.id, materialVersion: material.version,
+    roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    status: 'parsed', error: null, facts: [known, conflict] });
+  assert.equal(h.state.input.facts.every((fact) => fact.evidenceStatus === undefined), true);
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  assert.equal(h.state.input.facts.find((fact) => fact.key === '成交订单数').evidenceStatus, 'confirmed_fact');
+  assert.equal(h.state.input.facts.find((fact) => fact.key === '支付订单数').evidenceStatus, undefined);
+});
 test('replacing a material also removes dependent constraints and obsolete unknown references', () => {
   const h = harness('one_sentence_v1');
   const material = addTextMaterial(h);
@@ -3392,7 +3406,7 @@ test('真实资料未形成任何可核验事实时不生成预编分析路径',
   assert.match(result.analysis.summary, /没有足够依据/);
 });
 
-test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {
+test('compactSummaryForModel keeps different accounts separate while aggregating repeated metrics', async () => {
   const { compactSummaryForModel } = await import('../shared/ai.js');
   const small = { focus: 'f', facts: [{ id: 'f1', key: '销量', value: 6, availability: 'known' }], constraints: [], unknowns: [] };
   const untouched = compactSummaryForModel(small, 3000);
@@ -3401,7 +3415,7 @@ test('compactSummaryForModel aggregates repeated metric facts within the budget'
   const facts = [];
   for (let index = 0; index < 120; index += 1) {
     facts.push({ id: 'f' + index, key: '播放量', value: 1000 + index, availability: 'known',
-      evidenceStatus: 'provided', unit: '次', subject: '视频' + index, window: { start: null, end: null },
+      evidenceStatus: 'provided', unit: '次', subject: index < 60 ? '账号A' : '账号B', window: { start: null, end: null },
       channel: null, cohort: null, sourceKind: 'file_extract', verification: 'unreviewed' });
   }
   facts.push({ id: 'fans', key: '粉丝数', value: 126000, availability: 'known', evidenceStatus: 'provided',
@@ -3410,9 +3424,11 @@ test('compactSummaryForModel aggregates repeated metric facts within the budget'
   const compacted = compactSummaryForModel({ focus: 'f', facts, constraints: [], unknowns: [] }, 3000);
   assert(typeof compacted.note === 'string' && compacted.note.includes('120'));
   assert(JSON.stringify(compacted.summary).length <= 3000);
-  const aggregated = compacted.summary.facts.find((fact) => fact.id === 'agg:f0');
-  assert(aggregated);
-  assert(aggregated.subject.includes('120条'));
+  const accountA = compacted.summary.facts.find((fact) => fact.id === 'agg:f0');
+  const accountB = compacted.summary.facts.find((fact) => fact.id === 'agg:f60');
+  assert(accountA && accountB);
+  assert.match(accountA.subject, /账号A.*60条/);
+  assert.match(accountB.subject, /账号B.*60条/);
   assert.equal(compacted.summary.facts.some((fact) => fact.key === '粉丝数'), true);
   assert.equal(compacted.summary.facts.some((fact) => fact.id === 'f0'), false);
 });

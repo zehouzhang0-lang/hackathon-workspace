@@ -115,6 +115,8 @@ const PROVIDER_SKILL_INSTRUCTION = '只输出一个JSON对象，不要输出其�
   + 'douyin-data-analysis只分析已确认且口径可核对的数据，证据不足时只给补数方向；'
   + 'douyin-account-diagnosis只把账号状态分成事实、推断、待验证和未知，不确认限流或根因；'
   + '每条执行路径只选择一个最匹配的Skill：文字成品用douyin-copywriter，短视频脚本/分镜/拍摄草稿用douyin-video-creation，直播执行稿或复盘用douyin-live-ops。'
+  + '必须检查请求中全部已确认事实字段，不得只取前几列或跳过字段；多账号/多主体时，summary先用紧凑Markdown表格输出“账号画像速览”，再做横向对比和核心瓶颈定位；每个判断写明具体字段证据。'
+  + '数据未提供或口径不可比时明确写“待补充”，不得虚构数字、补0或把跨账号均值冒充单账号表现。'
   + '不得为了凑Skill生成路径。返回skillsUsed必须精确为["douyin-data-analysis","douyin-account-diagnosis"]；'
   + '每条path精确包含title、action、skillId，skillId只能是上述三个执行Skill之一；status为insufficient时paths必须为空。'
   + SAFE_ANALYSIS_RULES;
@@ -124,7 +126,7 @@ const clampText = (value, limit) => typeof value === 'string' && value.trim() ? 
 /** 超长摘要压缩：把高频重复的同指标事实聚合为一条（条数/最小/最大/均值），
  * 保留低频事实原文。返回{summary, note}；note非空时说明发生过聚合或截断。
  * 只改变发送体积，不改变已确认事实的口径；聚合值由原始记录算出，不引入新数据。 */
-export function compactSummaryForModel(summary, budgetChars = 18000) {
+export function compactSummaryForModel(summary, budgetChars = 60000) {
   if (!record(summary) || JSON.stringify(summary).length <= budgetChars) {
     return { summary, note: null };
   }
@@ -133,7 +135,10 @@ export function compactSummaryForModel(summary, budgetChars = 18000) {
   const singles = [];
   for (const fact of facts) {
     if (!record(fact)) { singles.push(fact); continue; }
-    const groupKey = [fact.key, fact.availability, fact.unit || ''].join('\u0001');
+    // Keep accounts/products separate. Aggregating the same metric across different subjects
+    // destroys the horizontal comparison and can turn a multi-account workbook into one average.
+    const groupKey = [fact.key, fact.availability, fact.unit || '', fact.subject || '',
+      fact.channel || '', fact.cohort || ''].join('\u0001');
     if (!groups.has(groupKey)) groups.set(groupKey, []);
     groups.get(groupKey).push(fact);
   }
@@ -152,7 +157,7 @@ export function compactSummaryForModel(summary, budgetChars = 18000) {
       id: 'agg:' + (first.id || first.key), key: first.key,
       availability: group.some((fact) => fact.availability === 'known') ? 'known' : 'unknown',
       evidenceStatus: first.evidenceStatus ?? null, unit: first.unit ?? null,
-      subject: '聚合' + range + '，主体见各条原始记录', value: null,
+      subject: (first.subject ? first.subject + ' · ' : '') + '聚合' + range, value: null,
       window: { start: null, end: null }, channel: first.channel ?? null, cohort: first.cohort ?? null,
       sourceKind: first.sourceKind ?? null, verification: first.verification ?? null,
     });
@@ -270,7 +275,8 @@ export async function requestMaterialFacts(materials, options = {}) {
         + 'metric（指标名，非空字符串）、value（材料中逐字出现的有限十进制数字，禁止换算）、'
         + 'unit（单位字符串或null，万/亿等单位写在这里）、subject（主体字符串或null）、'
         + 'window_start/window_end（YYYY-MM-DD或null）、source_line（该数值所在的原文行片段，20-200字，逐字来自材料文本）。'
-        + '只使用材料文本中真实出现的数字；禁止编造、推断、补0或求和；一行只提取一次；缺失字段用null。' },
+        + '必须逐工作表、逐字段读取，不得只看前几列或跳过字段；同一行每个不同指标列最多提取一次，不得因为一行含多个字段而只提取一个。'
+        + '多账号/多主体必须把对应账号或主体写入subject，保留横向比较所需字段。只使用材料文本中真实出现的数字；禁止编造、推断、补0或求和；缺失字段用null或不输出。' },
       { role: 'user', content: materials.map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n') },
     ],
   }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });

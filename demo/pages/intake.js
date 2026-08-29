@@ -28,6 +28,65 @@ const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", w
 const NO_METRICS = "暂无可核对的业务指标；本次仅按描述和材料状态整理。";
 const NO_DESCRIPTION = "本轮具体问题尚未描述，可先核对手头材料。";
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+// Keep each workbook large enough for ordinary multi-sheet operating exports,
+// while bounding the combined JSON request below the local server's 256 KiB cap.
+const MATERIAL_AI_TEXT_LIMIT = 48000;
+const MATERIAL_AI_TOTAL_TEXT_LIMIT = 180000;
+
+function spreadsheetColumnName(index) {
+  let value = index + 1, name = "";
+  while (value > 0) {
+    value -= 1;
+    name = String.fromCharCode(65 + value % 26) + name;
+    value = Math.floor(value / 26);
+  }
+  return name;
+}
+
+function tsvCell(value) {
+  return String(value ?? "").replace(/\\/g, "\\\\")
+    .replace(/\t/g, "\\t").replace(/\r\n?|\n/g, "\\n");
+}
+
+// A bounded TSV projection for the AI request. It walks rows until the shared
+// configured per-file request boundary rather than silently taking the first 40.
+// Sheet names, physical row numbers and empty columns remain explicit; commas
+// stay inside cells and therefore cannot shift the column structure.
+export function serializeWorkbookSheetsForAI(sheets, limit = MATERIAL_AI_TEXT_LIMIT) {
+  if (!Array.isArray(sheets) || !Number.isSafeInteger(limit) || limit < 256 || limit > MATERIAL_AI_TEXT_LIMIT) {
+    throw new Error("XLSX文本序列化范围不正确。");
+  }
+  const marker = "…（达到本次材料文本上限，后续工作表或行未发送）";
+  const lines = [];
+  let used = 0, truncated = false;
+  const append = (line) => {
+    const text = (lines.length ? "\n" : "") + line;
+    if (used + text.length + marker.length + 1 > limit) { truncated = true; return false; }
+    lines.push(line); used += text.length; return true;
+  };
+  outer: for (const sheet of sheets) {
+    const name = tsvCell(sheet?.name || "工作表");
+    if (!append("工作表\t" + name)) break;
+    if (sheet?.missing) {
+      if (!append("状态\t工作表内容缺失")) break;
+      continue;
+    }
+    const rows = Array.isArray(sheet?.rows) ? sheet.rows : [];
+    const width = rows.reduce((maximum, row) => Math.max(maximum, Array.isArray(row) ? row.length : 0), 0);
+    if (!append(["行号", ...Array.from({ length: width }, (_, index) => spreadsheetColumnName(index))].join("\t"))) break;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = Array.isArray(rows[index]) ? rows[index] : [];
+      const cells = Array.from({ length: width }, (_, column) => tsvCell(row[column]));
+      if (!append([String(index + 1), ...cells].join("\t"))) break outer;
+    }
+  }
+  if (truncated) {
+    const separator = lines.length ? "\n" : "";
+    lines.push(marker);
+    used += separator.length + marker.length;
+  }
+  return lines.join("\n").slice(0, limit);
+}
 
 function labelFor(key) {
   return Object.hasOwn(METRIC_LABELS, key) ? METRIC_LABELS[key] : key;
@@ -1440,35 +1499,35 @@ function startIntakePage() {
       .filter((material) => ["txt", "csv", "json", "xlsx"].includes(fileExtension(material.name)))
       .slice(0, 6);
     const texts = [];
+    let remaining = MATERIAL_AI_TOTAL_TEXT_LIMIT;
     for (const material of decodable) {
+      if (remaining < 256) break;
       if (signal?.aborted) return texts;
       try {
         const blob = await api.getMaterialBlob(material.id);
-        if (!blob) continue;
+        if (!blob) {
+          throw errorWithCode("《" + material.name + "》的已保存原件没有读回，请重新上传该文件后再整理。", "missing_blob");
+        }
         const bytes = new Uint8Array(await blob.arrayBuffer());
+        const fileLimit = Math.min(MATERIAL_AI_TEXT_LIMIT, remaining);
         let content;
         if (fileExtension(material.name) === "xlsx") {
           const sheets = await readWorkbookSheets(bytes);
-          const parts = [];
-          let used = 0;
-          for (const sheet of sheets) {
-            if (sheet.missing || !sheet.rows.length) continue;
-            const lines = sheet.rows.slice(0, 40).map((cells) =>
-              cells.map((cell) => String(cell ?? "").trim()).filter(Boolean).join(","));
-            const block = "【工作表:" + sheet.name + "】\n" + lines.filter(Boolean).join("\n");
-            if (used + block.length > 11000) { parts.push("…（后续工作表略）"); break; }
-            parts.push(block);
-            used += block.length;
-          }
-          content = parts.join("\n") || "";
+          content = serializeWorkbookSheetsForAI(sheets, fileLimit);
         } else {
           content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
           if (content.includes("\0")) continue;
         }
         if (!content.trim()) continue;
-        if (content.length > 12000) content = content.slice(0, 12000) + "\n…（材料文本后略，仅根据以上内容整理）";
+        if (content.length > fileLimit) {
+          content = content.slice(0, fileLimit - 25) + "\n…（材料文本后略，仅根据以上内容整理）";
+        }
         texts.push({ name: material.name, text: content });
-      } catch { /* 单份材料读取失败不影响其余材料 */ }
+        remaining -= content.length;
+      } catch (error) {
+        if (error?.code === "missing_blob") throw error;
+        // A single malformed/unsupported file does not erase other readable materials.
+      }
     }
     return texts;
   }
@@ -1605,7 +1664,7 @@ function startIntakePage() {
           + " 条），没有重复发送材料原文。";
       } else if (materialTexts && materialTexts.length) {
         reviewMessage += " 已随本次整理请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、")
-          + "（每份仅截取前12000字）。";
+          + "（每份最多48000字、合计最多180000字；超出部分会明确标记，绝不补造）。";
       } else {
         reviewMessage += " 没有可发送文本的材料（直连提取仅支持TXT/CSV/JSON/XLSX的文本内容，图片不发送）。";
       }

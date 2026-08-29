@@ -278,6 +278,39 @@ function currentFactSource(fact, input) {
       || typeof source.locator.questionId === 'string');
 }
 
+function confirmedOrCurrentExtractedFact(fact) {
+  if (fact?.evidenceStatus === 'confirmed_fact') return true;
+  // Current parsers persist located file facts without evidenceStatus. The whole
+  // inputVersion is explicitly confirmed in P1 before this function runs; keep
+  // the missing label as null in the outgoing DTO instead of promoting it to a
+  // business-verified fact. Merchant statements still require confirmed_fact.
+  return fact?.evidenceStatus == null && fact?.source?.kind === 'file_extract';
+}
+
+export function selectMoneyAIAnalysisFacts(facts, limit = 400) {
+  if (!Array.isArray(facts) || !Number.isSafeInteger(limit) || limit < 1) return [];
+  if (facts.length <= limit) return [...facts];
+  const groups = new Map();
+  for (const fact of facts) {
+    const subject = typeof fact?.subject === 'string' && fact.subject.trim()
+      ? fact.subject.trim() : '\u0000subject-not-provided';
+    if (!groups.has(subject)) groups.set(subject, []);
+    groups.get(subject).push(fact);
+  }
+  const selected = [];
+  for (let offset = 0; selected.length < limit; offset += 1) {
+    let added = false;
+    for (const group of groups.values()) {
+      if (offset < group.length) {
+        selected.push(group[offset]); added = true;
+        if (selected.length === limit) break;
+      }
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
 export function verifiedAnalysisInput(snapshot) {
   if (snapshot?.contractVersion !== 'demo.v1' || !snapshot?.round || !snapshot?.input
     || snapshot.input.confirmedVersion !== snapshot.round.inputVersion) {
@@ -291,7 +324,7 @@ export function verifiedAnalysisInput(snapshot) {
   }
   const facts = input.facts.filter((fact) => typeof fact?.id === 'string'
     && fact.availability === 'known' && fact.value !== null
-    && fact.verification !== 'conflicting' && fact.evidenceStatus === 'confirmed_fact'
+    && fact.verification !== 'conflicting' && confirmedOrCurrentExtractedFact(fact)
     && currentFactSource(fact, input));
   if (!facts.length) return { ok: false, code: 'no_verifiable_facts',
     message: '当前没有可定位来源的已确认事实；不会调用 Skill，也不会补造固定方案。', facts: [] };
@@ -304,10 +337,19 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
   const input = snapshot.input;
   const dataOrigin = snapshot.fixtureId ? 'synthetic_seed' : 'confirmed_merchant_input';
   const focus = boundedMoneyAIText(input.focus || input.description, 2000);
+  const selectedFacts = selectMoneyAIAnalysisFacts(eligibility.facts, 400);
+  const sentFactIds = new Set(selectedFacts.map((fact) => fact.id));
+  const omittedFacts = eligibility.facts.length - selectedFacts.length;
+  const unknownItems = input.unknowns.slice(0, omittedFacts ? 49 : 50);
+  if (omittedFacts) unknownItems.push({ id: null,
+    description: '已确认且可定位的事实共 ' + eligibility.facts.length
+      + ' 条；接口单次上限为 400 条，本次按经营对象轮询选取 400 条，仍有 '
+      + omittedFacts + ' 条未发送，不得引用或推断其内容。',
+    reason: 'request_fact_limit', sourceId: null });
   const summary = {
     version: 'analysis.request.v1',
     focus,
-    facts: eligibility.facts.slice(0, 100).map((fact) => ({
+    facts: selectedFacts.map((fact) => ({
       id: boundedMoneyAIText(fact?.id, 120) || null,
       key: boundedMoneyAIText(fact?.key, 120) || null,
       value: moneyAIScalar(fact?.value),
@@ -326,7 +368,7 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
       dataOrigin,
     })),
     constraints: input.constraints.filter((item) => Array.isArray(item?.sourceFactIds)
-      && item.sourceFactIds.length > 0 && item.sourceFactIds.every((id) => eligibility.factIds.has(id)))
+      && item.sourceFactIds.length > 0 && item.sourceFactIds.every((id) => sentFactIds.has(id)))
       .slice(0, 50).map((item) => ({
       id: boundedMoneyAIText(item?.id, 120) || null,
       description: boundedMoneyAIText(item?.description, 1000),
@@ -335,7 +377,7 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
       sourceFactIds: Array.isArray(item?.sourceFactIds) ? item.sourceFactIds.filter((id) => typeof id === 'string').slice(0, 50) : [],
       dataOrigin,
     })),
-    unknowns: input.unknowns.slice(0, 50).map((item) => ({
+    unknowns: unknownItems.map((item) => ({
       id: boundedMoneyAIText(item?.id, 120) || null,
       description: boundedMoneyAIText(item?.description, 1000),
       reason: boundedMoneyAIText(item?.reason, 200) || 'unknown',
@@ -348,7 +390,8 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
   if (summary.focus) dataClasses.push(prefix + 'focus');
   if (summary.constraints.length) dataClasses.push(prefix + 'constraints');
   if (summary.unknowns.length) dataClasses.push(prefix + 'unknowns');
-  return { ok: true, summary, dataClasses, factIds: [...eligibility.factIds] };
+  return { ok: true, summary, dataClasses, factIds: [...sentFactIds],
+    eligibleFactCount: eligibility.facts.length, omittedFactCount: omittedFacts };
 }
 
 function skillIdentityError(message) {
@@ -356,8 +399,9 @@ function skillIdentityError(message) {
 }
 
 export function validateP2SkillAnalysisIdentity(analysis, frozenState, expectedScope = null) {
-  const eligibility = verifiedAnalysisInput(frozenState);
+  const eligibility = buildMoneyAIAnalysisSummary(frozenState);
   if (!eligibility.ok) throw skillIdentityError('本次请求没有可核验事实，真实分析不得保存。');
+  const sentFactIds = new Set(eligibility.factIds);
   if (analysis?.mode !== 'real_model' || !['moneyai', 'ai_settings'].includes(analysis.analysisSource)
     || !Array.isArray(analysis.skillIds)
     || analysis.skillIds.length !== DOUYIN_ANALYSIS_SKILL_IDS.length
@@ -395,7 +439,7 @@ export function validateP2SkillAnalysisIdentity(analysis, frozenState, expectedS
   for (const path of paths) {
     const factIds = [...new Set((Array.isArray(path.evidenceRefs) ? path.evidenceRefs : [])
       .flatMap((entry) => Array.isArray(entry?.factIds) ? entry.factIds : []))];
-    if (!factIds.length || factIds.some((id) => !eligibility.factIds.has(id))) {
+    if (!factIds.length || factIds.some((id) => !sentFactIds.has(id))) {
       throw skillIdentityError('路径没有引用本次实际发送且可核验的事实来源。');
     }
   }

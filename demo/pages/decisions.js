@@ -1427,8 +1427,7 @@ async function refreshSession(autoAnalyze = true) {
       if (!state) showStart('资料暂时没有读回', '共享存储读取失败，不能将其当成首次访问。已有资料不会被空会话覆盖，请重试。');
       throw error;
     }
-    if (snapshot.fixtureId === api.ROADSHOW_SHOE_FIXTURE_ID
-      && !api.hasRoadshowShoeFixtureCore(snapshot)
+    if (!api.hasRoadshowShoeFixtureCore(snapshot)
       && api.canUpgradeRoadshowShoeFixture(snapshot)) {
       snapshot = await upgradeLegacyRoadshowShoe(snapshot);
       message('已把浏览器中保存的旧鞋店实例升级为当前三账号诊断版本。');

@@ -49,7 +49,10 @@ export function matchesRoadshowShoeQuestion(value) {
 }
 
 export function canUpgradeRoadshowShoeFixture(state) {
-  if (state?.fixtureId !== ROADSHOW_SHOE_FIXTURE_ID || !Array.isArray(state.input?.facts)
+  // Older saved sessions may have lost fixtureId after the intake was edited. The complete
+  // source digest + required fact set below is the fixture identity; never infer it from a
+  // partial dataset or from the user's question alone.
+  if (!Array.isArray(state?.input?.facts)
     || !Array.isArray(state.input?.materials) || state.input.materials.length) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_SHOE_REQUIRED_FACTS)) {
     const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
@@ -61,7 +64,7 @@ export function canUpgradeRoadshowShoeFixture(state) {
 }
 
 export function hasRoadshowShoeFixtureCore(state) {
-  if (!canUpgradeRoadshowShoeFixture(state)) return false;
+  if (state?.fixtureId !== ROADSHOW_SHOE_FIXTURE_ID || !canUpgradeRoadshowShoeFixture(state)) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
     const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
     if (matches.length !== 1 || matches[0].value !== expected

@@ -118,6 +118,7 @@ test('shoe fixed fixture separates file facts from user-specified diagnosis answ
 
 test('legacy shoe fixture state is eligible for one safe upgrade but ordinary input is not', () => {
   const legacy = structuredClone(harness(ROADSHOW_SHOE_FIXTURE_ID).state);
+  legacy.fixtureId = null;
   legacy.input.facts = legacy.input.facts.filter((fact) =>
     !Object.hasOwn(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, fact.key));
   legacy.input.intake.draft.productName = '鞋店60个商品（旧版标识）';

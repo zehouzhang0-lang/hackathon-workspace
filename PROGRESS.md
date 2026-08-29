@@ -1,8 +1,8 @@
 # 项目进度
 
-## 2026-08-29：合并队友 MoneyAI 接通批次（e38d4cf），与本批用户自配置 API 并存
+## 2026-08-29：合并队友 MoneyAI 接通批次（e38d4cf、0f76887），与本批用户自配置 API 并存
 
-用户指示先提交我方上传资料窗口批次（`ece217e`），再拉取合并队友推送的「connect local MoneyAI agent across three-page demo」。合并采用双方并存：队友的 MoneyAI 能力层整体恢复（`shared/moneyai.js`、`moneyai-contract.js`、`server/moneyai_adapter.py`、`moneyai_contract.py`、model.js real_model 校验、shell 页脚 MoneyAI 状态、第二/三页历史桥接线）；第一页上传资料窗口保持我方实现（合并上传区 + 本地优先整理 + 「AI 设置」用户自配置 API），`intake-extraction.js` 仍为我方版本；`server/app.py` 融合两套路由（`/api/ai/*` 与 `/api/moneyai/*`、`/api/intake/extract`）。合并中修复 model.js 能力行回退（xlsx 恢复 `table_xlsx`）。`demo/tests/logic.test.mjs` 并入队友 8 项 MoneyAI 客户端/契约用例。验证：Node 134/134、服务端 24/24、verify_demo_content 1880 项 PASS、git diff --check 干净。MoneyAI 页面通路的浏览器实机走查与真实 Agent 联调仍未验收；工作区未跟踪的 `*.teammate.test.mjs` 守护测试实现位于 `codex/frontend-replacement` 分支（xlsx-safety 仍因缺 `XLSX_LIMITS` 失败）。
+用户指示先提交我方上传资料窗口批次（`ece217e`），再拉取合并队友推送的「connect local MoneyAI agent across three-page demo」。合并采用双方并存：队友的 MoneyAI 能力层整体恢复（`shared/moneyai.js`、`moneyai-contract.js`、`server/moneyai_adapter.py`、`moneyai_contract.py`、model.js real_model 校验、shell 页脚 MoneyAI 状态、第二/三页历史桥接线）；第一页上传资料窗口保持我方实现（合并上传区 + 本地优先整理 + 「AI 设置」用户自配置 API），`intake-extraction.js` 仍为我方版本；`server/app.py` 融合两套路由（`/api/ai/*` 与 `/api/moneyai/*`、`/api/intake/extract`）。合并中修复 model.js 能力行回退（xlsx 恢复 `table_xlsx`）。`demo/tests/logic.test.mjs` 并入队友 8 项 MoneyAI 客户端/契约用例。验证：Node 134/134、服务端 24/24、verify_demo_content 1880 项 PASS、git diff --check 干净。MoneyAI 页面通路的浏览器实机走查与真实 Agent 联调仍未验收；工作区未跟踪的 `*.teammate.test.mjs` 守护测试实现位于 `codex/frontend-replacement` 分支（xlsx-safety 仍因缺 `XLSX_LIMITS` 失败）。推送前队友又推 `0f76887`（MoneyAI 本机环境变量配置 + `scripts/start-luya-moneyai.ps1` + 团队联调文档），已增量并入融合版 `server/app.py`（`LUYA_*` 环境变量、端口校验），合并后全量回归再次通过。
 
 ## 2026-08-29：MoneyAI 移除与用户自配置 API 接入
 

@@ -186,7 +186,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
         '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
       { role: 'user', content: userContent }
     ]
-  }, { fetchImpl, signal, timeoutMs: 60000 });
+  }, { fetchImpl, signal, timeoutMs: 120000 });
   if (!reply.ok) {
     notes.push('已配置 AI 但整理请求未完成（' + reply.message + '）；已保留本机提取结果，未替换任何内容。');
     return { added: 0, configured: true, attempted: true, completed: false };

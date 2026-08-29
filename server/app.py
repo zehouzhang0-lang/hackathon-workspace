@@ -1,9 +1,11 @@
-"""One local origin for the native Demo and its thin user-configured AI boundary.
+"""One local origin for the native Demo, its user-configured AI boundary and the MoneyAI agent path.
 
-MoneyAI integration was removed by product decision (2026-08-29). The only
-external path is an OpenAI-compatible chat endpoint that the user configures
-explicitly (base URL + API key + model). The key stays in this directory, is
-never echoed back, and nothing is sent anywhere while unconfigured.
+The user-configured external path is an OpenAI-compatible chat endpoint that the
+user saves explicitly (base URL + API key + model). The key stays in this
+directory, is never echoed back, and nothing is sent anywhere while unconfigured.
+The MoneyAI agent path (teammate batch) runs through the frozen contract
+envelopes of moneyai_contract/moneyai_adapter and only reaches the local
+MoneyAI instance's explicit loopback address.
 """
 from __future__ import annotations
 
@@ -17,6 +19,9 @@ from time import monotonic
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from moneyai_adapter import MoneyAIAdapter
+from moneyai_contract import ContractError, validate_envelope
 
 DEMO_ROOT = Path(__file__).resolve().parent.parent / "demo"
 SETTINGS_PATH = Path(__file__).resolve().parent / "ai-settings.json"
@@ -172,7 +177,8 @@ def ai_chat(settings, messages, temperature, max_tokens):
 
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, adapter=None, **kwargs):
+        self.adapter = adapter
         super().__init__(*args, directory=str(DEMO_ROOT), **kwargs)
 
     def log_message(self, format, *args):
@@ -281,6 +287,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(200, {"ok": True, "contractVersion": "demo.v1", "service": "local-demo-backend"})
         elif path == "/api/ai/settings":
             self.send_json(200, {"ok": True, **public_settings(load_settings())})
+        elif path == "/api/moneyai/status":
+            self.send_json(200, self.adapter.status())
         elif path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
@@ -293,7 +301,13 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.allowed_host():
             return
         path = urlsplit(self.path).path
-        if path not in {"/api/ai/settings", "/api/ai/chat"}:
+        operations = {
+            "/api/intake/extract": "intake.extract",
+            "/api/moneyai/analysis": "analysis.run",
+            "/api/moneyai/decisions": "decision.write",
+            "/api/moneyai/history/read": "history.read",
+        }
+        if path not in operations and path not in {"/api/ai/settings", "/api/ai/chat"}:
             self.reject_json(404, "unknown_endpoint")
             return
         expected = "http://127.0.0.1:" + str(self.server.server_port)
@@ -308,8 +322,16 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/ai/settings":
             self.handle_settings(payload)
-        else:
+        elif path == "/api/ai/chat":
             self.handle_chat(payload)
+        else:
+            try:
+                validate_envelope(payload, operations[path])
+            except ContractError:
+                self.reject_json(400, "invalid_contract")
+                return
+            status, result = self.adapter.business_request(operations[path], payload)
+            self.send_json(status, result)
 
     def handle_settings(self, payload):
         if payload == {"clear": True}:
@@ -357,8 +379,22 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=4188)
+    parser.add_argument("--moneyai-url", help="当前MoneyAI实例的显式本机地址；不提交配置或凭据")
+    parser.add_argument("--moneyai-project-dir", help="服务端固定的路芽项目专用MoneyAI空间；浏览器不能覆盖")
+    parser.add_argument("--moneyai-analysis-enabled", action="store_true", help="仅在真实模型与结构已验证后启用")
+    parser.add_argument("--moneyai-extraction-enabled", action="store_true", help="仅在真实提取与结构已验证后启用")
+    parser.add_argument("--moneyai-history-enabled", action="store_true", help="仅在项目写入和精确读回已验证后启用")
+    parser.add_argument("--moneyai-history-read-verified", action="store_true", help="仅在重启读回及空项目隔离均验证后启用")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler))
+    adapter = MoneyAIAdapter(
+        args.moneyai_url,
+        args.moneyai_project_dir,
+        analysis_enabled=args.moneyai_analysis_enabled,
+        extraction_enabled=args.moneyai_extraction_enabled,
+        history_enabled=args.moneyai_history_enabled,
+        history_read_verified=args.moneyai_history_read_verified,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler, adapter=adapter))
     print("Local Demo: http://127.0.0.1:" + str(args.port) + "/01-intake.html", flush=True)
     try:
         server.serve_forever()

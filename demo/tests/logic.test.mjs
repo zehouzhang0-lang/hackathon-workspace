@@ -13,6 +13,9 @@ import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput, findIntakeFieldFact } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
 import { getAiSettings } from '../shared/ai.js';
+import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, requestMoneyAIHistoryRead } from '../shared/moneyai.js';
+import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
+  computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -2499,3 +2502,204 @@ test('workspace real acceptance groups original materials, selection and feedbac
   assert.equal(updated[0].path, null, 'new input invalidates selection instead of borrowing the old round path');
 });
 }
+
+// ===== 以下为队友批次（e38d4cf）MoneyAI 客户端/契约边界测试：依赖 shared/moneyai.js 与 shared/moneyai-contract.js，两者已在合并中保留 =====
+const SYNTHETIC_FINGERPRINT = 'sha256:' + 'a'.repeat(64);
+function intakeMoneyAI(state, suffix = '1') {
+  return { operationId: 'intake_operation_' + suffix, attemptId: 'intake_attempt_' + suffix,
+    inputFingerprint: SYNTHETIC_FINGERPRINT, sendScope: ['confirmed_intake'], dataClasses: ['merchant_text'] };
+}
+function syntheticMoneyAIRequest(operation, payload, scope = {}) {
+  return createMoneyAIEnvelope({ operation, operationId: scope.operationId || 'synthetic_operation',
+    attemptId: scope.attemptId || 'synthetic_attempt',
+    scope: { sessionId: scope.sessionId || 'synthetic_session', roundId: scope.roundId || 'synthetic_round',
+      inputVersion: scope.inputVersion || 1, analysisId: scope.analysisId ?? null, pathId: scope.pathId ?? null,
+      artifact: scope.artifact ?? null, feedback: scope.feedback ?? null,
+      inputFingerprint: scope.inputFingerprint || SYNTHETIC_FINGERPRINT },
+    consent: { granted: true, sendScope: scope.sendScope || ['confirmed_facts'],
+      dataClasses: scope.dataClasses || ['merchant_text'] }, payload });
+}
+function syntheticMoneyAIReply(request, result, overrides = {}) {
+  return { ok: true, contractVersion: MONEYAI_CONTRACT_VERSION, operation: request.operation,
+    operationId: request.operationId, attemptId: request.attemptId,
+    scope: structuredClone(request.scope), sentToMoneyAI: true, result, ...overrides };
+}
+
+function syntheticMoneyAIStatus(overrides = {}) {
+  return { provider: 'moneyai', configured: true, serviceReachable: true, analysisReady: true,
+    historyWriteReady: false, historyReadVerified: false, extractionReady: false,
+    reason: '合成状态，仅用于客户端边界测试', ...overrides };
+}
+const moneyAIJsonResponse = (value, ok = true) => ({ ok, json: async () => value });
+const analysisPayload = (overrides = {}) => ({ version: 'analysis.request.v1', focus: '合成测试焦点',
+  facts: [], constraints: [], unknowns: [], ...overrides });
+const analysisRequest = (scope = {}, payload = analysisPayload()) =>
+  syntheticMoneyAIRequest(MONEYAI_OPERATIONS.analysis, payload, scope);
+
+test('MoneyAI status rejects malformed flags and exposes only validated status fields', async () => {
+  for (const value of [null, [], {}, syntheticMoneyAIStatus({ serviceReachable: 'false' }),
+    syntheticMoneyAIStatus({ analysisReady: 1 }), syntheticMoneyAIStatus({ configured: false })]) {
+    const result = await getMoneyAIStatus({ fetchImpl: async () => moneyAIJsonResponse(value) });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, undefined);
+  }
+  const expected = syntheticMoneyAIStatus({ analysisReady: false });
+  const result = await getMoneyAIStatus({ fetchImpl: async (_url, options) => {
+    assert.equal(options.redirect, 'error');
+    return moneyAIJsonResponse({ ...expected, unrelatedPersonalData: 'must not be forwarded' });
+  } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.status, expected);
+});
+
+test('MoneyAI analysis needs explicit send consent and readiness without posting a draft', async () => {
+  let calls = [];
+  const fetchImpl = async (url, options) => { calls.push({ url, options });
+    return moneyAIJsonResponse(syntheticMoneyAIStatus({ analysisReady: false })); };
+  const request = analysisRequest();
+  const denied = await requestMoneyAIAnalysis(request, { fetchImpl });
+  assert.equal(denied.code, 'external_consent_required');
+  assert.equal(denied.sentToMoneyAI, false);
+  assert.equal(calls.length, 0);
+  const unready = await requestMoneyAIAnalysis(request, { fetchImpl, consentToExternalProcessing: true });
+  assert.equal(unready.code, 'analysis_unavailable');
+  assert.equal(unready.sentToMoneyAI, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.body, undefined);
+});
+
+test('MoneyAI transport rejects implicit conversions and oversized JSON without reading getters', async () => {
+  let reads = 0, calls = 0;
+  const getter = Object.defineProperty({}, 'summary', { enumerable: true, get() { reads++; return 'private'; } });
+  const cyclic = {}; cyclic.self = cyclic;
+  for (const request of [getter, cyclic, { value: NaN }, { value: undefined }, { value: 1n },
+    { when: new Date() }, { value: new Blob(['synthetic']) }, { sparse: [, 1] },
+    { toJSON() { reads++; return {}; } }, { summary: '字'.repeat(90000) }]) {
+    const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+      fetchImpl: async () => { calls++; throw new Error('must not fetch'); } });
+    assert.equal(result.code, 'invalid_payload');
+    assert.equal(result.sentToMoneyAI, false);
+  }
+  assert.equal(reads, 0);
+  assert.equal(calls, 0);
+});
+
+test('MoneyAI analysis freezes request bytes before capability lookup and preserves a no-send receipt', async () => {
+  const request = analysisRequest({}, analysisPayload({ focus: '确认的合成摘要' }));
+  const expected = JSON.stringify(request);
+  let posted;
+  const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      assert.equal(options.redirect, 'error');
+      if (url.endsWith('/status')) {
+        request.scope.inputVersion = 2; request.payload.focus = '晚到修改不得混入旧请求';
+        return moneyAIJsonResponse(syntheticMoneyAIStatus());
+      }
+      posted = options.body;
+      const sent = JSON.parse(options.body);
+      return moneyAIJsonResponse(syntheticMoneyAIReply(sent, {}, {
+        ok: false, code: 'moneyai_project_session_required', sentToMoneyAI: false }), false);
+    } });
+  assert.equal(posted, expected);
+  assert.equal(result.ok, false);
+  assert.equal(result.sentToMoneyAI, false);
+});
+
+test('MoneyAI HTTP failure or unvalidated success cannot become a usable analysis', async () => {
+  for (const [reply, code, sent] of [
+    [(request) => moneyAIJsonResponse(syntheticMoneyAIReply(request, {}, {
+      ok: false, code: 'analysis_failed', sentToMoneyAI: false }), false), 'analysis_failed', false],
+    [(request) => moneyAIJsonResponse(syntheticMoneyAIReply(request, { analysis: { fake: true } })), 'invalid_analysis', true],
+    [() => { throw new Error('lost response'); }, 'backend_unavailable', null],
+    [() => ({ ok: true, json: async () => { throw new Error('broken JSON'); } }), 'backend_unavailable', null]
+  ]) {
+    const request = analysisRequest();
+    const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+      fetchImpl: async (url) => url.endsWith('/status') ? moneyAIJsonResponse(syntheticMoneyAIStatus()) : reply(request) });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, code);
+    assert.equal(result.sentToMoneyAI, sent);
+    assert.equal(result.analysis, undefined);
+  }
+});
+
+test('MoneyAI cancellation and timeout distinguish never posted from an uncertain send', async () => {
+  const stopped = new AbortController(); stopped.abort();
+  const cancelled = await requestMoneyAIAnalysis(analysisRequest(), { signal: stopped.signal,
+    consentToExternalProcessing: true, fetchImpl: async () => { throw new Error('must not fetch'); } });
+  assert.equal(cancelled.code, 'cancelled');
+  assert.equal(cancelled.sentToMoneyAI, false);
+  for (const waitAt of ['status', 'analysis']) {
+    const result = await requestMoneyAIAnalysis(analysisRequest(), { timeoutMs: 5, consentToExternalProcessing: true,
+      fetchImpl: async (url, options) => {
+        if (!url.endsWith('/' + waitAt)) return moneyAIJsonResponse(syntheticMoneyAIStatus());
+        return new Promise((_resolve, reject) => {
+          if (options.signal.aborted) reject(new Error('aborted'));
+          else options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      } });
+    assert.equal(result.code, 'timeout');
+    assert.equal(result.sentToMoneyAI, waitAt === 'status' ? false : null);
+  }
+});
+
+test('luya MoneyAI envelope fingerprints bounded JSON and decision/history use separate verified receipts', async () => {
+  const fingerprint = await computeMoneyAIInputFingerprint({ roundId: 'synthetic_round', facts: [] });
+  assert.match(fingerprint, /^sha256:[a-f0-9]{64}$/);
+  const decision = syntheticMoneyAIRequest(MONEYAI_OPERATIONS.decisionWrite,
+    { version: 'decision.record.v1', record: { localRecordId: 'record_1', execution: 'unknown' } },
+    { inputFingerprint: fingerprint, sendScope: ['decision_record'], dataClasses: ['decision_record'] });
+  const decisionResult = await requestMoneyAIDecisionWrite(decision, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return moneyAIJsonResponse(syntheticMoneyAIStatus({ historyWriteReady: true }));
+      assert.equal(url, '/api/moneyai/decisions');
+      const sent = JSON.parse(options.body);
+      return moneyAIJsonResponse(syntheticMoneyAIReply(sent, { writeReceipt: {
+        recordId: 'moneyai_record_1', recordKey: 'moneyai:moneyai_record_1', providerRecordId: 'provider_1',
+        operationId: sent.operationId, contentHash: 'sha256:' + 'b'.repeat(64),
+        writtenAt: '2026-08-29T03:00:00.000Z', readBackVerified: true } }));
+    } });
+  assert.equal(decisionResult.ok, true);
+  assert.equal(decisionResult.writeReceipt.recordId, 'moneyai_record_1');
+
+  const history = syntheticMoneyAIRequest(MONEYAI_OPERATIONS.historyRead,
+    { version: 'history.query.v1', query: { limit: 20, cursor: null, recordIds: ['moneyai_record_1'] } },
+    { inputFingerprint: fingerprint, sendScope: ['history_query'], dataClasses: ['decision_record'] });
+  const historyResult = await requestMoneyAIHistoryRead(history, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return moneyAIJsonResponse(syntheticMoneyAIStatus({ historyReadVerified: true }));
+      assert.equal(url, '/api/moneyai/history/read');
+      const sent = JSON.parse(options.body);
+      return moneyAIJsonResponse(syntheticMoneyAIReply(sent,
+        { records: [{ recordId: 'moneyai_record_1' }], readReceipt: { count: 1 } }));
+    } });
+  assert.equal(historyResult.ok, true);
+  assert.deepEqual(historyResult.records, [{ recordId: 'moneyai_record_1' }]);
+});
+
+test('a verified MoneyAI real_model draft is isolated from local modes and remains reducer-valid', async () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const local = buildDemoAnalysis(h.state).analysis;
+  const { processing: _processing, ...base } = local;
+  const draft = { ...base, mode: 'real_model', analysisSource: 'moneyai',
+    paths: base.paths.map(({ actionKey: _actionKey, ...path }) => path) };
+  const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
+    inputVersion: h.state.round.inputVersion, operationId: 'real_analysis_1', attemptId: 'real_attempt_1' },
+  analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns }));
+  const result = await requestMoneyAIAnalysis(request, { state: h.state, consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return moneyAIJsonResponse(syntheticMoneyAIStatus());
+      const sent = JSON.parse(options.body);
+      return moneyAIJsonResponse(syntheticMoneyAIReply(sent, { analysis: draft }));
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.analysis.mode, 'real_model');
+  assert.equal(result.analysis.providerReceipt.operationId, 'real_analysis_1');
+  assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
+  assert.equal(h.state.analysis.mode, 'real_model');
+  const forged = structuredClone(result.analysis);
+  forged.providerReceipt.sessionId = 'another_session';
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: forged }), { code: 'invalid_structure' });
+});

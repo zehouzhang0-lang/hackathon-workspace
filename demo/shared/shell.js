@@ -2,6 +2,7 @@ import { dispatch, loadSession, subscribeSession } from './state.js';
 import { navigateTo, resolveDrafts } from './navigation.js';
 import { getAiSettings, saveAiSettings, requestAiChat } from './ai.js';
 import { workspaceFeedbackSource, workspaceMemory, workspaceRounds } from './workspace-view.js';
+import { getMoneyAIStatus } from './moneyai.js';
 
 const PAGES = [
   ['intake', '经营资料', 'folder'],
@@ -257,7 +258,19 @@ export function mountShell(pageId) {
   }
 
   const bar = el('div', undefined, 'shared-footer');
-  const provenance = el('p', '本地规则演示 · 资料与记录保存在当前浏览器');
+  const provenanceStatus = { ai: '本地规则演示 · 可在「AI 设置」配置你自己的 API', moneyai: 'MoneyAI接入核对中' };
+  const provenance = el('p');
+  function renderProvenance() {
+    provenance.textContent = `${provenanceStatus.ai} · ${provenanceStatus.moneyai} · 资料与记录保存在当前浏览器`;
+  }
+  renderProvenance();
+  getMoneyAIStatus().then((result) => {
+    provenanceStatus.moneyai = result.ok && result.status.serviceReachable
+      ? 'MoneyAI本机服务已响应，项目分析与历史通路尚未接通'
+      : '本地分析/历史不等于MoneyAI分析或记忆';
+    window.dispatchEvent(new CustomEvent('demo:moneyai-status', { detail: result }));
+    renderProvenance();
+  });
   const saved = el('span', '正在读取本机记录…');
   const aiSettingsButton = el('span');
   aiSettingsButton.append(button('AI 设置', 'shared-footer-link', () => openAiSettings()));
@@ -344,9 +357,10 @@ export function mountShell(pageId) {
   }
   async function refreshAiProvenance() {
     const result = await getAiSettings();
-    provenance.textContent = result.ok && result.configured
-      ? `AI 已配置（${result.model}）· 原文只发送到你设置的地址 · 资料与记录保存在当前浏览器`
-      : '本地规则演示 · 可在「AI 设置」配置你自己的 API · 资料与记录保存在当前浏览器';
+    provenanceStatus.ai = result.ok && result.configured
+      ? `AI 已配置（${result.model}）· 原文只发送到你设置的地址`
+      : '本地规则演示 · 可在「AI 设置」配置你自己的 API';
+    renderProvenance();
   }
   refreshAiProvenance();
   function renderSave(result) {

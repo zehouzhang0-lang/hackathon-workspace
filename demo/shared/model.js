@@ -6,6 +6,7 @@ import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeR
 
 export const CONTRACT_VERSION = 'demo.v1';
 export const FEEDBACK_DETAILS_VERSION = 1;
+export const MONEYAI_ANALYSIS_CONTRACT_VERSION = 'luya.moneyai.v1';
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 export const PAGE_IDS = ['intake', 'decisions', 'action'];
 export const MATERIAL_LIMITS = Object.freeze({ maxFiles: 6, maxFileBytes: 10_000_000, maxTotalBytes: 20 * 1024 * 1024 });
@@ -302,9 +303,20 @@ function checkRefs(ids, available) {
 }
 export function validateAnalysis(analysis, state) {
   const acceptedExperiment = isAcceptedExperimentAnalysis(analysis, state);
+  const realModel = analysis?.mode === 'real_model';
   requireValue(['ready', 'limited', 'insufficient'].includes(analysis.status), '分析状态不合法。', 'invalid_structure');
-  requireValue(['demo_fixture', 'local_limited'].includes(analysis.mode), '当前没有真实模型分析能力。', 'invalid_structure');
+  requireValue(['demo_fixture', 'local_limited', 'real_model'].includes(analysis.mode), '当前没有可核对的分析能力。', 'invalid_structure');
   requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
+  if (realModel) {
+    const receipt = analysis.providerReceipt;
+    requireValue(analysis.analysisSource === 'moneyai' && analysis.paths.length <= 2
+      && receipt?.contractVersion === MONEYAI_ANALYSIS_CONTRACT_VERSION && receipt.provider === 'moneyai'
+      && receipt.sentToMoneyAI === true && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.operationId)
+      && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.attemptId)
+      && receipt.sessionId === state.sessionId && receipt.roundId === state.round.id
+      && receipt.inputVersion === state.round.inputVersion && /^sha256:[a-f0-9]{64}$/.test(receipt.inputFingerprint),
+    '真实分析缺少MoneyAI项目回执、输入身份或路径上限。', 'invalid_structure');
+  }
   uniqueIds(analysis.paths);
   const reviewPolicy = analysisReviewPolicy(state);
   requireValue(applyAnalysisReviewPolicy(analysis.paths, reviewPolicy).length === analysis.paths.length
@@ -341,22 +353,29 @@ export function validateAnalysis(analysis, state) {
       }), '不能把空依据、假设、冲突或参考值列为已提供观测。', 'invalid_structure');
     }
     if (priority.status === 'hypothesis') {
-      requireValue(analysis.funnel?.status === 'comparable' && (state.fixtureId === 'juicer_cup_v1' || acceptedExperiment)
-        && priority.fromKey === 'product_clicks' && priority.toKey === 'add_to_carts'
-        && priority.hypothesis && buildDemoBreakpoint(analysis.funnel).stage === 'click_cart',
+      if (realModel) {
+        requireValue(analysis.funnel?.status === 'comparable' && priority.hypothesis
+          && analysis.funnel.transitions?.some((edge) => edge.fromKey === priority.fromKey && edge.toKey === priority.toKey),
+        'MoneyAI优先假设必须对应当前可比漏斗中的相邻阶段。', 'invalid_structure');
+      } else requireValue(analysis.funnel?.status === 'comparable' && (state.fixtureId === 'juicer_cup_v1' || acceptedExperiment)
+          && priority.fromKey === 'product_clicks' && priority.toKey === 'add_to_carts'
+          && priority.hypothesis && buildDemoBreakpoint(analysis.funnel).stage === 'click_cart',
         '当前没有可支持的优先环节或未命中Demo规则。', 'invalid_structure');
     }
   }
   if (own(analysis, 'processing')) requireValue(Array.isArray(analysis.processing)
-    && analysis.processing.every((entry) => nonempty(entry.name) && entry.kind === 'local_rule'
-      && ['done', 'not_run'].includes(entry.status)), '不能伪造专家或模型调用过程。', 'invalid_structure');
+    && analysis.processing.every((entry) => nonempty(entry.name)
+      && (realModel ? entry.kind === 'moneyai' && entry.status === 'done'
+        && entry.operationId === analysis.providerReceipt.operationId
+        : entry.kind === 'local_rule' && ['done', 'not_run'].includes(entry.status))),
+  '不能伪造专家或模型调用过程。', 'invalid_structure');
   const actionKeys = new Set();
 
   for (const path of analysis.paths) {
     if (own(path, 'actionKey')) {
       const product = juicerProductFacts(state.input);
       requireValue(['juicer_faq', 'juicer_video_intro', 'juicer_first_screen', 'juicer_question_video'].includes(path.actionKey) && !actionKeys.has(path.actionKey)
-        && (state.fixtureId === 'juicer_cup_v1' && analysis.mode === 'demo_fixture'
+        && !realModel && (state.fixtureId === 'juicer_cup_v1' && analysis.mode === 'demo_fixture'
           || acceptedExperiment && path.actionKey === 'juicer_faq' && analysis.mode === 'local_limited')
         && analysis.funnel?.status === 'comparable'
         && product.capacity && product.charging, '行动模板缺少本轮合成依据或重复标识。', 'invalid_structure');
@@ -453,6 +472,16 @@ export function validateAnalysis(analysis, state) {
     for (const branch of branches) requireValue(tree.edges.some((edge) => edge.branch === branch) || tree.notApplicableBranches?.some((entry) => entry.branch === branch && nonempty(entry.reason)), '业务树遗漏适用分支。', 'invalid_structure');
   }
   jsonSafe(analysis);
+}
+export function validateRealModelAnalysisDraft(analysis, state, expectedScope = null) {
+  requireValue(state?.round && state?.input && analysis?.mode === 'real_model',
+    '缺少当前会话或真实模型分析。', 'invalid_structure');
+  if (expectedScope) requireValue(expectedScope.sessionId === state.sessionId
+    && expectedScope.roundId === state.round.id && expectedScope.inputVersion === state.round.inputVersion
+    && expectedScope.inputFingerprint === analysis.providerReceipt?.inputFingerprint,
+  'MoneyAI回包不属于当前输入快照。', 'stale_input');
+  validateAnalysis(analysis, state);
+  return analysis;
 }
 export function validSourceId(sourceId, state) {
   if (sourceId === 'input:description' || sourceId === 'input:focus') return true;

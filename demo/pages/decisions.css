@@ -1,4 +1,7 @@
 body[data-page="decisions"] .decisions-main {
+  width: min(calc(var(--content-width) - 48px), calc(100% - 48px));
+  margin: 0 auto;
+  padding: 20px 0 56px;
   color: var(--color-text);
   font-size: 16px;
   overflow-wrap: anywhere;
@@ -98,6 +101,79 @@ body[data-page="decisions"] .processing-status[data-status="done"] { color: var(
 body[data-page="decisions"] .analysis-notes { margin-top: 5px; font-size: 13px; }
 body[data-page="decisions"] .analysis-notes > summary { cursor: pointer; width: fit-content; color: var(--color-muted); }
 body[data-page="decisions"] .analysis-summary { white-space: pre-wrap; }
+body[data-page="decisions"] .moneyai-analysis {
+  margin: 22px 0 14px;
+  padding: 22px 24px;
+  border: 1px solid var(--color-line);
+  border-left: 4px solid var(--color-accent);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+body[data-page="decisions"] .moneyai-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+}
+body[data-page="decisions"] .moneyai-heading h2 { margin: 0; font-size: 22px; }
+body[data-page="decisions"] .moneyai-eyebrow {
+  margin: 0 0 4px;
+  color: var(--color-accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+body[data-page="decisions"] .moneyai-source { margin: 10px 0 16px; }
+body[data-page="decisions"] .moneyai-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+body[data-page="decisions"] .moneyai-status-grid > div {
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-line);
+}
+body[data-page="decisions"] .moneyai-status-grid dt { color: var(--color-muted); font-size: 13px; }
+body[data-page="decisions"] .moneyai-status-grid dd { margin: 4px 0 0; line-height: 1.7; }
+body[data-page="decisions"] .moneyai-summary-details { margin-top: 18px; }
+body[data-page="decisions"] .moneyai-summary-details > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+}
+body[data-page="decisions"] .moneyai-summary-details pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: 12px 0 8px;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: 13px/1.7 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+body[data-page="decisions"] .moneyai-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+  line-height: 1.7;
+}
+body[data-page="decisions"] .moneyai-consent input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  accent-color: var(--color-accent);
+}
+body[data-page="decisions"] .moneyai-actions { margin-top: 16px; }
+body[data-page="decisions"] .moneyai-request-status { margin: 12px 0 0; color: var(--color-muted); }
+body[data-page="decisions"] .moneyai-request-status[data-kind="error"] { color: var(--color-danger, #a52a2a); }
+body[data-page="decisions"] .moneyai-request-status[data-kind="success"] { color: var(--color-success, #2e6b4f); }
 body[data-page="decisions"] .analysis-review { text-align: center; padding: 16px 0; }
 body[data-page="decisions"] .analysis-review h2 { margin-bottom: 10px; font-size: 21px; }
 body[data-page="decisions"] .review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; width: min(100%, 1340px); margin: auto; }
@@ -187,12 +263,16 @@ body[data-page="decisions"] .decisions-main button:disabled { cursor: not-allowe
   body[data-page="decisions"] .path-card-content > div { grid-template-columns: 1fr; gap: 2px; }
 }
 @media (max-width: 760px) {
+  body[data-page="decisions"] .decisions-main { width: calc(100% - 32px); padding-top: 16px; }
   body[data-page="decisions"] .decisions-main h1 { font-size: 26px; }
   body[data-page="decisions"] .decisions-section-heading { flex-wrap: wrap; gap: 10px; }
   body[data-page="decisions"] .decisions-scope,
   body[data-page="decisions"] .scope-meta,
   body[data-page="decisions"] .decision-reasoning,
-  body[data-page="decisions"] .path-list { grid-template-columns: 1fr; }
+  body[data-page="decisions"] .path-list,
+  body[data-page="decisions"] .moneyai-status-grid { grid-template-columns: 1fr; }
+  body[data-page="decisions"] .moneyai-analysis { padding: 18px 16px; }
+  body[data-page="decisions"] .moneyai-heading { display: grid; gap: 10px; }
   body[data-page="decisions"] .funnel-stages,
   body[data-page="decisions"] .funnel-stages[data-comparable="false"] { grid-template-columns: 1fr; gap: 12px; }
   body[data-page="decisions"] .funnel-stage { display: grid; grid-template-columns: 1fr 1fr 1fr; align-items: center; gap: 8px; text-align: left; padding: 12px; }
@@ -238,228 +318,4 @@ body[data-page="decisions"] .review-blocked-choice {
 }
 body[data-page="decisions"] #review-status[data-kind="error"] {
   color: var(--color-danger, #a52a2a);
-}
-
-/* Selected Demo visual system. The shared shell owns the sidebar/main offset. */
-body[data-page="decisions"] .decisions-main {
-  --color-accent: #245b45;
-  --color-text: #202923;
-  --color-muted: #68746b;
-  --color-line: #dbe2d9;
-}
-body[data-page="decisions"] .decisions-page-wrap {
-  width: 100%;
-  max-width: none;
-  margin: 0;
-  padding: 0;
-}
-body[data-page="decisions"] .decisions-page-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 24px;
-  padding: 3px 0 16px;
-}
-body[data-page="decisions"] .decisions-page-heading h1 { font-size: 38px; line-height: 1.35; letter-spacing: -.7px; font-weight: 650; }
-body[data-page="decisions"] .decisions-page-heading p { margin: 6px 0 0; color: var(--color-muted); font-size: 16px; line-height: 1.8; }
-body[data-page="decisions"] .decisions-page-heading .decisions-actions { flex-shrink: 0; gap: 6px; }
-body[data-page="decisions"] .decisions-page-heading .button { min-height: 38px; padding: 7px 10px; font-size: 13px; color: var(--color-accent); }
-body[data-page="decisions"] .workspace-progress { margin-bottom: 14px; }
-body[data-page="decisions"] .decisions-message { margin-bottom: 12px; padding: 7px 14px; font-size: 13px; line-height: 1.6; }
-body[data-page="decisions"] .decisions-main .button { border-radius: 8px; transition: border-color .16s, background-color .16s; }
-body[data-page="decisions"] .decisions-main .button--secondary { border-color: #b7c5ba; color: var(--color-accent); }
-body[data-page="decisions"] .decisions-main .button--secondary:hover:not(:disabled),
-body[data-page="decisions"] .decisions-main .button--quiet:hover:not(:disabled) { background: #edf2ec; }
-body[data-page="decisions"] .decisions-empty { max-width: none; padding: 44px 30px; margin: 24px 0; background: #fff; border: 1px solid var(--color-line); border-radius: 12px; }
-body[data-page="decisions"] .decisions-empty h2 { font-size: 25px; }
-body[data-page="decisions"] .decisions-empty p { font-size: 15px; }
-
-body[data-page="decisions"] .decision-brief { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(340px, 1fr); gap: 28px; align-items: start; margin: 0 0 18px; padding: 16px 22px; border: 1px solid #dce6d8; border-radius: 12px; background: #edf3e9; }
-body[data-page="decisions"] .priority-problem { display: block; padding: 0; background: transparent; border: 0; border-radius: 0; }
-body[data-page="decisions"] #priority-heading { font-size: 12px; color: #5d725f; font-weight: 500; }
-body[data-page="decisions"] #priority-title { margin: 6px 0 7px; font-size: 24px; line-height: 1.45; letter-spacing: -.35px; }
-body[data-page="decisions"] #priority-hypothesis { margin: 0; font-size: 14px; line-height: 1.65; color: #506357; }
-body[data-page="decisions"] .root-cause-warning { margin: 7px 0 0; padding: 0; border: 0; border-radius: 0; color: var(--color-muted); font-size: 12px; text-align: left; }
-body[data-page="decisions"] .decision-context { min-width: 0; border-left: 1px solid #d2dfcf; padding-left: 24px; }
-body[data-page="decisions"] .decision-context-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 4px; }
-body[data-page="decisions"] .decision-context h2 { font-size: 12px; color: var(--color-muted); font-weight: 500; }
-body[data-page="decisions"] .scope-status { font-size: 12px; font-weight: 600; color: var(--color-accent); margin: 0; }
-body[data-page="decisions"] .decision-context h3 { font-size: 12px; font-weight: 500; color: var(--color-muted); margin: 0; }
-body[data-page="decisions"] .scope-window,
-body[data-page="decisions"] .scope-gaps,
-body[data-page="decisions"] .scope-unknowns { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; border: 0; padding: 0; margin: 4px 0; }
-body[data-page="decisions"] .scope-window p,
-body[data-page="decisions"] .scope-gaps p { margin: 0; font-size: 12px; line-height: 1.55; }
-body[data-page="decisions"] .scope-unknowns .decisions-notes { margin: 0; padding-left: 15px; font-size: 12px; color: #59685e; }
-body[data-page="decisions"] .scope-unknowns .decisions-notes li { line-height: 1.55; }
-body[data-page="decisions"] .scope-unknowns .decisions-notes li + li { margin-top: 2px; }
-body[data-page="decisions"] .scope-disclosure { margin: 3px 0 0; font-size: 12px; }
-body[data-page="decisions"] .scope-disclosure > summary { font-size: 12px; padding: 2px 0; color: var(--color-accent); }
-body[data-page="decisions"] .scope-disclosure[open] { border: 0; padding-bottom: 0; }
-body[data-page="decisions"] .scope-source { margin: 9px 0; }
-body[data-page="decisions"] .scope-source p { margin: 0; font-size: 12px; }
-body[data-page="decisions"] .scope-question { font-size: 13px; margin: 12px 0; }
-body[data-page="decisions"] .scope-meta { grid-template-columns: 1fr; gap: 10px; }
-body[data-page="decisions"] .scope-meta dt { font-size: 12px; }
-body[data-page="decisions"] .scope-meta dd { margin: 3px 0 0; font-size: 12px; }
-body[data-page="decisions"] .scope-disclosure .button { font-size: 12px; min-height: 36px; padding: 6px 0; }
-
-body[data-page="decisions"] .decision-supporting-details { margin: 0 0 16px; border: 1px solid var(--color-line); border-radius: 10px; background: #fff; }
-body[data-page="decisions"] .decision-supporting-details > summary { cursor: pointer; padding: 13px 18px; color: var(--color-accent); font-size: 14px; line-height: 1.6; }
-body[data-page="decisions"] .decision-supporting-details > summary .muted { margin-left: 16px; font-size: 12px; font-weight: 400; }
-body[data-page="decisions"] .decision-supporting-content { padding: 24px; border-top: 1px solid var(--color-line); }
-body[data-page="decisions"] .decisions-funnel h2,
-body[data-page="decisions"] .priority-evidence h2 { font-size: 20px; }
-body[data-page="decisions"] .funnel-status { font-size: 12px; margin: 8px 0 16px; }
-body[data-page="decisions"] .funnel-stage { background: #f7f9f5; border-radius: 8px; padding: 12px; }
-body[data-page="decisions"] .stage-label { font-size: 14px; }
-body[data-page="decisions"] .stage-value { color: var(--color-accent); font-size: 25px; margin: 5px 0; }
-body[data-page="decisions"] .funnel-priority-line { gap: 14px; }
-body[data-page="decisions"] .funnel-priority-line .funnel-priority { font-size: 14px; }
-body[data-page="decisions"] .funnel-priority-line .muted { font-size: 12px; }
-body[data-page="decisions"] .calculation-disclosure > summary { font-size: 13px; }
-body[data-page="decisions"] .decision-reasoning { display: block; }
-body[data-page="decisions"] .priority-evidence { border: 0; border-top: 1px solid var(--color-line); border-radius: 0; background: transparent; margin-top: 24px; padding: 24px 0 0; }
-body[data-page="decisions"] #priority-reason { margin: 10px 0 18px; font-size: 14px; line-height: 1.8; }
-body[data-page="decisions"] .reasoning-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
-body[data-page="decisions"] .reasoning-rows > div { display: block; padding: 0; border: 0; }
-body[data-page="decisions"] .reasoning-rows > div:last-child { grid-column: 1 / -1; }
-body[data-page="decisions"] .reasoning-rows dt { margin-bottom: 7px; color: var(--color-accent); font-size: 13px; }
-body[data-page="decisions"] .reasoning-rows dd { font-size: 13px; }
-body[data-page="decisions"] .processing-list { max-width: 660px; }
-body[data-page="decisions"] .analysis-notes { margin-top: 18px; }
-body[data-page="decisions"] .analysis-notes > summary { color: var(--color-accent); padding: 5px 0; }
-body[data-page="decisions"] .analysis-notes .scope-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 16px; }
-
-body[data-page="decisions"] .analysis-review { margin-top: 16px; padding: 11px 16px; text-align: left; border: 1px solid var(--color-line); border-radius: 10px; background: #fff; }
-body[data-page="decisions"] .review-overview { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-body[data-page="decisions"] .analysis-review h2 { margin: 0; font-size: 16px; font-weight: 500; }
-body[data-page="decisions"] .review-actions { display: flex; flex-wrap: wrap; align-items: center; width: auto; gap: 9px; margin: 0; }
-body[data-page="decisions"] .review-actions .button { min-height: 39px; padding: 7px 13px; font-size: 13px; }
-body[data-page="decisions"] .analysis-review > .review-actions { margin-top: 0; }
-body[data-page="decisions"] .analysis-review > p { margin: 4px 0 0; font-size: 12px; line-height: 1.65; }
-body[data-page="decisions"] .review-panel { max-width: none; padding: 22px; border: 1px solid var(--color-line); border-radius: 10px; background: #fff; margin-top: 16px; }
-body[data-page="decisions"] .review-panel h3 { font-size: 19px; }
-body[data-page="decisions"] .review-panel textarea { border: 1px solid #bfcabe; border-radius: 8px; font-size: 14px; background: #fff; }
-body[data-page="decisions"] .review-panel fieldset { border: 1px solid var(--color-line); border-radius: 8px; padding: 12px 16px; font-size: 14px; }
-body[data-page="decisions"] .review-panel legend { padding: 0 6px; }
-body[data-page="decisions"] .review-blocked-choice { align-items: center; }
-body[data-page="decisions"] .review-blocked-choice input { min-height: 0; width: 17px; height: 17px; accent-color: var(--color-accent); flex: none; }
-body[data-page="decisions"] #decision-difference-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; font-size: 13px; }
-body[data-page="decisions"] #decision-difference-content > p { grid-column: 1 / -1; margin: 0; }
-body[data-page="decisions"] .decision-difference-path { padding: 16px; background: #f6f8f3; border-radius: 8px; }
-body[data-page="decisions"] .decision-difference-path h4 { font-size: 15px; }
-body[data-page="decisions"] .decision-difference-path p { margin: 8px 0; }
-
-body[data-page="decisions"] .path-workspace { padding: 0; border: 0; border-radius: 0; background: transparent; scroll-margin-top: 24px; }
-body[data-page="decisions"] .path-workspace > .decisions-section-heading { padding: 0; }
-body[data-page="decisions"] #paths-title { font-size: 21px; }
-body[data-page="decisions"] #paths-count { font-size: 12px; }
-body[data-page="decisions"] .path-workspace-notes { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 20px; margin: 5px 0 12px; }
-body[data-page="decisions"] .path-comparison-note { margin: 0; font-size: 12px; }
-body[data-page="decisions"] #paths-availability-note { margin: 0; font-size: 12px; }
-body[data-page="decisions"] .path-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; align-items: stretch; }
-body[data-page="decisions"] .path-list[data-count="1"] { grid-template-columns: minmax(0, 1fr); max-width: 820px; }
-body[data-page="decisions"] .path-card { padding: 20px 24px; border-radius: 12px; border-color: var(--color-line); background: #fff; }
-body[data-page="decisions"] .path-card[data-viewed="true"] { border-color: #aabcae; }
-body[data-page="decisions"] .path-card[data-recommended="true"] { border-color: #82a18a; box-shadow: 0 3px 12px #244e3410; }
-body[data-page="decisions"] .path-card[data-selected="true"] { border-color: var(--color-accent); box-shadow: inset 0 3px 0 var(--color-accent); }
-body[data-page="decisions"] .path-card-topline { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; margin-bottom: 8px; }
-body[data-page="decisions"] .path-option-label { font-size: 13px; line-height: 1.7; font-weight: 500; color: #637264; }
-body[data-page="decisions"] .path-recommend-label { border-radius: 4px; padding: 3px 9px; font-size: 12px; font-weight: 500; line-height: 1.7; color: var(--color-accent); background: #eaf2e6; }
-body[data-page="decisions"] .path-alternative-label { font-size: 12px; color: var(--color-muted); }
-body[data-page="decisions"] .path-card-heading { margin: 0; }
-body[data-page="decisions"] .path-card h3 { font-size: 23px; line-height: 1.45; letter-spacing: -.25px; }
-body[data-page="decisions"] .path-card-status { margin: 4px 0 10px; font-size: 12px; color: var(--color-muted); }
-body[data-page="decisions"] .path-card[data-selected="true"] .path-card-status { color: var(--color-accent); font-weight: 500; }
-body[data-page="decisions"] .path-card-resources { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 9px 12px; background: #f4f7f0; border-radius: 7px; }
-body[data-page="decisions"] .path-card-resources > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-body[data-page="decisions"] .path-card-resources span { color: #64745e; font-size: 12px; }
-body[data-page="decisions"] .path-card-resources strong { color: #3f5b48; font-size: 13px; font-weight: 500; }
-body[data-page="decisions"] .path-card-cost-note { margin: 6px 0 0; color: var(--color-muted); font-size: 12px; line-height: 1.6; }
-body[data-page="decisions"] .path-card-section { margin-top: 12px; }
-body[data-page="decisions"] .path-card-section h4 { margin-bottom: 5px; font-size: 14px; font-weight: 500; color: #46624e; }
-body[data-page="decisions"] .path-card-steps { margin: 0; padding-left: 22px; }
-body[data-page="decisions"] .path-card-steps li { font-size: 14px; line-height: 1.65; padding-left: 4px; color: #46564b; }
-body[data-page="decisions"] .path-card-steps li::marker { font-size: 12px; color: #7b927b; }
-body[data-page="decisions"] .path-card-steps li + li { margin-top: 3px; }
-body[data-page="decisions"] .path-card-content { margin: 12px 0 0; }
-body[data-page="decisions"] .path-card-content > div { display: block; padding: 0; margin-top: 0; }
-body[data-page="decisions"] .path-card-content dt { font-size: 14px; color: #46624e; font-weight: 500; }
-body[data-page="decisions"] .path-card-content dd { font-size: 13px; line-height: 1.7; color: #526358; margin-top: 3px; }
-body[data-page="decisions"] .path-card-content > .path-card-risk { border-top: 1px solid #e2e8df; margin-top: 12px; padding-top: 10px; }
-body[data-page="decisions"] .path-card-more { margin-top: 10px; font-size: 13px; }
-body[data-page="decisions"] .path-card-more > summary { width: fit-content; color: var(--color-accent); cursor: pointer; padding: 3px 0; line-height: 1.8; }
-body[data-page="decisions"] .path-card-more-content { padding-top: 12px; color: #526358; }
-body[data-page="decisions"] .path-card-more-content h4 { font-size: 13px; margin: 16px 0 6px; color: #46624e; }
-body[data-page="decisions"] .path-card-more-content h4:first-child { margin-top: 0; }
-body[data-page="decisions"] .path-card-more-content p { margin: 6px 0; font-size: 13px; }
-body[data-page="decisions"] .path-card-more-content .decisions-notes { margin-top: 5px; padding-left: 18px; }
-body[data-page="decisions"] .path-card-actions { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: auto; padding-top: 14px; }
-body[data-page="decisions"] .path-card-actions .path-select { width: 100%; min-height: 44px; font-size: 14px; }
-body[data-page="decisions"] .path-card-actions .path-choice { justify-self: center; min-height: 33px; padding: 4px 10px; font-size: 12px; color: var(--color-accent); }
-body[data-page="decisions"] .not-actionable { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 20px 2px; text-align: left; }
-body[data-page="decisions"] .not-actionable > .button { min-width: 0; flex: none; min-height: 39px; font-size: 13px; }
-body[data-page="decisions"] .not-actionable > p { margin: 0; max-width: 650px; font-size: 12px; line-height: 1.75; }
-
-body[data-page="decisions"] .path-detail-disclosure { margin-top: 2px; border: 1px solid var(--color-line); border-radius: 12px; background: #fff; scroll-margin-top: 22px; }
-body[data-page="decisions"] .path-detail-disclosure > summary { padding: 17px 22px; font-size: 14px; }
-body[data-page="decisions"] .path-detail { max-width: none; padding: 7px 26px 28px; }
-body[data-page="decisions"] .path-detail-heading h2 { font-size: 25px; }
-body[data-page="decisions"] .path-detail-heading > .decisions-section-heading > p { font-size: 12px; }
-body[data-page="decisions"] .path-detail-heading .button { font-size: 12px; }
-body[data-page="decisions"] .path-action { font-size: 15px; }
-body[data-page="decisions"] .path-section { padding: 20px 0; }
-body[data-page="decisions"] .path-section h3,
-body[data-page="decisions"] .path-disclosure > summary { font-size: 16px; }
-body[data-page="decisions"] .path-risk-section { border-left: 0; padding-left: 0; }
-body[data-page="decisions"] .path-disclosure-content { font-size: 14px; }
-body[data-page="decisions"] .path-next-step .button { font-size: 14px; }
-body[data-page="decisions"] .path-next-step > p { font-size: 12px; }
-body[data-page="decisions"] .risk-item-title { font-size: 15px; }
-body[data-page="decisions"] .report-consent { font-size: 13px; }
-body[data-page="decisions"] .report-consent p { font-size: 12px; }
-
-@media (max-width: 1280px) {
-  body[data-page="decisions"] .decisions-page-heading { padding-inline: 0; align-items: flex-start; }
-  body[data-page="decisions"] .decisions-page-heading h1 { font-size: 32px; }
-  body[data-page="decisions"] .decisions-page-heading p { font-size: 14px; }
-  body[data-page="decisions"] .decisions-page-heading .decisions-actions { flex-direction: column; align-items: flex-end; gap: 0; }
-  body[data-page="decisions"] .decision-brief { gap: 20px; padding: 16px 18px; grid-template-columns: minmax(0, 1.1fr) minmax(290px, 1fr); }
-  body[data-page="decisions"] #priority-title { font-size: 23px; }
-  body[data-page="decisions"] .decision-context { padding-left: 18px; }
-  body[data-page="decisions"] .path-list { gap: 18px; }
-  body[data-page="decisions"] .path-card { padding: 20px; }
-  body[data-page="decisions"] .path-card h3 { font-size: 22px; }
-  body[data-page="decisions"] .path-card-resources { gap: 10px; padding: 11px 12px; }
-}
-@media (max-width: 900px) {
-  body[data-page="decisions"] .decisions-page-heading { display: block; }
-  body[data-page="decisions"] .decisions-page-heading .decisions-actions { flex-direction: row; justify-content: flex-start; margin-top: 12px; }
-  body[data-page="decisions"] .decision-brief { grid-template-columns: 1fr; }
-  body[data-page="decisions"] .decision-context { border-left: 0; border-top: 1px solid var(--color-line); padding: 18px 0 0; }
-  body[data-page="decisions"] .review-overview { flex-wrap: wrap; gap: 12px; }
-  body[data-page="decisions"] .path-list { grid-template-columns: 1fr; }
-  body[data-page="decisions"] .path-list[data-count="1"] { max-width: none; }
-  body[data-page="decisions"] .not-actionable { align-items: flex-start; flex-direction: column; gap: 10px; }
-}
-@media (max-width: 760px) {
-  body[data-page="decisions"] .decisions-page-heading h1 { font-size: 28px; }
-  body[data-page="decisions"] .decisions-page-heading p { font-size: 13px; }
-  body[data-page="decisions"] #priority-title { font-size: 23px; }
-  body[data-page="decisions"] .decision-supporting-details > summary { padding: 13px 15px; font-size: 13px; }
-  body[data-page="decisions"] .decision-supporting-details > summary .muted { display: block; margin: 4px 0 0 17px; font-size: 11px; }
-  body[data-page="decisions"] .decision-supporting-content { padding: 18px 15px; }
-  body[data-page="decisions"] .reasoning-rows,
-  body[data-page="decisions"] .analysis-notes .scope-meta,
-  body[data-page="decisions"] #decision-difference-content { grid-template-columns: 1fr; }
-  body[data-page="decisions"] .review-actions { gap: 6px; }
-  body[data-page="decisions"] .review-actions .button { padding: 7px 9px; font-size: 12px; }
-  body[data-page="decisions"] .review-panel { padding: 17px; }
-  body[data-page="decisions"] .path-card { padding: 24px 21px; }
-  body[data-page="decisions"] .path-card h3 { font-size: 23px; }
-  body[data-page="decisions"] .path-detail { padding: 6px 18px 22px; }
-  body[data-page="decisions"] .path-detail-disclosure > summary { font-size: 13px; padding: 16px 18px; }
-  body[data-page="decisions"] .path-next-step .decisions-actions { display: grid; grid-template-columns: 1fr; }
-  body[data-page="decisions"] .path-next-step .button { font-size: 13px; }
 }

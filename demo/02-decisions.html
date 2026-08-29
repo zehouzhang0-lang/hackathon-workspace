@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>比较方案 · 路芽</title>
+    <title>找到优先问题 · 路芽</title>
     <link rel="stylesheet" href="./shared/tokens.css">
     <link rel="stylesheet" href="./shared/base.css">
     <link rel="stylesheet" href="./shared/title-motion.css">
@@ -15,18 +15,6 @@
     <a class="decisions-skip" href="#decisions-main">跳到主要内容</a>
     <div id="shared-shell"></div>
     <main id="decisions-main" class="decisions-main" tabindex="-1">
-      <div class="decisions-page-wrap">
-      <header class="decisions-page-heading">
-        <div>
-          <h1 id="decisions-title" data-fold-title>选一条路，开始验证。</h1>
-          <p>目标相同，路径不同。看清依据、投入和风险，再做选择。</p>
-        </div>
-        <div class="decisions-actions">
-          <button type="button" class="button button--quiet" data-action="return">查看本轮资料</button>
-          <button type="button" class="button button--quiet" id="refresh-analysis" disabled>更新本轮判断</button>
-        </div>
-      </header>
-      <div data-workflow-steps></div>
       <div id="decisions-message" class="status decisions-message" role="status" aria-live="polite" hidden></div>
       <section id="conflict-retry-panel" class="status" role="status" aria-live="polite" hidden>
         <p id="conflict-retry-summary"></p>
@@ -48,65 +36,130 @@
       </section>
 
       <div id="decisions-content" hidden>
+        <section class="decisions-scope" aria-labelledby="scope-title">
+          <div class="scope-availability">
+            <h2 id="scope-title">当前资料可用范围</h2>
+            <p id="scope-status"></p>
+          </div>
+          <div class="scope-source">
+            <h3>资料来源</h3>
+            <p id="scope-sources"></p>
+          </div>
+          <div class="scope-window">
+            <h3>时间范围</h3>
+            <p id="scope-window"></p>
+          </div>
+          <div class="scope-gaps">
+            <h3>缺少的数据与本轮不分析项</h3>
+            <p id="scope-gaps"></p>
+            <p class="muted">当前本机模块不做投流成本／退款分析；缺失不记为0。</p>
+          </div>
+        </section>
+        <details class="scope-disclosure">
+          <summary>核对本轮问题与资料范围</summary>
+          <p id="scope-question" class="scope-question"></p>
+          <dl id="scope-meta" class="scope-meta"></dl>
+          <button type="button" class="button button--quiet" data-action="return">返回资料确认</button>
+        </details>
+
         <section id="stale-notice" class="status decisions-stale" aria-labelledby="stale-title" hidden>
           <h2 id="stale-title">这份判断已是旧版</h2>
           <p id="stale-description"></p>
           <button type="button" class="button button--secondary" data-action="return">返回核对当前资料</button>
         </section>
 
-        <section class="decision-brief" aria-label="本轮优先问题与资料范围">
-          <div class="priority-problem" aria-labelledby="priority-heading">
-            <h2 id="priority-heading">本轮最值得验证的问题</h2>
+        <section class="decisions-funnel" aria-labelledby="decisions-title">
+          <div class="decisions-section-heading">
+            <h1 id="decisions-title" data-fold-title>本轮先验证哪一步</h1>
+            <div class="decisions-actions">
+              <button type="button" class="button button--quiet" data-action="return">返回补充</button>
+              <button type="button" class="button button--quiet" id="refresh-analysis">更新本轮判断</button>
+            </div>
+          </div>
+          <p id="funnel-status" class="funnel-status"></p>
+          <ol id="funnel-stages" class="funnel-stages" aria-label="五阶段现有记录"></ol>
+          <div class="funnel-priority-line">
+            <p id="funnel-priority" class="funnel-priority"></p>
+            <p class="muted">优先验证不等于最大流失，也不等于根因已确认。</p>
+          </div>
+          <details id="funnel-calculations" class="calculation-disclosure">
+            <summary>查看专业计算过程</summary>
+            <div class="calculation-content">
+              <p id="funnel-loss-summary"></p>
+              <div id="funnel-transition-table" class="estimate-table-wrap"></div>
+              <h3>记录口径与原文定位</h3>
+              <div id="funnel-source-table" class="estimate-table-wrap"></div>
+              <h3>可比性检查与限制</h3>
+              <div id="funnel-issues"></div>
+              <ul id="funnel-limitations" class="decisions-notes"></ul>
+              <button type="button" class="button button--secondary" id="calculation-return">返回五阶段</button>
+            </div>
+          </details>
+        </section>
+
+        <div class="decision-reasoning">
+          <section class="priority-problem" aria-labelledby="priority-heading">
+            <h2 id="priority-heading">今天最值得先验证的问题</h2>
             <h3 id="priority-title"></h3>
             <p id="priority-hypothesis"></p>
+            <p id="priority-reason" class="muted"></p>
             <p class="root-cause-warning">这还不是已经确认的根因。</p>
-          </div>
-          <aside class="decision-context" aria-labelledby="scope-title">
-            <div class="decision-context-heading">
-              <h2 id="scope-title">资料基础</h2>
-              <p id="scope-status" class="scope-status"></p>
-            </div>
-            <div class="scope-window"><h3>时间范围</h3><p id="scope-window"></p></div>
-            <div class="scope-gaps"><h3>关键缺口</h3><p id="scope-gaps"></p></div>
-            <div class="scope-unknowns"><h3>仍待核对</h3><div id="priority-unknowns"></div></div>
-            <details class="scope-disclosure">
-              <summary>核对来源与本轮资料范围</summary>
-              <div class="scope-source"><h3>资料来源</h3><p id="scope-sources"></p></div>
-              <p id="scope-question" class="scope-question"></p>
-              <dl id="scope-meta" class="scope-meta"></dl>
-              <p class="muted">当前本机模块不做投流成本／退款分析；缺失不记为0。</p>
-              <button type="button" class="button button--quiet" data-action="return">返回资料确认</button>
+          </section>
+          <section class="priority-evidence" aria-labelledby="reasoning-heading">
+            <h2 id="reasoning-heading">AI为什么这样判断</h2>
+            <dl class="reasoning-rows">
+              <div><dt>已提供事实</dt><dd id="priority-facts"></dd></div>
+              <div><dt>待验证假设</dt><dd id="priority-assumptions"></dd></div>
+              <div><dt>还不知道</dt><dd id="priority-unknowns"></dd></div>
+              <div><dt>本轮实际处理</dt><dd><p class="muted">以下展示这份分析实际保存的处理记录；不表示调用了专家Skill。</p><ul id="analysis-processing" class="processing-list"></ul></dd></div>
+            </dl>
+            <details class="analysis-notes">
+              <summary>专业详情：来源、调用记录与限制</summary>
+              <dl id="decision-call-trace" class="scope-meta"></dl>
+              <p id="analysis-summary" class="analysis-summary"></p>
+              <ul id="analysis-limitations" class="decisions-notes"></ul>
             </details>
-          </aside>
-        </section>
+          </section>
+        </div>
 
-        <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>
-          <h2 id="no-paths-title">暂时没有足够依据给出可选行动</h2>
-          <p>先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>
-          <ul id="no-paths-unknowns" class="decisions-notes"></ul>
-          <button type="button" class="button button--secondary" data-action="return">返回补充</button>
-        </section>
-
-        <section id="path-workspace" class="path-workspace" aria-labelledby="paths-title" hidden>
-          <div class="decisions-section-heading">
-            <h2 id="paths-title">选一套，开始这次验证</h2>
-            <span id="paths-count" class="muted"></span>
+        <section id="moneyai-analysis" class="moneyai-analysis" aria-labelledby="moneyai-title">
+          <div class="moneyai-heading">
+            <div>
+              <p class="moneyai-eyebrow">真实分析通路</p>
+              <h2 id="moneyai-title">让 MoneyAI 重新分析当前确认摘要</h2>
+            </div>
+            <span id="moneyai-capability-tag" class="tag" data-state="checking">能力待核对</span>
           </div>
-          <div class="path-workspace-notes">
-            <p id="paths-selection-summary" class="path-comparison-note"></p>
-            <p id="paths-availability-note" class="muted"></p>
+          <p id="moneyai-analysis-source" class="moneyai-source"></p>
+          <dl class="moneyai-status-grid">
+            <div><dt>项目能力</dt><dd id="moneyai-capability-status">尚未查询</dd></div>
+            <div><dt>本次发送</dt><dd id="moneyai-send-status">未请求，不表示已发送</dd></div>
+            <div><dt>保存边界</dt><dd>只有严格校验且身份一致的分析草稿才可保存；HTTP 200 或自然语言文本不会直接入库。</dd></div>
+          </dl>
+          <details id="moneyai-summary-details" class="moneyai-summary-details">
+            <summary>预览本次允许发送的摘要</summary>
+            <p class="muted">首轮只允许当前已确认的合成榨汁杯摘要；不含附件、图片 Blob、Excel 原件、录音、个人历史或凭据。</p>
+            <pre id="moneyai-summary-preview" tabindex="0">正在准备安全摘要……</pre>
+            <p id="moneyai-summary-fingerprint" class="muted"></p>
+          </details>
+          <label class="moneyai-consent" for="moneyai-consent">
+            <input type="checkbox" id="moneyai-consent">
+            <span>我已核对上方摘要，并仅同意这一次发送到项目 MoneyAI 分析；可能产生模型调用。此同意不包含真实商家原件或个人历史。</span>
+          </label>
+          <div class="decisions-actions moneyai-actions">
+            <button type="button" class="button button--secondary" id="moneyai-check-status">检查分析能力</button>
+            <button type="button" class="button" id="moneyai-request-analysis" disabled>发送摘要并请求真实分析</button>
+            <button type="button" class="button button--quiet" id="moneyai-cancel-analysis" hidden>取消本次请求</button>
           </div>
-          <div id="path-list" class="path-list"></div>
+          <p id="moneyai-request-status" class="moneyai-request-status" role="status" aria-live="polite">尚未发起真实分析；当前已保存的本机判断不会被改变。</p>
         </section>
 
         <section class="analysis-review" aria-labelledby="review-title" aria-describedby="review-status">
-          <div class="review-overview">
-          <h2 id="review-title">这些信息，对得上吗？</h2>
+          <h2 id="review-title">核对信息，再比较方案</h2>
           <div class="review-actions">
-            <button type="button" class="button button--secondary" id="review-agree" disabled>比较当前方案</button>
+            <button type="button" class="button" id="review-agree" disabled>查看当前方案</button>
             <button type="button" class="button button--secondary" id="review-uncertain" disabled>我还不确定</button>
-            <button type="button" class="button button--quiet" id="review-disagree" disabled>这些信息不对</button>
-          </div>
+            <button type="button" class="button button--secondary" id="review-disagree" disabled>这些信息不对</button>
           </div>
           <section id="decision-differences" class="review-panel" aria-labelledby="decision-difference-title" hidden>
             <h3 id="decision-difference-title" tabindex="-1">当前方案有什么不同</h3>
@@ -135,58 +188,27 @@
           <p id="review-saved-summary" class="muted" hidden></p>
         </section>
 
+        <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>
+          <h2 id="no-paths-title">暂时没有足够依据给出可选行动</h2>
+          <p>先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>
+          <ul id="no-paths-unknowns" class="decisions-notes"></ul>
+          <button type="button" class="button button--secondary" data-action="return">返回补充</button>
+        </section>
+
+        <section id="path-workspace" class="path-workspace" aria-labelledby="paths-title" hidden>
+          <div class="decisions-section-heading">
+            <h2 id="paths-title">选择一个今天做得动的验证动作</h2>
+            <span id="paths-count" class="muted"></span>
+          </div>
+          <p id="paths-selection-summary" class="path-comparison-note"></p>
+          <p id="paths-availability-note" class="muted"></p>
+          <div id="path-list" class="path-list"></div>
+        </section>
+
         <section class="not-actionable" aria-label="无法执行的原因" aria-describedby="blocked-unavailable">
           <button type="button" class="button button--secondary" id="review-not-actionable" disabled>这些都做不了，告诉AI原因</button>
           <p id="blocked-unavailable" class="muted">说明当前做不了的路径与限制；保存到本机后重新筛选，不替选路径或记为执行失败。</p>
         </section>
-
-        <details class="decision-supporting-details">
-          <summary><span>为什么先看这一步？</span><span class="muted">查看现有数据、依据与未知</span></summary>
-          <div class="decision-supporting-content">
-        <section class="decisions-funnel" aria-labelledby="funnel-heading">
-          <div class="decisions-section-heading">
-            <h2 id="funnel-heading">现有记录，走到了哪一步</h2>
-          </div>
-          <p id="funnel-status" class="funnel-status"></p>
-          <ol id="funnel-stages" class="funnel-stages" aria-label="五阶段现有记录"></ol>
-          <div class="funnel-priority-line">
-            <p id="funnel-priority" class="funnel-priority"></p>
-            <p class="muted">优先验证不等于最大流失，也不等于根因已确认。</p>
-          </div>
-          <details id="funnel-calculations" class="calculation-disclosure">
-            <summary>查看专业计算过程</summary>
-            <div class="calculation-content">
-              <p id="funnel-loss-summary"></p>
-              <div id="funnel-transition-table" class="estimate-table-wrap"></div>
-              <h3>记录口径与原文定位</h3>
-              <div id="funnel-source-table" class="estimate-table-wrap"></div>
-              <h3>可比性检查与限制</h3>
-              <div id="funnel-issues"></div>
-              <ul id="funnel-limitations" class="decisions-notes"></ul>
-              <button type="button" class="button button--secondary" id="calculation-return">返回五阶段</button>
-            </div>
-          </details>
-        </section>
-
-        <div class="decision-reasoning">
-          <section class="priority-evidence" aria-labelledby="reasoning-heading">
-            <h2 id="reasoning-heading">这份判断，依据是什么</h2>
-            <p id="priority-reason" class="muted"></p>
-            <dl class="reasoning-rows">
-              <div><dt>已提供事实</dt><dd id="priority-facts"></dd></div>
-              <div><dt>待验证假设</dt><dd id="priority-assumptions"></dd></div>
-              <div><dt>本轮实际处理</dt><dd><p class="muted">以下展示这份分析实际保存的处理记录；不表示调用了专家Skill。</p><ul id="analysis-processing" class="processing-list"></ul></dd></div>
-            </dl>
-            <details class="analysis-notes">
-              <summary>专业详情：来源、调用记录与限制</summary>
-              <dl id="decision-call-trace" class="scope-meta"></dl>
-              <p id="analysis-summary" class="analysis-summary"></p>
-              <ul id="analysis-limitations" class="decisions-notes"></ul>
-            </details>
-          </section>
-        </div>
-          </div>
-        </details>
 
         <details id="path-detail-disclosure" class="path-detail-disclosure" hidden>
           <summary>当前查看路径的完整依据、条件树与报告</summary>
@@ -238,7 +260,6 @@
             </section>
           </article>
         </details>
-      </div>
       </div>
     </main>
     <div id="shared-footer"></div>

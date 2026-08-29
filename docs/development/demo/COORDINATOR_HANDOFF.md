@@ -1,5 +1,9 @@
 # 统筹接续记录
 
+## 2026-08-29 合并：队友 MoneyAI 接通批次与我方用户自配置 API 并存
+
+用户指示：先提交我方上传资料窗口批次，再拉取合并队友的 API 接通提交。已按序完成：`ece217e`（上传窗口收尾 + `/api/ai/*`）之后 merge `e38d4cf`。冲突解决原则：第一页窗口与 `intake-extraction.js` 保持我方版本；队友 MoneyAI 能力层（moneyai.js、moneyai-contract.js、moneyai_adapter.py、moneyai_contract.py、model.js real_model 校验、shell 页脚状态）整体恢复；`server/app.py` 融合 `/api/ai/*` 与 `/api/moneyai/*` 两套路由；logic.test.mjs 并入队友 8 项 MoneyAI 用例；自动合并引入的 model.js xlsx 能力行回退已修复。验证：Node 134/134、服务端 24/24、verify_demo_content 1880 项 PASS、git diff --check 干净。注意：上一节「取消 MoneyAI」决定在页面通路层面被本次合并部分反转（能力层与二/三页接线恢复），第一页对外路径仍是用户自配置 API；MoneyAI 通路实机联调未验收。`*.teammate.test.mjs` 守护测试实现位于 `codex/frontend-replacement`，保持未跟踪。
+
 ## 2026-08-29 用户决定：三页取消 MoneyAI，改为用户自配置 API
 
 用户当轮明确要求：三页全部取消 MoneyAI 接入；AI 能力改为「用户直接配置 API」的方式，让 AI 直接进行数据处理和结构化内容。本决定取代 REQ-17 的 MoneyAI 核心工作流定位及[集成记录](MONEYAI_INTEGRATION.md)中的接通计划，未冲突的隐私与外发授权边界继续有效。

@@ -1881,8 +1881,10 @@ function renderPathList(paths) {
     actionSection.append(element('h4', '', '具体会做什么'));
     const steps = element('ol', 'path-card-steps');
     // Split only existing clauses for readability; do not invent tasks or execution records.
-    text(path.action, '具体动作尚未提供').split('；').filter((value) => value.trim())
-      .forEach((value) => steps.append(element('li', '', value.trim())));
+    const actionSteps = list(path.actionSteps).length ? path.actionSteps
+      : text(path.action, '具体动作尚未提供').split('；').filter((value) => value.trim());
+    actionSteps
+      .forEach((value) => steps.append(element('li', '', text(value, '具体动作尚未提供').trim())));
     actionSection.append(steps);
     card.append(actionSection);
 

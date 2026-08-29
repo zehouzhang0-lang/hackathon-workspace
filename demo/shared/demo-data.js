@@ -1,7 +1,8 @@
 import { getAcceptedExperimentRound } from './experiment-round.js';
 import { buildFunnelSnapshot, latestAnalysisReview, analysisReviewPolicy, applyAnalysisReviewPolicy, juicerProductFacts, buildDemoBreakpoint, buildDemoDataQuality } from './analysis-evidence.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, matchesRoadshowShoeQuestion,
-  hasRoadshowShoeFixtureCore, ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS } from './roadshow-shoe-fixture.js';
+  hasRoadshowShoeFixtureCore, ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS,
+  ROADSHOW_SHOE_PLAN_A_STEPS, ROADSHOW_SHOE_PLAN_B_STEPS } from './roadshow-shoe-fixture.js';
 
 const errorResult = (code, message) => ({ ok: false, code, message });
 const valid = (state) => state?.input?.confirmedVersion === state?.round?.inputVersion;
@@ -123,10 +124,9 @@ export function buildDemoAnalysis(state) {
       const ids = diagnoses.map((fact) => fact.id);
       const isA = optionLabel === 'A';
       const title = isA ? '先稳住账号健康与内容节奏' : '复用爆款结构并回应评论需求';
-      const action = isA
-        ? '运动户外鞋旗舰店：立即停发搬运/混剪内容，补齐头像、昵称、简介基础设置（当前全缺），消除疑似降权风险，并去创作者中心核查违规记录，确认健康度状态后再谈内容；女鞋工厂直营店：固定发布时间到粉丝活跃时段（10:00 或 21:00），一周内停止随机发布，统一封面模板，封面加大字号人群标签（如「妈妈鞋」「学生党通勤」），让算法知道推给谁；国潮球鞋实验室：测评与推荐二选一——推荐向固定「本周必入 Top3」栏目，测评向固定「实测拆解」栏目，一周内停止内容类型摇摆，昵称保留「实验室」但简介补一句价值主张（如「每周三实测 3 双国潮鞋」）。'
-        : '把「德训鞋百搭」和「AJ平替实测」两条爆款逐帧拆解，提炼成自家选题模板（标题公式 + 前3秒钩子 + 结尾引导），产出 10 个备选选题；导出全部评论按需求聚类，选出下周一期的「评论区需求回应」选题并拍出来；女鞋工厂直营店拍第一条「货源透明」内容（仓库随手拍 + 29.9指向），发布后置顶评论区「工厂实拍」旧链接。';
+      const action = (isA ? ROADSHOW_SHOE_PLAN_A_STEPS : ROADSHOW_SHOE_PLAN_B_STEPS).join('；');
       const result = path(title, action, diagnosisKeys);
+      result.actionSteps = [...(isA ? ROADSHOW_SHOE_PLAN_A_STEPS : ROADSHOW_SHOE_PLAN_B_STEPS)];
       result.optionLabel = optionLabel;
       result.validationMetric = isA ? '账号健康状态、发布节奏与内容栏目是否按计划完成'
         : '10个备选选题、评论需求聚类与首条货源透明内容是否按计划完成';

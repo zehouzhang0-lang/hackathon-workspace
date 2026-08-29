@@ -20,7 +20,8 @@ import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, 
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_SOURCE_SHA256,
-  ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, matchesRoadshowShoeQuestion,
+  ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, ROADSHOW_SHOE_PLAN_A_STEPS, ROADSHOW_SHOE_PLAN_B_STEPS,
+  matchesRoadshowShoeQuestion,
   canUpgradeRoadshowShoeFixture, hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
 
 function harness(fixtureId = null) {
@@ -161,6 +162,13 @@ test('explicit shoe fixture plus the fixed P1 question builds the requested two-
   assert.equal(Object.hasOwn(analysis, 'providerReceipt'), false);
   assert.equal(Object.hasOwn(analysis, 'skillIds'), false);
   assert.equal(analysis.paths.length, 2);
+  assert.equal(analysis.priority.reason, Object.values(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS).join('\n\n'));
+  assert.equal(analysis.paths[0].action, ROADSHOW_SHOE_PLAN_A_STEPS.join('；'));
+  assert.equal(analysis.paths[1].action, ROADSHOW_SHOE_PLAN_B_STEPS.join('；'));
+  assert.deepEqual(analysis.paths[0].actionSteps, ROADSHOW_SHOE_PLAN_A_STEPS);
+  assert.deepEqual(analysis.paths[1].actionSteps, ROADSHOW_SHOE_PLAN_B_STEPS);
+  assert.equal(analysis.paths[0].actionSteps.length, 3);
+  assert.equal(analysis.paths[1].actionSteps.length, 3);
   assert.deepEqual(analysis.paths.map((path) => path.optionLabel), ['A', 'B']);
   assert.equal(analysis.priority.title, '三个账号的优先问题已经定位');
   assert.match(analysis.priority.reason, /17 条视频中位播放仅 1\.07 万/);
@@ -178,6 +186,8 @@ test('explicit shoe fixture plus the fixed P1 question builds the requested two-
   assert.ok(analysis.processing.every((entry) => entry.kind === 'local_rule'));
   h.send('ANALYSIS_SET', { analysis });
   assert.equal(h.state.analysis.sourceFixtureId, ROADSHOW_SHOE_FIXTURE_ID);
+  assert.deepEqual(h.state.analysis.paths[0].actionSteps, ROADSHOW_SHOE_PLAN_A_STEPS);
+  assert.deepEqual(h.state.analysis.paths[1].actionSteps, ROADSHOW_SHOE_PLAN_B_STEPS);
   assert.equal(currentRoadshowShoeAnswer(h.state), true);
 });
 

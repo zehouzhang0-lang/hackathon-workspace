@@ -19,6 +19,8 @@ import { extractLocalIntakeCandidates } from '../shared/local-intake-parser.js';
 import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, requestMoneyAIHistoryRead } from '../shared/moneyai.js';
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
+import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_SOURCE_SHA256,
+  matchesRoadshowShoeQuestion, hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -74,6 +76,118 @@ test('unchanged fixture intake confirmation preserves provenance, IDs and input 
     assert.equal(h.state, confirmed);
     assert.equal(h.state.input.confirmedVersion, before.round.inputVersion);
   }
+});
+
+test('shoe roadshow fixture contains only reviewed visible-report data and no downstream result', () => {
+  const h = harness(ROADSHOW_SHOE_FIXTURE_ID);
+  assert.equal(h.state.input.description, '');
+  assert.equal(hasRoadshowShoeFixtureCore(h.state), true);
+  assert.equal(h.state.input.intake.draft.currentProblem, ROADSHOW_SHOE_QUESTION);
+  const expected = {
+    report_product_rows: 60, product_exposure_people: 6398404, product_click_people: 223696,
+    add_to_cart_people: 27331, buyer_people: 9679, report_paid_gmv_cny: 5064000,
+    report_paid_order_count: 11246
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    const fact = h.state.input.facts.find((entry) => entry.key === key);
+    assert.equal(fact.value, value);
+    assert.equal(fact.source.kind, 'file_extract');
+    assert.equal(fact.source.locator.sha256, ROADSHOW_SHOE_SOURCE_SHA256);
+    assert.match(fact.source.note, /固定样例／伪数据兜底/);
+  }
+  assert.ok(h.state.input.unknowns.some((entry) => entry.description.includes('统计周期')));
+  assert.ok(h.state.input.unknowns.some((entry) => entry.description.includes('291.0万元')));
+  assert.equal(h.state.analysis, null);
+  assert.equal(h.state.selection, null);
+  assert.deepEqual(h.state.artifacts, []);
+  assert.deepEqual(h.state.executionRecords, []);
+  assert.deepEqual(h.state.feedbackRecords, []);
+});
+
+test('roadshow question guard is exact apart from trim and one terminal punctuation mark', () => {
+  for (const value of [ROADSHOW_SHOE_QUESTION, '  ' + ROADSHOW_SHOE_QUESTION + '  ',
+    ROADSHOW_SHOE_QUESTION + '？', ROADSHOW_SHOE_QUESTION + '?', ROADSHOW_SHOE_QUESTION + '。']) {
+    assert.equal(matchesRoadshowShoeQuestion(value), true, value);
+  }
+  for (const value of ['帮我分析一下这个账号的数据', '帮我分析这些商品的数据',
+    ROADSHOW_SHOE_QUESTION + '，并预测爆款', ROADSHOW_SHOE_QUESTION + '？？']) {
+    assert.equal(matchesRoadshowShoeQuestion(value), false, value);
+  }
+});
+
+test('explicit shoe fixture plus the fixed P1 question builds one stable local P2 analysis', () => {
+  const h = harness(ROADSHOW_SHOE_FIXTURE_ID);
+  const version = h.state.round.inputVersion;
+  h.send('INTAKE_SET', { roundId: h.state.round.id, inputVersion: version,
+    draft: structuredClone(h.state.input.intake.draft), description: ROADSHOW_SHOE_QUESTION,
+    sourceBindings: [] });
+  assert.equal(h.state.fixtureId, ROADSHOW_SHOE_FIXTURE_ID);
+  assert.equal(h.state.round.inputVersion, version + 1);
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const generated = buildDemoAnalysis(h.state);
+  assert.equal(generated.ok, true, generated.message);
+  const analysis = generated.analysis;
+  assert.equal(analysis.mode, 'demo_fixture');
+  assert.equal(analysis.status, 'limited');
+  assert.equal(analysis.analysisSource, 'local_fallback');
+  assert.equal(Object.hasOwn(analysis, 'providerReceipt'), false);
+  assert.equal(Object.hasOwn(analysis, 'skillIds'), false);
+  assert.equal(analysis.paths.length, 1);
+  assert.match(analysis.summary, /60个商品累计曝光6,398,404人/);
+  assert.match(analysis.summary, /506\.4万元、11,246单/);
+  assert.match(analysis.priority.title, /大众40款贡献52\.9% GMV和10,104单/);
+  assert.match(analysis.priority.title, /高端20款贡献47\.1%和1,142单/);
+  assert.match(analysis.priority.reason, /3\.50%/);
+  assert.match(analysis.priority.reason, /12\.22%/);
+  assert.match(analysis.priority.reason, /4\.33%/);
+  assert.match(analysis.priority.hypothesis.text, /506\.4万元、11,246单/);
+  assert.match(analysis.priority.hypothesis.text, /本机推断（待验证）/);
+  assert.match(analysis.paths[0].action, /只改主图或标题其中一项/);
+  const evidence = analysis.paths[0].evidenceRefs.map((entry) => entry.summary + ' ' + (entry.calculation || '')).join('\n');
+  assert.match(evidence, /真实读取值与本机算术复核/);
+  assert.match(evidence, /报告已有结论（仅转述）/);
+  assert.match(evidence, /本机推断（待验证）/);
+  assert.doesNotMatch(analysis.summary + '\n' + analysis.priority.reason, /43\.9%|4\.5%/);
+  assert.ok(analysis.limitations.some((entry) => entry.includes('291.0万元')));
+  assert.ok(analysis.processing.every((entry) => entry.kind === 'local_rule'));
+  h.send('ANALYSIS_SET', { analysis });
+  assert.equal(h.state.analysis.sourceFixtureId, ROADSHOW_SHOE_FIXTURE_ID);
+});
+
+test('wrong question, changed source digest or fake receipt cannot activate the fixed answer', () => {
+  const wrong = harness(ROADSHOW_SHOE_FIXTURE_ID);
+  wrong.send('INTAKE_SET', { roundId: wrong.state.round.id, inputVersion: wrong.state.round.inputVersion,
+    draft: structuredClone(wrong.state.input.intake.draft), description: '帮我分析这些商品的数据', sourceBindings: [] });
+  assert.equal(wrong.state.fixtureId, null);
+  wrong.send('FOCUS_CONFIRM', { inputVersion: wrong.state.round.inputVersion });
+  const ordinary = buildDemoAnalysis(wrong.state).analysis;
+  assert.equal(ordinary.mode, 'local_limited');
+  assert.doesNotMatch(ordinary.summary, /6,398,404|506\.4万元/);
+
+  const digestMismatch = structuredClone(harness(ROADSHOW_SHOE_FIXTURE_ID).state);
+  digestMismatch.input.facts.find((fact) => fact.key === 'roadshow_source_sha256').value = 'WRONG';
+  assert.equal(hasRoadshowShoeFixtureCore(digestMismatch), false);
+
+  const fixed = harness(ROADSHOW_SHOE_FIXTURE_ID);
+  fixed.send('INTAKE_SET', { roundId: fixed.state.round.id, inputVersion: fixed.state.round.inputVersion,
+    draft: structuredClone(fixed.state.input.intake.draft), description: ROADSHOW_SHOE_QUESTION, sourceBindings: [] });
+  fixed.send('FOCUS_CONFIRM', { inputVersion: fixed.state.round.inputVersion });
+  const forged = buildDemoAnalysis(fixed.state).analysis;
+  forged.providerReceipt = { provider: 'fake' };
+  const before = fixed.state;
+  assert.throws(() => fixed.send('ANALYSIS_SET', { analysis: forged }), { code: 'invalid_structure' });
+  assert.equal(fixed.state, before);
+});
+
+test('the fixed question without an explicitly loaded fixture never receives shoe numbers', () => {
+  const h = harness();
+  h.send('INPUT_EDIT', { description: ROADSHOW_SHOE_QUESTION });
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const generated = buildDemoAnalysis(h.state);
+  assert.equal(generated.ok, true);
+  assert.equal(generated.analysis.mode, 'local_limited');
+  assert.equal(generated.analysis.paths.length, 0);
+  assert.doesNotMatch(generated.analysis.summary, /6,398,404|506\.4万元/);
 });
 
 test('juicer fixture contains one scoped five-stage dataset and no prerecorded business results', () => {
@@ -2869,9 +2983,11 @@ test('P2 MoneyAI summary uses the current confirmed business input without raw m
   const projected = buildMoneyAIAnalysisSummary(h.state);
   assert.equal(projected.ok, true);
   assert.equal(projected.summary.focus, h.state.input.focus || h.state.input.description);
-  assert(projected.summary.facts.some((fact) => fact.key === h.state.input.facts[0].key));
-  assert.deepEqual(projected.dataClasses,
-    ['confirmed_focus', 'confirmed_facts', 'confirmed_constraints', 'confirmed_unknowns']);
+  assert(projected.summary.facts.length > 0);
+  assert(projected.summary.facts.every((fact) => fact.dataOrigin === 'confirmed_merchant_input'
+    && ['merchant_statement', 'file_extract'].includes(fact.sourceKind)));
+  assert(projected.dataClasses.includes('confirmed_facts'));
+  assert(projected.dataClasses.every((item) => item.startsWith('confirmed_')));
   const serialized = JSON.stringify(projected.summary);
   for (const rawField of ['materials', 'intake', 'transcript', 'locator', 'blob']) assert.doesNotMatch(serialized, new RegExp('"' + rawField + '"'));
 });

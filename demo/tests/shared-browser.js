@@ -61,8 +61,8 @@ button.addEventListener('click', async () => {
         state.round.clarification.questions].every((items) => items.length === 0),
       '已有保存记录或输入；请使用新的独立浏览器配置，不会重置或替换现有数据。');
     summary.textContent = '正在真实调用此测试浏览器的IndexedDB';
-    await run('空会话、四种子与首次原样核对', async () => {
-      for (const fixtureId of ['juicer_cup_v1', 'one_sentence_v1', 'scope_conflict_v1', 'underbed_complete_v1']) {
+    await run('空会话、五种子与首次原样核对', async () => {
+      for (const fixtureId of ['shoe_store_report_fixed_v1', 'juicer_cup_v1', 'one_sentence_v1', 'scope_conflict_v1', 'underbed_complete_v1']) {
         await send('LOAD_FIXTURE', { fixtureId });
         check(!state.analysis && !state.selection && !state.feedbackRecords.length && !state.executionRecords.length, '不应提前载入结果或反馈');
         check(state.input.confirmedVersion === null, '载入草稿不能代替用户确认');

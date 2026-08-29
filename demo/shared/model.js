@@ -3,6 +3,7 @@ export { getAcceptedExperimentRound, matchesAcceptedExperimentPayload } from './
 import { makeFixtureInput, makeFixtureIntake } from './seeds.js';
 import { buildFunnelSnapshot, latestAnalysisReview, analysisReviewPolicy, applyAnalysisReviewPolicy, juicerProductFacts, buildDemoBreakpoint, buildDemoDataQuality } from './analysis-evidence.js';
 import { mapConfirmedIntakeToAnalysisInput, validateMerchantIntakeDraft, intakeReferencesFact } from './intake-draft.js';
+import { ROADSHOW_SHOE_FIXTURE_ID, matchesRoadshowShoeQuestion, hasRoadshowShoeFixtureCore } from './roadshow-shoe-fixture.js';
 
 export const CONTRACT_VERSION = 'demo.v1';
 export const FEEDBACK_DETAILS_VERSION = 1;
@@ -309,6 +310,9 @@ export function validateAnalysis(analysis, state) {
   requireValue(['ready', 'limited', 'insufficient'].includes(analysis.status), '分析状态不合法。', 'invalid_structure');
   requireValue(['demo_fixture', 'local_limited', 'real_model'].includes(analysis.mode), '当前没有可核对的分析能力。', 'invalid_structure');
   requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
+  if (!realModel) requireValue(analysis.analysisSource === 'local_fallback'
+    && !own(analysis, 'providerReceipt') && !own(analysis, 'skillIds'),
+    '本机或固定样例分析不能携带真实模型回执或调用身份。', 'invalid_structure');
   if (realModel) {
     const receipt = analysis.providerReceipt;
     const sourceOk = analysis.analysisSource === 'moneyai'
@@ -988,7 +992,18 @@ export function reduceCommand(original, command, context) {
   if (inputChanged) {
     invalidate(state, context);
     // The original facts retain their source notes; new user input is never relabelled as synthetic.
-    state.fixtureId = null;
+    const preserveRoadshowFixture = command.type === 'INTAKE_SET'
+      && original.fixtureId === ROADSHOW_SHOE_FIXTURE_ID
+      && original.input.description === ''
+      && matchesRoadshowShoeQuestion(state.input.description)
+      && hasRoadshowShoeFixtureCore(original) && hasRoadshowShoeFixtureCore(state)
+      && same(original.input.materials, state.input.materials)
+      && same(original.input.facts, state.input.facts)
+      && same(original.input.constraints, state.input.constraints)
+      && same(original.input.unknowns, state.input.unknowns)
+      && same(original.input.intake?.draft, state.input.intake?.draft)
+      && same(original.input.intake?.sourceBindings, state.input.intake?.sourceBindings);
+    if (!preserveRoadshowFixture) state.fixtureId = null;
     if (state.input.intake && (command.type === 'INPUT_EDIT'
       || command.type === 'FACT_PATCH' && patchedIntake
       || ['MATERIAL_REMOVE', 'MATERIAL_REPLACE'].includes(command.type)

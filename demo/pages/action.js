@@ -260,6 +260,20 @@ export function resolveActionSkillChain(snapshot, reference = activeSelection(sn
       typeof selection.selectedAt !== 'string' || !selection.selectedAt) {
     return unavailableSkillChain('skill_source_incomplete', '分析、选择或路径保存链不完整；执行 Skill 保持未知。');
   }
+  if (analysis.mode !== 'real_model') {
+    if (analysis.analysisSource !== 'local_fallback' || Object.hasOwn(analysis, 'providerReceipt')
+        || Object.hasOwn(analysis, 'skillIds') || path.skillId != null) {
+      return unavailableSkillChain('local_source_invalid', '本机分析携带了真实模型或执行 Skill 身份，已拒绝混用。');
+    }
+    if (artifact && (!sameReference(artifact, reference) || artifact.skillId != null
+        || artifact.mode !== analysis.mode || !artifact.id || !Number.isSafeInteger(artifact.version)
+        || artifact.version < 1 || typeof artifact.savedAt !== 'string' || !artifact.savedAt)) {
+      return unavailableSkillChain('local_artifact_mismatch', '本机稿件版本或来源与所选路径不一致。');
+    }
+    return { ok: true, code: 'local_fallback_chain',
+      message: '本机有限分析与保存链已核对；没有调用真实模型或专家 Skill。',
+      path, skillId: null, skillLabel: null, operationId: `local:${analysis.id}`, sourceLabel: '本机规则' };
+  }
   if (analysis.mode !== 'real_model' || !Array.isArray(analysis.skillIds) ||
       analysis.skillIds.length !== ANALYSIS_SKILL_IDS.length ||
       ANALYSIS_SKILL_IDS.some((skillId, index) => analysis.skillIds[index] !== skillId)) {
@@ -296,6 +310,9 @@ export function resolveActionSkillChain(snapshot, reference = activeSelection(sn
 }
 
 function skillChainLabel(chain) {
+  if (chain.ok && chain.code === 'local_fallback_chain') {
+    return '执行 Skill：未调用 · 本机有限分析与稿件版本已核对';
+  }
   return chain.ok
     ? `执行 Skill：${chain.skillLabel} · P2 ${chain.sourceLabel} 分析回执 ${chain.operationId.slice(-8)} 与路径字段已核对`
     : `执行 Skill：未知 · ${chain.message}`;

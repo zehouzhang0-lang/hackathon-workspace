@@ -1348,6 +1348,22 @@ async function generateAnalysis() {
   if (hasPendingReview()) throw reviewError('请先处理当前感受保存或判断重试，未另起生成。');
   const snapshot = await readState();
   if (!confirmed(snapshot)) fail({ code: 'invalid_transition', message: '请先回第一页确认本轮问题与资料。' });
+  if (snapshot.fixtureId === 'shoe_store_report_fixed_v1') {
+    const generated = api.buildDemoAnalysis(structuredClone(snapshot));
+    const fixed = generated?.analysis;
+    if (!generated?.ok || fixed?.mode !== 'demo_fixture' || fixed.analysisSource !== 'local_fallback'
+      || fixed.sourceFixtureId !== snapshot.fixtureId || Object.hasOwn(fixed, 'providerReceipt')
+      || Object.hasOwn(fixed, 'skillIds') || fixed.paths?.length !== 1) {
+      fail(generated, '固定样例身份、问题或数据哈希不匹配；没有生成预定答案。');
+    }
+    const key = `analysis:${snapshot.round.id}:${snapshot.round.inputVersion}`;
+    const saved = await dispatchIntent(key, 'ANALYSIS_SET', { analysis: fixed }, snapshot);
+    if (saved.analysis?.mode !== 'demo_fixture' || saved.analysis?.sourceFixtureId !== snapshot.fixtureId) {
+      throw reviewError('固定样例保存后身份不一致；未把它当作真实AI结果。', 'read_failed');
+    }
+    message('路演固定样例／伪数据兜底已在本机生成；未调用真实AI或专家Skill。', 'success');
+    return;
+  }
   const summaryResult = buildMoneyAIAnalysisSummary(snapshot);
   if (!summaryResult.ok) {
     message(summaryResult.message, 'error');
@@ -1391,7 +1407,7 @@ async function generateAnalysis() {
   await requestMoneyAIFromPage();
 }
 
-async function refreshSession(autoAnalyze = false) {
+async function refreshSession(autoAnalyze = true) {
   await operate(async () => {
     let snapshot;
     try {
@@ -1403,7 +1419,8 @@ async function refreshSession(autoAnalyze = false) {
     recordEvent('page_viewed', { pageId: 'decisions', inputVersion: snapshot.round.inputVersion }, snapshot, `page:${snapshot.sessionId}`);
     if (snapshot.savedAt) recordEvent('session_read', { pageId: 'decisions', stateRevision: snapshot.revision }, snapshot, `read:${snapshot.sessionId}`);
     if (autoAnalyze && !hasPendingReview() && confirmed(snapshot) && !currentAnalysis(snapshot)) {
-      message('资料已确认；请明确点击“用已确认资料更新判断”后再发送摘要。');
+      if (snapshot.fixtureId === 'shoe_store_report_fixed_v1') await generateAnalysis();
+      else message('资料已确认；请明确点击“用已确认资料更新判断”后再发送摘要。');
     }
   });
 }

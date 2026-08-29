@@ -1,9 +1,22 @@
 import { requireValue } from './model.js';
 import { createMerchantIntakeDraft } from './intake-draft.js';
+import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_REQUIRED_FACTS,
+  ROADSHOW_SHOE_SOURCE_SHA256 } from './roadshow-shoe-fixture.js';
 
-export const FIXTURE_IDS = Object.freeze(['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1', 'juicer_cup_v1']);
+export const FIXTURE_IDS = Object.freeze(['underbed_complete_v1', 'one_sentence_v1', 'scope_conflict_v1', 'juicer_cup_v1', ROADSHOW_SHOE_FIXTURE_ID]);
 export function makeFixtureIntake(fixtureId) {
   requireValue(FIXTURE_IDS.includes(fixtureId), '未知演示案例，未创建经营草稿。');
+  if (fixtureId === ROADSHOW_SHOE_FIXTURE_ID) {
+    return createMerchantIntakeDraft({
+      sources: ['manual'], transcript: '',
+      merchantName: '路演固定样例｜鞋店商品报告', productName: '鞋店60个商品（路演固定样例）',
+      category: '鞋靴', platform: '抖音电商', currentProblem: ROADSHOW_SHOE_QUESTION,
+      desiredAction: '先看清货盘结构、累计转化表现与下一步验证',
+      confirmedProductFacts: ['可见报告含60行商品记录、26个字段', '累计支付GMV为506.4万元、支付订单为11,246单'],
+      constraints: ['只使用已静态读取的可见报告内容', '统计周期未注明，不判断趋势', '价格带图与全店GMV口径冲突，不采用该图结论'],
+      unknowns: ['底层鞋店商品数据.xlsx未随样例提供', '渠道×成交、停留、退款与投流成本未提供', '商品ID字段60行仅20个唯一值，商品主键口径待核对']
+    });
+  }
   if (fixtureId !== 'juicer_cup_v1') return createMerchantIntakeDraft({ sources: ['manual'] });
   const draft = createMerchantIntakeDraft({
     sources: ['manual'], transcript: '',
@@ -45,6 +58,54 @@ export function makeFixtureInput(fixtureId, context, roundId) {
     };
     input.facts.push(entry);
     return entry;
+  }
+  if (fixtureId === ROADSHOW_SHOE_FIXTURE_ID) {
+    input.description = '';
+    const sourceSections = {
+      roadshow_source_sha256: '附件文件身份', report_product_rows: '报告概览', report_field_count: '报告概览',
+      report_unique_product_ids: '底表质量复核', product_exposure_people: '核心经营指标', product_click_people: '核心经营指标',
+      add_to_cart_people: '核心经营指标', buyer_people: '核心经营指标', report_paid_gmv_cny: '核心经营指标',
+      report_paid_order_count: '核心经营指标', mass_product_count: '货盘分层', mass_paid_gmv_cny: '货盘分层',
+      mass_paid_order_count: '货盘分层', mass_exposure_to_buyer_rate: '货盘分层', mass_aov_cny: '货盘分层',
+      mass_gross_margin_rate: '货盘分层', high_end_product_count: '货盘分层', high_end_paid_gmv_cny: '货盘分层',
+      high_end_paid_order_count: '货盘分层', high_end_exposure_to_buyer_rate: '货盘分层', high_end_aov_cny: '货盘分层',
+      high_end_gross_margin_rate: '货盘分层', report_search_share: '渠道洞察', report_search_conversion_correlation: '渠道洞察',
+      report_product_card_share: '渠道洞察', report_product_card_conversion_correlation: '渠道洞察',
+      price_band_chart_gmv_cny: '价格带图', report_dual_engine_conclusion: '报告结论'
+    };
+    const units = {
+      report_product_rows: '行', report_field_count: '个字段', report_unique_product_ids: '个唯一ID',
+      product_exposure_people: '人', product_click_people: '人', add_to_cart_people: '人', buyer_people: '人',
+      report_paid_gmv_cny: 'CNY', report_paid_order_count: '单', mass_product_count: '个商品',
+      mass_paid_gmv_cny: 'CNY', mass_paid_order_count: '单', mass_exposure_to_buyer_rate: '比例', mass_aov_cny: 'CNY',
+      mass_gross_margin_rate: '比例', high_end_product_count: '个商品', high_end_paid_gmv_cny: 'CNY',
+      high_end_paid_order_count: '单', high_end_exposure_to_buyer_rate: '比例', high_end_aov_cny: 'CNY',
+      high_end_gross_margin_rate: '比例', report_search_share: '比例', report_search_conversion_correlation: '相关系数',
+      report_product_card_share: '比例', report_product_card_conversion_correlation: '相关系数', price_band_chart_gmv_cny: 'CNY'
+    };
+    for (const [key, value] of Object.entries(ROADSHOW_SHOE_REQUIRED_FACTS)) {
+      const reportedConclusion = key === 'report_dual_engine_conclusion' || key.startsWith('report_search_')
+        || key.startsWith('report_product_card_') || key.endsWith('_exposure_to_buyer_rate')
+        || key.endsWith('_aov_cny') || key.endsWith('_gross_margin_rate');
+      const conflicting = key === 'price_band_chart_gmv_cny';
+      fact(key, value, units[key] ?? null, sourceSections[key] || '可见报告', {
+        subject: '鞋店60个商品（路演固定样例）',
+        evidenceStatus: reportedConclusion ? 'reported_conclusion' : 'confirmed_fact',
+        verification: conflicting ? 'conflicting' : 'checked',
+        source: {
+          kind: 'file_extract', materialId: null, materialVersion: null,
+          locator: { type: 'html_visible_report', fileName: '鞋店商品数据分析报告.html', section: sourceSections[key] || '可见报告', sha256: ROADSHOW_SHOE_SOURCE_SHA256 },
+          note: '路演固定样例／伪数据兜底；仅静态读取HTML可见报告，未执行脚本、链接或外部操作；不代表真实商家实时数据。'
+        }
+      });
+    }
+    input.unknowns.push(
+      { id: context.newId(), description: '统计周期、开始日期和结束日期未注明，不能判断趋势或日均表现', reason: 'not_provided', sourceId: 'input:description' },
+      { id: context.newId(), description: '底层鞋店商品数据.xlsx未随样例提供，无法逐行复核业务真实性', reason: 'not_provided', sourceId: 'input:description' },
+      { id: context.newId(), description: '价格带图五档GMV合计291.0万元，与全店506.4万元冲突，本轮不采用价格带结论', reason: 'conflicting', sourceId: 'input:description' },
+      { id: context.newId(), description: '商品ID字段60行仅20个唯一值，商品主键口径待核对', reason: 'conflicting', sourceId: 'input:description' }
+    );
+    return input;
   }
   if (fixtureId === 'juicer_cup_v1') {
     const draft = makeFixtureIntake(fixtureId);

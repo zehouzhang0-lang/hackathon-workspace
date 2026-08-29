@@ -3,6 +3,8 @@ import { findIntakeFieldFact } from "../shared/intake-draft.js";
 import { parseWorkbookFacts } from "../shared/table-facts.js";
 import { readWorkbookSheets } from "../shared/xlsx-reader.js";
 import { extractLocalIntakeCandidates } from "../shared/local-intake-parser.js";
+import { ROADSHOW_SHOE_FIXTURE_ID, matchesRoadshowShoeQuestion,
+  hasRoadshowShoeFixtureCore } from "../shared/roadshow-shoe-fixture.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -1484,6 +1486,17 @@ function startIntakePage() {
     if (!sameContext(origin) || origin.inputVersion !== state.round.inputVersion) {
       throw errorWithCode("读取期间输入已变化，未采用旧整理草稿。请重新整理。", "stale_input");
     }
+    const roadshowFixed = state.fixtureId === ROADSHOW_SHOE_FIXTURE_ID
+      && hasRoadshowShoeFixtureCore(state) && matchesRoadshowShoeQuestion(ui.description.value);
+    if (roadshowFixed) {
+      contextDraft = local.draft; contextBindings = local.sourceBindings; contextOrigin = origin; contextDirty = true;
+      reviewMessage = "路演固定样例／伪数据兜底：已载入经静态审查的可见报告摘录；本次未请求外部AI，也未执行HTML脚本、链接或外部操作。";
+      organizationVisible = true; readyToAnalyze = false;
+      setIntakeStage("confirming", "固定样例已在本机整理，等待核对；尚未开始分析。");
+      render();
+      status("请核对固定样例的数据范围与未知项，再继续。");
+      return;
+    }
     contextDraft = local.draft; contextBindings = local.sourceBindings; contextOrigin = origin; contextDirty = true;
     extractionController = new AbortController();
     const consentNode = byId("material-text-consent");
@@ -1763,6 +1776,14 @@ function startIntakePage() {
       throw new Error("理解内容或回答尚未保存，请先核对当前编辑。");
     }
     if (!contextMatches(contextOrigin)) throw errorWithCode("资料已变化，请重新核对后再补问。", "stale_input");
+    if (state.fixtureId === ROADSHOW_SHOE_FIXTURE_ID && hasRoadshowShoeFixtureCore(state)
+      && matchesRoadshowShoeQuestion(state.input.description)) {
+      readyToAnalyze = true;
+      organizedVersion = state.round.inputVersion;
+      showReview("ready");
+      status("固定问题与样例数据已严格匹配；可以开始本机演示分析，不会外发材料。");
+      return;
+    }
     const clarification = state.round.clarification;
     const active = clarification.questions.find((question) => question.questionId === clarification.activeQuestionId);
     if (active) { readyToAnalyze = false; showQuestion(); return; }
@@ -1909,6 +1930,9 @@ function startIntakePage() {
     ui.materials.hidden = !state.input.materials.some((material) => !material.mime.startsWith("image/"));
     ui.imageMaterials.hidden = !state.input.materials.some((material) => material.mime.startsWith("image/"));
     ui.demoNotice.hidden = !state.fixtureId;
+    ui.demoNotice.textContent = state.fixtureId === ROADSHOW_SHOE_FIXTURE_ID
+      ? "路演固定样例／伪数据兜底：仅用于预定展示，不代表现场AI实时分析或真实商家效果"
+      : "演示案例为合成数据，不代表真实商家效果";
     for (const material of state.input.materials) {
       const card = element("article", undefined, "material-card");
       card.dataset.materialId = material.id;

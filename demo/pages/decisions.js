@@ -210,6 +210,91 @@ export function decisionTraceRows(analysis) {
 }
 // B-DECISION-DISPLAY-END
 
+// MONEYAI-PAGE-BOUNDARY-START
+// Send only the current confirmed structured projection. Raw materials, blobs,
+// locators, transcripts, credentials and personal history are deliberately absent.
+export function moneyAIRequestOrigin(snapshot) {
+  return { sessionId: snapshot?.sessionId, roundId: snapshot?.round?.id,
+    inputVersion: snapshot?.round?.inputVersion, revision: snapshot?.revision };
+}
+
+export function sameMoneyAIRequestOrigin(snapshot, origin) {
+  return Boolean(snapshot && origin && snapshot.sessionId === origin.sessionId
+    && snapshot.round?.id === origin.roundId && snapshot.round?.inputVersion === origin.inputVersion
+    && snapshot.revision === origin.revision);
+}
+
+const boundedMoneyAIText = (value, limit = 2000) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
+const moneyAIScalar = (value) => value === null || typeof value === 'boolean'
+  || typeof value === 'number' && Number.isFinite(value) ? value
+  : typeof value === 'string' ? value.slice(0, 2000) : null;
+const moneyAIWindow = (value) => value && typeof value === 'object'
+  ? { start: boundedMoneyAIText(value.start, 40) || null, end: boundedMoneyAIText(value.end, 40) || null } : null;
+
+export function buildMoneyAIAnalysisSummary(snapshot) {
+  if (snapshot?.contractVersion !== 'demo.v1' || !snapshot?.round || !snapshot?.input
+    || snapshot.input.confirmedVersion !== snapshot.round.inputVersion) {
+    return { ok: false, code: 'unconfirmed_input', message: '请先确认当前轮次和输入，尚未准备发送摘要。' };
+  }
+  const input = snapshot.input;
+  if (![input.facts, input.constraints, input.unknowns].every(Array.isArray)) {
+    return { ok: false, code: 'invalid_input', message: '当前确认资料结构不完整，未准备发送摘要。' };
+  }
+  const dataOrigin = snapshot.fixtureId ? 'synthetic_seed' : 'confirmed_merchant_input';
+  const focus = boundedMoneyAIText(input.focus || input.description, 2000);
+  const summary = {
+    version: 'analysis.request.v1',
+    focus,
+    facts: input.facts.slice(0, 100).map((fact) => ({
+      id: boundedMoneyAIText(fact?.id, 120) || null,
+      key: boundedMoneyAIText(fact?.key, 120) || null,
+      value: moneyAIScalar(fact?.value),
+      availability: boundedMoneyAIText(fact?.availability, 40) || 'unknown',
+      evidenceStatus: boundedMoneyAIText(fact?.evidenceStatus, 40) || null,
+      unit: boundedMoneyAIText(fact?.unit, 80) || null,
+      subject: boundedMoneyAIText(fact?.subject, 300) || null,
+      window: moneyAIWindow(fact?.window),
+      channel: boundedMoneyAIText(fact?.channel, 300) || null,
+      cohort: boundedMoneyAIText(fact?.cohort, 500) || null,
+      sourceKind: boundedMoneyAIText(fact?.source?.kind, 80) || null,
+      verification: boundedMoneyAIText(fact?.verification, 80) || null,
+      dataOrigin,
+    })),
+    constraints: input.constraints.slice(0, 50).map((item) => ({
+      id: boundedMoneyAIText(item?.id, 120) || null,
+      description: boundedMoneyAIText(item?.description, 1000),
+      value: moneyAIScalar(item?.value), unit: boundedMoneyAIText(item?.unit, 80) || null,
+      scope: boundedMoneyAIText(item?.scope, 80) || null,
+      sourceFactIds: Array.isArray(item?.sourceFactIds) ? item.sourceFactIds.filter((id) => typeof id === 'string').slice(0, 50) : [],
+      dataOrigin,
+    })),
+    unknowns: input.unknowns.slice(0, 50).map((item) => ({
+      id: boundedMoneyAIText(item?.id, 120) || null,
+      description: boundedMoneyAIText(item?.description, 1000),
+      reason: boundedMoneyAIText(item?.reason, 200) || 'unknown',
+      sourceId: boundedMoneyAIText(item?.sourceId, 120) || null,
+      dataOrigin,
+    })),
+  };
+  if (!summary.focus && !summary.facts.length && !summary.constraints.length && !summary.unknowns.length) {
+    return { ok: false, code: 'empty_input', message: '当前确认资料没有可发送的结构化内容。' };
+  }
+  return { ok: true, summary, dataClasses: snapshot.fixtureId
+    ? ['synthetic_focus', 'synthetic_facts', 'synthetic_constraints', 'synthetic_unknowns']
+    : ['confirmed_focus', 'confirmed_facts', 'confirmed_constraints', 'confirmed_unknowns'] };
+}
+
+export function moneyAIResultMessage(result) {
+  const sent = result?.sentToMoneyAI;
+  const delivery = sent === true ? '服务确认已发送到 MoneyAI。'
+    : sent === false ? '服务确认未发送到 MoneyAI。'
+      : '是否发送尚未确认，请勿立即重复提交。';
+  return { delivery, kind: result?.ok ? 'success' : result?.code === 'cancelled' ? 'info' : 'error',
+    message: typeof result?.message === 'string' && result.message.trim()
+      ? result.message : result?.ok ? '已收到回执。' : '未取得可用分析回执。' };
+}
+// MONEYAI-PAGE-BOUNDARY-END
+
 // Page-local view state only. All persisted data goes through shared/state.js.
 const byId = (id) => document.getElementById(id);
 const list = (value) => Array.isArray(value) ? value : [];
@@ -262,6 +347,268 @@ const reviewRunner = createDecisionReviewRunner({
     syncReviewControls();
   },
 });
+
+
+let moneyAIStatus = null;
+let moneyAIStatusBusy = false;
+let moneyAIRequestPreparing = false;
+let moneyAIRequestBusy = false;
+let moneyAIPreview = null;
+let moneyAIPreviewToken = '';
+let moneyAIOperation = null;
+
+function moneyAIStatusText(value, kind = 'info') {
+  const node = byId('moneyai-request-status');
+  node.textContent = value;
+  node.dataset.kind = kind;
+}
+
+function renderMoneyAICapability() {
+  const tag = byId('moneyai-capability-tag');
+  const status = byId('moneyai-capability-status');
+  if (moneyAIStatusBusy) {
+    tag.textContent = '正在核对'; tag.dataset.state = 'checking';
+    status.textContent = '正在读取项目后端状态；尚未发送分析摘要。';
+  } else if (!moneyAIStatus) {
+    tag.textContent = '能力待核对'; tag.dataset.state = 'unknown';
+    status.textContent = '尚未取得完整能力回执。';
+  } else if (moneyAIStatus.analysisReady) {
+    tag.textContent = '真实分析可请求'; tag.dataset.state = 'ready';
+    status.textContent = '项目通路声明分析已就绪；仍须逐次同意并核对业务回执。' + (moneyAIStatus.reason ? ' ' + moneyAIStatus.reason : '');
+  } else {
+    tag.textContent = '真实分析未就绪'; tag.dataset.state = 'unavailable';
+    status.textContent = '项目后端可报告状态，但分析能力尚未开放。' + (moneyAIStatus.reason ? ' ' + moneyAIStatus.reason : '');
+  }
+}
+
+function syncMoneyAIControls() {
+  const eligibility = state ? buildMoneyAIAnalysisSummary(state) : { ok: false };
+  const previewCurrent = Boolean(moneyAIPreview && state
+    && sameMoneyAIRequestOrigin(state, moneyAIPreview.origin));
+  const consent = byId('moneyai-consent');
+  const requestLocked = moneyAIRequestPreparing || moneyAIRequestBusy;
+  consent.disabled = requestLocked || !eligibility.ok;
+  byId('moneyai-check-status').disabled = moneyAIStatusBusy || requestLocked || !api;
+  byId('moneyai-request-analysis').disabled = requestLocked || moneyAIStatusBusy
+    || moneyAIStatus?.analysisReady !== true || !eligibility.ok || !previewCurrent || !consent.checked;
+  byId('moneyai-cancel-analysis').hidden = !requestLocked || !moneyAIOperation;
+  byId('moneyai-cancel-analysis').disabled = !requestLocked || moneyAIOperation?.cancelRequested;
+}
+
+function prepareMoneyAIPreview(snapshot) {
+  const result = buildMoneyAIAnalysisSummary(snapshot);
+  const preview = byId('moneyai-summary-preview');
+  const fingerprint = byId('moneyai-summary-fingerprint');
+  const token = JSON.stringify(moneyAIRequestOrigin(snapshot));
+  const scopeChanged = moneyAIPreviewToken !== token;
+  moneyAIPreviewToken = token;
+  moneyAIPreview = null;
+  if (scopeChanged) byId('moneyai-consent').checked = false;
+  if (!result.ok) {
+    preview.textContent = result.message;
+    fingerprint.textContent = '摘要指纹：未生成';
+    byId('moneyai-consent').checked = false;
+    syncMoneyAIControls();
+    return;
+  }
+  preview.textContent = JSON.stringify(result.summary, null, 2);
+  fingerprint.textContent = '摘要指纹：正在本机计算……';
+  if (typeof api?.computeMoneyAIInputFingerprint !== 'function') {
+    fingerprint.textContent = '共享指纹契约尚未载入；真实分析入口保持关闭。';
+    syncMoneyAIControls();
+    return;
+  }
+  void api.computeMoneyAIInputFingerprint(result.summary).then((value) => {
+    if (!state || moneyAIPreviewToken !== token || !sameMoneyAIRequestOrigin(state, moneyAIRequestOrigin(snapshot))) return;
+    moneyAIPreview = { origin: moneyAIRequestOrigin(snapshot), summary: result.summary, dataClasses: result.dataClasses, inputFingerprint: value };
+    fingerprint.textContent = '摘要指纹：' + value;
+    syncMoneyAIControls();
+  }).catch(() => {
+    if (moneyAIPreviewToken !== token) return;
+    fingerprint.textContent = '摘要指纹计算失败；真实分析入口保持关闭。';
+    syncMoneyAIControls();
+  });
+}
+
+function renderMoneyAIPanel() {
+  const mode = state?.analysis?.mode;
+  byId('moneyai-analysis-source').textContent = mode === 'real_model'
+    ? '当前已保存分析标记为 MoneyAI 真实模型结果；仍以保存的来源、请求与版本回执为准。'
+    : mode === 'demo_fixture' ? '当前已保存的是合成资料的本机规则分析，不是 MoneyAI 结果。请求失败不会替换它。'
+      : mode === 'local_limited' ? '当前已保存的是本机有限分析，不是 MoneyAI 结果。请求失败不会替换它。'
+        : '当前没有已保存的有效分析；不会用自然语言回包或 HTTP 成功冒充分析结果。';
+  renderMoneyAICapability();
+  prepareMoneyAIPreview(state);
+  syncMoneyAIControls();
+}
+
+async function refreshMoneyAIStatus() {
+  if (!api || moneyAIStatusBusy || moneyAIRequestPreparing || moneyAIRequestBusy) return;
+  moneyAIStatusBusy = true;
+  renderMoneyAICapability(); syncMoneyAIControls();
+  const result = await api.getMoneyAIStatus();
+  moneyAIStatusBusy = false;
+  if (result?.ok) {
+    moneyAIStatus = result.status;
+    moneyAIStatusText(result.status.analysisReady
+      ? '能力已就绪；核对发送摘要并逐次同意后，才可发起请求。'
+      : '真实分析目前不可用；当前本机判断保持不变。', result.status.analysisReady ? 'success' : 'info');
+  } else {
+    moneyAIStatus = null;
+    moneyAIStatusText(result?.message || '未取得完整能力回执；没有发送分析摘要。', 'error');
+  }
+  renderMoneyAICapability(); syncMoneyAIControls();
+}
+
+function invalidateMoneyAIRequest(next) {
+  if (!moneyAIOperation || sameMoneyAIRequestOrigin(next, moneyAIOperation.origin)) return;
+  moneyAIOperation.stale = true;
+  moneyAIOperation.controller.abort();
+  moneyAIStatusText('请求期间会话、轮次、输入版本或revision已变化；已取消等待，迟到回执不会保存。', 'error');
+}
+
+async function requestMoneyAIFromPage() {
+  if (!api || moneyAIRequestPreparing || moneyAIRequestBusy || moneyAIStatus?.analysisReady !== true) return;
+  if (!byId('moneyai-consent').checked) {
+    moneyAIStatusText('请先展开并核对摘要，再为这一次请求明确同意。', 'error');
+    return;
+  }
+  if (!moneyAIPreview || !sameMoneyAIRequestOrigin(state, moneyAIPreview.origin)) {
+    byId('moneyai-consent').checked = false;
+    moneyAIStatusText('当前预览已经过期；未发送，请重新核对摘要并逐次同意。', 'error');
+    syncMoneyAIControls();
+    return;
+  }
+  // Consume consent and freeze the exact preview before the first await. The
+  // preflight lock prevents one checkbox action from starting two requests.
+  const frozenPreview = structuredClone(moneyAIPreview);
+  const controller = new AbortController();
+  const operation = { origin: frozenPreview.origin, request: null, controller,
+    cancelRequested: false, stale: false };
+  moneyAIOperation = operation;
+  moneyAIRequestPreparing = true;
+  byId('moneyai-consent').checked = false;
+  moneyAIStatusText('正在本机复核摘要和指纹，尚未发送。');
+  syncMoneyAIControls();
+  let prepared = null;
+  try {
+    const snapshot = await readState();
+    if (controller.signal.aborted || operation.stale
+      || !sameMoneyAIRequestOrigin(snapshot, frozenPreview.origin)
+      || !sameMoneyAIRequestOrigin(state, frozenPreview.origin)) {
+      throw new Error('发送前会话或revision已变化，或本次请求已取消；未发送，请重新核对摘要。');
+    }
+    const summaryResult = buildMoneyAIAnalysisSummary(snapshot);
+    if (!summaryResult.ok) throw new Error(summaryResult.message);
+    if (JSON.stringify(summaryResult.summary) !== JSON.stringify(frozenPreview.summary)
+      || JSON.stringify(summaryResult.dataClasses) !== JSON.stringify(frozenPreview.dataClasses)) {
+      throw new Error('发送摘要与已预览内容不一致；未发送，请重新核对。');
+    }
+    let inputFingerprint;
+    try { inputFingerprint = await api.computeMoneyAIInputFingerprint(summaryResult.summary); }
+    catch { throw new Error('摘要指纹计算失败，未发送。'); }
+    if (controller.signal.aborted || operation.stale
+      || !sameMoneyAIRequestOrigin(state, frozenPreview.origin)
+      || frozenPreview.inputFingerprint !== inputFingerprint) {
+      throw new Error('请求已取消、身份已变化或指纹不一致；未发送，请重新核对并逐次同意。');
+    }
+    const operationId = 'analysis:' + crypto.randomUUID();
+    const attemptId = 'attempt:' + crypto.randomUUID();
+    const request = api.createMoneyAIEnvelope({
+      operation: api.MONEYAI_OPERATIONS.analysis, operationId, attemptId,
+      scope: {
+        sessionId: snapshot.sessionId, roundId: snapshot.round.id,
+        inputVersion: snapshot.round.inputVersion, analysisId: null, pathId: null,
+        artifact: null, feedback: null, inputFingerprint,
+      },
+      consent: {
+        granted: true, sendScope: ['confirmed_analysis_input'],
+        dataClasses: summaryResult.dataClasses,
+      },
+      payload: frozenPreview.summary,
+    });
+    prepared = { origin: { ...moneyAIRequestOrigin(snapshot), operationId, attemptId, inputFingerprint },
+      request, frozenState: structuredClone(snapshot) };
+    if (!sameMoneyAIRequestOrigin(state, prepared.origin)) {
+      throw new Error('发送前会话或revision已变化；未发送，请重新核对摘要。');
+    }
+  } catch (error) {
+    if (!operation.cancelRequested && !operation.stale) {
+      moneyAIStatusText(error?.message || '当前会话未能读回，未发送摘要。', 'error');
+    }
+    prepared = null;
+  } finally {
+    moneyAIRequestPreparing = false;
+    if (!prepared || controller.signal.aborted) {
+      if (moneyAIOperation === operation) moneyAIOperation = null;
+      syncMoneyAIControls();
+    }
+  }
+  if (!prepared || controller.signal.aborted || operation.stale) return;
+  operation.origin = prepared.origin;
+  operation.request = prepared.request;
+  operation.frozenState = prepared.frozenState;
+  moneyAIRequestBusy = true;
+  byId('moneyai-send-status').textContent = '请求已开始；是否发送仍待服务回执。';
+  moneyAIStatusText('正在等待项目 MoneyAI 分析回执；当前本地分析尚未改变。');
+  syncMoneyAIControls();
+  let result;
+  try {
+    result = await api.requestMoneyAIAnalysis(operation.request, {
+      state: operation.frozenState, signal: controller.signal, consentToExternalProcessing: true,
+    });
+  } catch {
+    result = { ok: false, code: 'backend_unavailable',
+      message: '共享分析调用异常；未取得完整回执。', sentToMoneyAI: null };
+  }
+  if (moneyAIOperation !== operation) return;
+  const described = moneyAIResultMessage(result);
+  byId('moneyai-send-status').textContent = described.delivery;
+  if (operation.stale || !sameMoneyAIRequestOrigin(state, operation.origin)) {
+    moneyAIStatusText('收到迟到回执，但请求身份已过期；未保存、未替换当前分析。' + described.delivery, 'error');
+  } else if (!result?.ok) {
+    moneyAIStatusText(described.message + ' ' + described.delivery + ' 当前已保存分析保持不变。', described.kind);
+  } else {
+    try {
+      api.validateRealModelAnalysisDraft(result.analysis, operation.frozenState, operation.request.scope);
+      if (!sameMoneyAIRequestOrigin(state, operation.origin)) {
+        throw reviewError('MoneyAI回执到达时本机revision已变化，未保存旧分析。');
+      }
+      moneyAIStatusText('MoneyAI回执已通过共享结构和身份校验；正在保存，当前本机分析尚未改变。');
+      // From here the reducer's exact expectedRevision is the sole commit
+      // authority. Hide cancellation so our successful revision is not
+      // mistaken for a late network response by the request guard.
+      moneyAIOperation = null;
+      syncMoneyAIControls();
+      const saved = await dispatchIntent('moneyai-analysis:' + operation.origin.operationId,
+        'ANALYSIS_SET', { analysis: result.analysis }, operation.frozenState,
+        { exactRevision: true, scope: operation.origin });
+      if (saved.analysis?.mode !== 'real_model'
+        || saved.analysis.providerReceipt?.operationId !== result.receipt?.operationId
+        || saved.analysis.providerReceipt?.inputFingerprint !== operation.origin.inputFingerprint) {
+        throw reviewError('真实分析保存回执与本次MoneyAI身份不一致。', 'read_failed');
+      }
+      moneyAIStatusText('MoneyAI真实分析已通过共享校验并保存；请重新比较当前最多两条路径。', 'success');
+    } catch (error) {
+      moneyAIStatusText('MoneyAI回执未能安全保存：' + (error?.message || '共享校验或版本回执不完整。')
+        + ' 当前已保存分析保持不变或以最新共享状态为准。', 'error');
+    }
+  }
+  moneyAIRequestBusy = false;
+  if (moneyAIOperation === operation) moneyAIOperation = null;
+  prepareMoneyAIPreview(state);
+  syncMoneyAIControls();
+}
+
+function cancelMoneyAIRequest() {
+  if (!moneyAIOperation || !moneyAIRequestPreparing && !moneyAIRequestBusy) return;
+  moneyAIOperation.cancelRequested = true;
+  moneyAIOperation.controller.abort();
+  moneyAIStatusText(moneyAIRequestPreparing
+    ? '已取消本机发送前复核；尚未调用共享分析请求。'
+    : '正在取消本次等待；若请求已送达，是否发送仍以最终回执为准。');
+  syncMoneyAIControls();
+}
 
 
 function revisionRecoveryEntry() {
@@ -590,6 +937,7 @@ function setBusy(value) {
   });
   byId('path-detail').setAttribute('aria-busy', String(busy));
   syncReviewControls();
+  syncMoneyAIControls();
 }
 
 function serialize(work) {
@@ -642,6 +990,7 @@ function applyState(next) {
   }
   // A late load/dispatch response must not undo a newer subscription snapshot.
   if (state?.sessionId === next.sessionId && next.revision < state.revision) return true;
+  invalidateMoneyAIRequest(next);
   const signature = JSON.stringify([next.sessionId, next.round.id, next.round.inputVersion,
     next.input.confirmedVersion, next.fixtureId, next.analysis?.id, next.analysis?.status, latestDecisionReview(next)?.id,
     next.selection?.analysisId, next.selection?.pathId, next.savedAt === null]);
@@ -652,7 +1001,7 @@ function applyState(next) {
     byId('decision-differences').hidden = true;
     byId('report-consent').checked = false;
     renderState();
-  }
+  } else prepareMoneyAIPreview(state);
   setBusy(busy);
   return true;
 }
@@ -1120,7 +1469,8 @@ function renderScope() {
   addDefinition(meta, '输入版本', '第 ' + (state.round.index ?? '未知') + ' 轮 · v' + state.round.inputVersion);
   const mode = state.analysis?.mode;
   addDefinition(meta, '分析来源', mode === 'demo_fixture' ? '合成演示 · 本机规则，非真实模型'
-    : mode === 'local_limited' ? '本机有限分析 · 非真实模型' : '尚未生成');
+    : mode === 'local_limited' ? '本机有限分析 · 非真实模型'
+      : mode === 'real_model' ? 'MoneyAI真实模型 · 以保存回执为准' : '尚未生成');
   addDefinition(meta, '当前全部缺口', gaps.join('；') || '未登记，不代表没有未知');
 }
 
@@ -1147,6 +1497,7 @@ function renderState() {
   list(analysis?.limitations).forEach((value) => limitations.append(element('li', '', text(value))));
   renderFunnel(analysis);
   renderPriority(analysis);
+  renderMoneyAIPanel();
   if (analysis && !Array.isArray(analysis.paths)) {
     pathInvalid = true;
     message('分析的路径结构不完整，无法继续。请更新判断或返回核对。', 'error');
@@ -1607,18 +1958,25 @@ async function boot() {
   booting = true;
   try {
     if (!['http:', 'https:'].includes(window.location.protocol)) throw new Error('请使用统筹提供的同源本地 HTTP 地址，不能通过 file:// 运行共享会话。');
-    const [storage, navigation, shell, data, report] = await Promise.all([
+    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model] = await Promise.all([
       import('../shared/state.js'), import('../shared/navigation.js'), import('../shared/shell.js'),
-      import('../shared/demo-data.js'), import('./report.js'),
+      import('../shared/demo-data.js'), import('./report.js'), import('../shared/moneyai.js'),
+      import('../shared/moneyai-contract.js'), import('../shared/model.js'),
     ]);
-    api = { ...storage, ...navigation, ...shell, ...data, ...report };
-    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree']) {
+    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai,
+      computeMoneyAIInputFingerprint: moneyaiContract.computeMoneyAIInputFingerprint,
+      createMoneyAIEnvelope: moneyaiContract.createMoneyAIEnvelope,
+      validateRealModelAnalysisDraft: model.validateRealModelAnalysisDraft,
+      MONEYAI_OPERATIONS: moneyaiContract.MONEYAI_OPERATIONS };
+    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft']) {
       if (typeof api[name] !== 'function') throw new Error(`共享或报告模块缺少 ${name}，未创建替代实现。`);
     }
+    if (api.MONEYAI_OPERATIONS?.analysis !== 'analysis.run') throw new Error('MoneyAI分析操作契约不兼容。');
     await api.mountShell('decisions');
     registerReviewNavigationGuard();
     subscribe();
     await refreshSession();
+    void refreshMoneyAIStatus();
   } catch (error) {
     api = null;
     showStart('第二页暂时无法启动', '共享模块或本地服务还未准备好。不会载入假案例，也没有改写已保存的资料。', { goBack: false });
@@ -1628,11 +1986,16 @@ async function boot() {
   }
 }
 
+if (typeof document !== 'undefined') {
 // Page wiring; helpers above remain pure or explicit render functions.
 bindReviewControls();
 document.querySelectorAll('[data-action="return"]').forEach((button) => button.addEventListener('click', () => goTo('intake')));
 byId('retry-load').addEventListener('click', () => api ? refreshSession() : window.location.reload());
 byId('refresh-analysis').addEventListener('click', () => operate(generateAnalysis));
+byId('moneyai-check-status').addEventListener('click', () => void refreshMoneyAIStatus());
+byId('moneyai-consent').addEventListener('change', () => syncMoneyAIControls());
+byId('moneyai-request-analysis').addEventListener('click', () => void requestMoneyAIFromPage());
+byId('moneyai-cancel-analysis').addEventListener('click', cancelMoneyAIRequest);
 byId('choose-path').addEventListener('click', choosePath);
 byId('download-report').addEventListener('click', downloadReport);
 byId('calculation-return').addEventListener('click', () => {
@@ -1658,10 +2021,15 @@ for (const id of ['evidence-disclosure', 'experiment-disclosure', 'tree-disclosu
     }
   });
 }
-window.addEventListener('pagehide', () => { unsubscribe?.(); unsubscribe = null; unregisterReviewGuard?.(); unregisterReviewGuard = null; });
+window.addEventListener('pagehide', () => {
+  if (moneyAIOperation) { moneyAIOperation.stale = true; moneyAIOperation.controller.abort(); }
+  unsubscribe?.(); unsubscribe = null; unregisterReviewGuard?.(); unregisterReviewGuard = null;
+});
 window.addEventListener('pageshow', (event) => { if (event.persisted && api) { registerReviewNavigationGuard(); subscribe(); void refreshSession(false); } });
 // Cosmetic only: a missing or late title enhancement cannot block shared state.
 void import('../shared/title-motion.js')
   .then(({ enhanceFoldTitle }) => enhanceFoldTitle(byId('decisions-title')))
   .catch(() => {});
 void boot();
+
+}

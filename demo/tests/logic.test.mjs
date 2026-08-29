@@ -7,7 +7,8 @@ import { FIXTURE_IDS } from '../shared/seeds.js';
 import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
 import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
   getIntakeCorrectionConflicts, editIntakeField, isIntakeCorrectionSnapshotCurrent } from '../pages/intake.js';
-import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource } from '../pages/action.js';
+import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource, buildMoneyAIDecisionRecord } from '../pages/action.js';
+import { buildMoneyAIAnalysisSummary } from '../pages/decisions.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput,
@@ -2733,4 +2734,61 @@ test('a verified MoneyAI real_model draft is isolated from local modes and remai
   const forged = structuredClone(result.analysis);
   forged.providerReceipt.sessionId = 'another_session';
   assert.throws(() => h.send('ANALYSIS_SET', { analysis: forged }), { code: 'invalid_structure' });
+});
+
+
+test('P2 MoneyAI summary uses the current confirmed business input without raw materials', () => {
+  const h = harness('underbed_complete_v1');
+  const draft = structuredClone(h.state.input.intake.draft);
+  draft.currentProblem = (draft.currentProblem || '') + '；这是队友本机填写的数据。';
+  saveIntake(h, draft, h.state.input.description + '；这是队友本机填写的数据。');
+  h.send('ORGANIZATION_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    focus: '核对队友刚填写的真实商家数据', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns });
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const projected = buildMoneyAIAnalysisSummary(h.state);
+  assert.equal(projected.ok, true);
+  assert.equal(projected.summary.focus, h.state.input.focus || h.state.input.description);
+  assert(projected.summary.facts.some((fact) => fact.key === h.state.input.facts[0].key));
+  assert.deepEqual(projected.dataClasses,
+    ['confirmed_focus', 'confirmed_facts', 'confirmed_constraints', 'confirmed_unknowns']);
+  const serialized = JSON.stringify(projected.summary);
+  for (const rawField of ['materials', 'intake', 'transcript', 'locator', 'blob']) assert.doesNotMatch(serialized, new RegExp('"' + rawField + '"'));
+});
+
+test('P3 MoneyAI history accepts a saved real-model decision without an actionKey and keeps its source input', async () => {
+  const h = harness('underbed_complete_v1');
+  const intake = structuredClone(h.state.input.intake.draft);
+  intake.currentProblem = (intake.currentProblem || '') + '；这是队友本机填写的数据。';
+  saveIntake(h, intake, h.state.input.description + '；这是队友本机填写的数据。');
+  h.send('ORGANIZATION_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    focus: '核对队友刚填写的真实商家数据', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns });
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const local = buildDemoAnalysis(h.state).analysis;
+  const { processing: _processing, ...base } = local;
+  const draft = { ...base, mode: 'real_model', analysisSource: 'moneyai',
+    paths: base.paths.map(({ actionKey: _actionKey, ...path }) => path) };
+  const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
+    inputVersion: h.state.round.inputVersion, operationId: 'p3_real_analysis', attemptId: 'p3_real_attempt' },
+  analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns }));
+  const result = await requestMoneyAIAnalysis(request, { state: h.state, consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => url.endsWith('/status') ? moneyAIJsonResponse(syntheticMoneyAIStatus())
+      : moneyAIJsonResponse(syntheticMoneyAIReply(JSON.parse(options.body), { analysis: draft })) });
+  assert.equal(result.ok, true);
+  h.send('ANALYSIS_SET', { analysis: result.analysis });
+  selectAndSave(h);
+  const artifact = currentArtifacts(h.state)[0];
+  h.send('FEEDBACK_SAVE', makeFeedbackPayload(artifact,
+    { adoption: 'unknown', execution: 'unknown', observation: 'unknown', rawText: '仅用于验证真实方案可写入历史。' },
+    { detailsVersion: FEEDBACK_DETAILS_VERSION }));
+  const feedback = h.state.feedbackRecords.at(-1);
+  const record = buildMoneyAIDecisionRecord(h.state, feedback.id);
+  assert(record);
+  assert.equal(record.source, 'confirmed_project_decision');
+  assert.equal(record.decision.actionKey, null);
+  assert.equal(record.context.focus, h.state.analysis.inputSnapshot.focus || h.state.analysis.inputSnapshot.description);
+  assert(record.context.facts.length > 0);
+  assert.doesNotMatch(JSON.stringify(record.context), /"materials"|"intake"|"transcript"|"locator"|"blob"/);
 });

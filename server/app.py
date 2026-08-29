@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +29,32 @@ INTAKE_SOURCES = {"voice", "paste", "txt", "csv", "json", "manual"}
 TEXT_MIMES = {"text/plain", "text/csv", "application/json"}
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 NON_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ud800-\udfff]")
+
+
+def env_flag(name):
+    """Read an explicit boolean without silently enabling a capability."""
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{name} must be true/false, 1/0, yes/no, or on/off")
+
+
+def env_port(name, default):
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer port") from error
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name} must be between 1 and 65535")
+    return port
 
 
 def unique_json_object(pairs):
@@ -239,14 +266,44 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=4188)
-    parser.add_argument("--moneyai-url", help="当前MoneyAI实例的显式本机地址；不提交配置或凭据")
-    parser.add_argument("--moneyai-project-dir", help="服务端固定的路芽项目专用MoneyAI空间；浏览器不能覆盖")
-    parser.add_argument("--moneyai-analysis-enabled", action="store_true", help="仅在真实模型与结构已验证后启用")
-    parser.add_argument("--moneyai-extraction-enabled", action="store_true", help="仅在真实提取与结构已验证后启用")
-    parser.add_argument("--moneyai-history-enabled", action="store_true", help="仅在项目写入和精确读回已验证后启用")
-    parser.add_argument("--moneyai-history-read-verified", action="store_true", help="仅在重启读回及空项目隔离均验证后启用")
+    parser.add_argument("--port", type=int, default=env_port("LUYA_DEMO_PORT", 4188))
+    parser.add_argument(
+        "--moneyai-url",
+        default=os.environ.get("LUYA_MONEYAI_URL"),
+        help="本机MoneyAI sidecar地址；默认读取LUYA_MONEYAI_URL，不提交配置或凭据",
+    )
+    parser.add_argument(
+        "--moneyai-project-dir",
+        default=os.environ.get("LUYA_MONEYAI_PROJECT_DIR"),
+        help="路芽项目专用MoneyAI空间；默认读取LUYA_MONEYAI_PROJECT_DIR，浏览器不能覆盖",
+    )
+    parser.add_argument(
+        "--moneyai-analysis-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=env_flag("LUYA_MONEYAI_ANALYSIS_ENABLED"),
+        help="任一MoneyAI模型Provider完成本机验证后启用",
+    )
+    parser.add_argument(
+        "--moneyai-extraction-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=env_flag("LUYA_MONEYAI_EXTRACTION_ENABLED"),
+        help="任一MoneyAI模型Provider完成本机验证后启用",
+    )
+    parser.add_argument(
+        "--moneyai-history-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=env_flag("LUYA_MONEYAI_HISTORY_ENABLED"),
+        help="项目空间写入完成本机验证后启用",
+    )
+    parser.add_argument(
+        "--moneyai-history-read-verified",
+        action=argparse.BooleanOptionalAction,
+        default=env_flag("LUYA_MONEYAI_HISTORY_READ_VERIFIED"),
+        help="重启读回及空项目隔离完成本机验证后启用",
+    )
     args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
     adapter = MoneyAIAdapter(
         args.moneyai_url,
         args.moneyai_project_dir,

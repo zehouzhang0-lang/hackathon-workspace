@@ -131,6 +131,7 @@ class LocalHTTPTests(unittest.TestCase):
             ({"baseUrl": "https://api.example.com", "apiKey": "K"}, "invalid_payload"),
             ({"baseUrl": "https://user:pass@api.example.com", "apiKey": "K", "model": "m"}, "invalid_settings"),
             ({"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m 型"}, "invalid_settings"),
+            ({"baseUrl": "https://api.example.com/v1/chat/completions", "apiKey": "K", "model": "m"}, "invalid_settings"),
         ]
         for payload, code in cases:
             with self.subTest(payload=payload):
@@ -192,6 +193,17 @@ class LocalHTTPTests(unittest.TestCase):
         sent = json.loads(request.data.decode("utf-8"))
         self.assertEqual(sent["model"], "m")
         self.assertEqual(len(sent["messages"]), 2)
+        self.assertEqual(sent["temperature"], 0)
+
+    def test_chat_omits_temperature_upstream_when_not_requested(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})
+        with patch("app.build_opener") as opener:
+            opener.return_value.open.return_value = completion_response("ok")
+            status, _, _ = self.post_json("/api/ai/chat", {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200)
+        sent = json.loads(opener.return_value.open.call_args[0][0].data.decode("utf-8"))
+        self.assertNotIn("temperature", sent)
+        self.assertEqual(sent["max_tokens"], 2048)
 
     def test_chat_provider_errors_and_bad_shapes_are_not_success(self):
         self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})

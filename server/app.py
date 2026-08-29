@@ -155,22 +155,26 @@ def validate_chat_payload(payload):
         if not isinstance(message["content"], str) or not 1 <= len(message["content"]) <= MAX_MESSAGE_CHARS \
                 or "\0" in message["content"]:
             raise ValueError("消息内容须为 1-8000 字符的文本。")
-    temperature = payload.get("temperature", 0)
-    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) \
-            or not 0 <= float(temperature) <= 2:
-        raise ValueError("temperature 须在 0 到 2 之间。")
+    # temperature 是可选透传：省略时请求体不携带该字段，由模型使用自身默认
+    # 采样（部分思考型模型只接受固定值，例如 Kimi k3 仅允许 temperature=1）。
+    temperature = payload.get("temperature")
+    if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) \
+                or not 0 <= float(temperature) <= 2:
+            raise ValueError("temperature 须在 0 到 2 之间。")
+        temperature = float(temperature)
     max_tokens = payload.get("maxTokens", 2048)
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 1 <= max_tokens <= 4096:
         raise ValueError("maxTokens 须为 1-4096 的整数。")
-    return messages, float(temperature), max_tokens
+    return messages, temperature, max_tokens
 
 
 def ai_chat(settings, messages, temperature, max_tokens):
     """Return (http_status, result_dict). Never leaks the configured key."""
-    body = json.dumps({
-        "model": settings["model"], "messages": messages,
-        "temperature": temperature, "max_tokens": max_tokens,
-    }, ensure_ascii=False).encode("utf-8")
+    fields = {"model": settings["model"], "messages": messages, "max_tokens": max_tokens}
+    if temperature is not None:
+        fields["temperature"] = temperature
+    body = json.dumps(fields, ensure_ascii=False).encode("utf-8")
     request = Request(
         settings["baseUrl"] + "/chat/completions", data=body, method="POST",
         headers={
@@ -370,6 +374,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             base_url = validate_base_url(payload["baseUrl"])
+            if base_url.endswith("/chat/completions"):
+                raise ValueError("API 地址填到 /v1（或服务商要求的根路径）为止，不要包含 /chat/completions；后端会自动拼接完整地址。")
             model = payload["model"]
             valid_printable(model, PRINTABLE, MAX_MODEL_CHARS, "模型名不合法。")
             key = payload.get("apiKey")

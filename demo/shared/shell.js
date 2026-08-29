@@ -321,7 +321,8 @@ export function mountShell(pageId) {
       save.disabled = true;
       try {
         const payload = { baseUrl: baseUrl.value.trim(), model: model.value.trim() };
-        if (apiKey.value) payload.apiKey = apiKey.value;
+        const trimmedKey = apiKey.value.trim();
+        if (trimmedKey) payload.apiKey = trimmedKey;
         const result = await saveAiSettings(payload);
         if (!result.ok) { aiStatus(result.message || '保存失败，请核对填写内容。', true); return; }
         apiKey.value = '';
@@ -348,7 +349,7 @@ export function mountShell(pageId) {
       } else aiStatus(result.message || '清除失败。', true);
     });
     actions.append(save, test, clear);
-    aiBody.append(aiField('API 地址（OpenAI 兼容，/chat/completions）', baseUrl),
+    aiBody.append(aiField('API 地址（OpenAI 兼容；填到 /v1 为止，不要带 /chat/completions）', baseUrl),
       aiField('API Key（只保存在本机后端，不会进入浏览器）', apiKey),
       aiField('模型名', model), actions,
       el('p', '发送范围：第一页「整理」时的当前结构化草稿、描述与转写原文；AI 不覆盖已有字段，每条新增值都必须带描述或原文引文，你可以逐项核对。', 'workspace-dialog-note'));

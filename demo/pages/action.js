@@ -388,10 +388,13 @@ export function reviewSnapshotMatches(snapshot, review) {
 
 export function canAcceptExperimentReview(snapshot, review) {
   const current = activeSelection(snapshot);
+  const relatedFeedback = (snapshot?.feedbackRecords ?? []).filter((record) => sameReference(record, review));
+  const relatedExecutions = (snapshot?.executionRecords ?? []).filter((record) => sameReference(record, review));
   return Boolean(current && review?.decision === 'change_variable' && review.nextAction?.status === 'candidate' &&
     snapshot.sessionId === review.sessionId && current.roundId === review.roundId &&
     current.inputVersion === review.inputVersion && current.analysisId === review.analysisId &&
-    current.pathId === review.pathId && reviewSnapshotMatches(snapshot, review));
+    current.pathId === review.pathId && relatedFeedback.at(-1)?.id === review.sourceFeedbackId &&
+    relatedExecutions.at(-1)?.id === review.sourceExecutionId && reviewSnapshotMatches(snapshot, review));
 }
 
 export function makeExperimentAcceptanceCommand(snapshot, review, commandId) {

@@ -486,6 +486,8 @@ class MoneyAIAdapter:
                 return 502, self._outcome(False, True, code="moneyai_model_rejected", message="MoneyAI未接受本次模型请求。")
             baseline = before.get("latestResult")
             deadline = time.monotonic() + self.model_timeout
+            skill_followup_at = time.monotonic() + 3.0 if operation == "analysis.run" else None
+            skill_followup_sent = False
             saw_candidate = False
             while time.monotonic() < deadline:
                 time.sleep(0.2)
@@ -512,8 +514,20 @@ class MoneyAIAdapter:
                     except (ValueError, TypeError, json.JSONDecodeError):
                         # MoneyAI can publish an intermediate thinking/progress value before
                         # the provider's final JSON. Keep waiting without weakening validation.
-                        continue
-                    return 200, self._outcome(True, True, result=decoded["result"])
+                        pass
+                    else:
+                        return 200, self._outcome(True, True, result=decoded["result"])
+                if skill_followup_at is not None and not skill_followup_sent and time.monotonic() >= skill_followup_at:
+                    try:
+                        followup_status, followup = self._json_request("POST", "/chat/send", {
+                            "text": "已完成本次指定项目Skill的读取。现在不要再调用任何工具；直接按上一条请求返回最终JSON对象，不要解释或代码围栏。",
+                            "images": [], "permissionMode": "plan",
+                        }, timeout=10.0)
+                    except TransportFailure as error:
+                        return 502, self._outcome(False, True, code=error.code, message="MoneyAI已读取Skill，但最终结果请求未取得回执。")
+                    if followup_status != 200 or followup.get("success") is not True:
+                        return 502, self._outcome(False, True, code="moneyai_model_rejected", message="MoneyAI已读取Skill，但未接受最终结果请求。")
+                    skill_followup_sent = True
             if not saw_candidate:
                 return 504, self._outcome(False, True, code="moneyai_model_timeout", message="MoneyAI已接收请求但未在时限内返回结果。")
             return 502, self._outcome(False, True, code="moneyai_model_schema_invalid", message="MoneyAI结果未通过身份与结构校验。")

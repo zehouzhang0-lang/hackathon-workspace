@@ -1,5 +1,9 @@
 # 统筹接续记录
 
+## 2026-08-29 UI 回归与移植任务登记：二/三页视觉回退，MoneyAI 页面接线待移植
+
+用户反馈 UI 变化并确认两点：①合并误带回的队友 base.css/tokens.css（其外壳代际样式 + 橙红主色）导致工作台无样式，已恢复我方样式基座；②二/三页页面级视觉不采用队友版本，已恢复 `ece217e` 的六个文件（02/03 html、decisions/action css/js）。MoneyAI 能力层保留（客户端、契约、服务端路由与适配器、real_model 校验、8 项逻辑用例、页脚状态）；**下一专门任务**：把他按 `MONEYAI-PAGE-BOUNDARY`/`A3_MONEYAI_HISTORY_GATE` 标记的约 1800 行页面接线（第二页分析请求流、第三页历史门）移植到我方二/三页结构上，须完成浏览器实机走查后才算完成；移植期间不得回退本节之前的任何用户决定。`*.teammate.test.mjs` 守护测试仍保持未跟踪（实现位于 `codex/frontend-replacement`）。
+
 ## 2026-08-29 合并：队友 MoneyAI 接通批次与我方用户自配置 API 并存
 
 用户指示：先提交我方上传资料窗口批次，再拉取合并队友的 API 接通提交。已按序完成：`ece217e`（上传窗口收尾 + `/api/ai/*`）之后 merge `e38d4cf`。冲突解决原则：第一页窗口与 `intake-extraction.js` 保持我方版本；队友 MoneyAI 能力层（moneyai.js、moneyai-contract.js、moneyai_adapter.py、moneyai_contract.py、model.js real_model 校验、shell 页脚状态）整体恢复；`server/app.py` 融合 `/api/ai/*` 与 `/api/moneyai/*` 两套路由；logic.test.mjs 并入队友 8 项 MoneyAI 用例；自动合并引入的 model.js xlsx 能力行回退已修复。验证：Node 134/134、服务端 24/24、verify_demo_content 1880 项 PASS、git diff --check 干净。注意：上一节「取消 MoneyAI」决定在页面通路层面被本次合并部分反转（能力层与二/三页接线恢复），第一页对外路径仍是用户自配置 API；MoneyAI 通路实机联调未验收。`*.teammate.test.mjs` 守护测试实现位于 `codex/frontend-replacement`，保持未跟踪。

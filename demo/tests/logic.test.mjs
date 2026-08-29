@@ -2966,6 +2966,27 @@ test('直连数据提取：AI可对指标提出有依据质疑，无依据的质
   assert(result.notes.some((note) => note.includes('1 条有依据的质疑')));
 });
 
+test('重新整理以最新提取为准：AI填字段时清掉与当前值不一致的旧提取记录', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv', 'paste'], transcript: '我家卖便携榨汁杯。' });
+  draft.evidenceLedger.push({ field: 'productName', value: '上一次的旧品牌名', status: 'confirmed_fact', source: 'paste', quote: '上一次的旧品牌名' });
+  const result = await requestIntakeExtraction({ ...extractionRequest(h, draft),
+    materialTexts: [{ name: '评价.csv', text: '商品全称：先锋牌榨汁杯，出汁快。' }] },
+    { fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+      return jsonResponse({ ok: true, content: JSON.stringify({ fields: { productName: { value: '先锋牌榨汁杯', quote: '先锋牌榨汁杯' } } }) });
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.draft.productName, '先锋牌榨汁杯');
+  const stale = result.draft.evidenceLedger.filter((entry) => entry.field === 'productName' && entry.value !== '先锋牌榨汁杯');
+  assert.equal(stale.length, 0, '旧的不一致提取记录应被清掉');
+  const { getIntakeSummaryGroups } = await import('../pages/intake.js');
+  const groups = getIntakeSummaryGroups(result.draft, h.state, null, result.sourceBindings);
+  const background = groups.find((group) => group.id === 'background');
+  assert(background.items.length > 0);
+  assert(background.items.every((item) => !item.conflicting), '字段不应再标记来源冲突');
+});
+
 test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {
   const { compactSummaryForModel } = await import('../shared/ai.js');
   const small = { focus: 'f', facts: [{ id: 'f1', key: '销量', value: 6, availability: 'known' }], constraints: [], unknowns: [] };

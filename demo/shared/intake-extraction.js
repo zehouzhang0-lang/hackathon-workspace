@@ -258,6 +258,10 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
       materialName = hit.name;
     }
     setLeaf(draft, field, value);
+    // 重新整理时以最新提取为准：清掉该字段与本值不一致的旧提取记录，
+    // 避免跨次整理累积出"来源冲突"；同一次运行内不同来源的真冲突仍会标记。
+    draft.evidenceLedger = draft.evidenceLedger.filter((entry) =>
+      !(entry.field === field && !Object.is(entry.value, value)));
     draft.evidenceLedger.push({ field, value, status: 'confirmed_fact', source, quote });
     bindings.push({ field, source, locator: { type: 'intake', field, source, quote } });
     ensureSource(draft, source);
@@ -317,6 +321,18 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     if (!Array.isArray(request.sourceBindings ?? [])) throw new Error('bindings');
     sourceBindings = clone(request.sourceBindings ?? []);
     fallbackDraft = draft;
+    // 重新整理时以当前填写值为准：清掉台账中与本值不一致的旧提取记录。
+    // 跨次整理遗留的不同取值是"来源冲突/按未知保留"的主要来源；同一次运行内
+    // 不同来源的真冲突仍会照常标记，不会被这段清掉。
+    const leafOf = (field) => field.startsWith('metrics.')
+      ? draft.metrics?.[field.slice(8)] : draft[field];
+    draft.evidenceLedger = draft.evidenceLedger.filter((entry) => {
+      if (!entry || typeof entry.field !== 'string') return true;
+      const current = leafOf(entry.field);
+      if (current === undefined) return true;
+      return Object.is(current, entry.value)
+        || (entry.value === null && entry.status === 'unknown' && current === null);
+    });
     applyLocalFacts(draft, sourceBindings, snapshot, notes);
     if (signal?.aborted) return fallback('cancelled', '已取消整理，未发送任何内容。');
     const ai = await applyAiExtraction(draft, sourceBindings,

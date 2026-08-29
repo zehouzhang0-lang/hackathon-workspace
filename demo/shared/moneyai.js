@@ -137,7 +137,10 @@ export async function requestMoneyAIAnalysis(request, options = {}) {
     ...value,
     processing: [{
       name: 'MoneyAI项目分析', kind: 'moneyai', status: 'done', operationId: response.receipt.operationId
-    }],
+    }, ...(Array.isArray(value.skillIds) ? value.skillIds.map((skillId) => ({
+      name: `Skill · ${SKILL_LABELS[skillId] ?? skillId}`,
+      kind: 'moneyai', status: 'done', operationId: response.receipt.operationId,
+    })) : [])],
     providerReceipt,
   } : null;
   let analysis = enrich(response.result.analysis);
@@ -153,6 +156,13 @@ export async function requestMoneyAIAnalysis(request, options = {}) {
 
 const proposalText = (value, limit) => typeof value === 'string' && value.trim()
   ? value.trim().slice(0, limit) : null;
+
+const MONEYAI_ANALYSIS_SKILLS = ['douyin-data-analysis', 'douyin-account-diagnosis'];
+const MONEYAI_EXECUTION_SKILLS = ['douyin-copywriter', 'douyin-video-creation', 'douyin-live-ops'];
+const SKILL_LABELS = {
+  'douyin-data-analysis': '抖音数据分析', 'douyin-account-diagnosis': '抖音账号诊断',
+  'douyin-copywriter': '抖音文案', 'douyin-video-creation': '抖音视频创作', 'douyin-live-ops': '抖音直播运营',
+};
 
 // 直连AI与MoneyAI共用同一小型提议结构与安全执行重建，仅来源标识不同。
 const ANALYSIS_SOURCES = {
@@ -182,10 +192,16 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'mone
     || !['ready', 'limited', 'insufficient'].includes(proposal.status)
     || !Array.isArray(proposal.paths) || !proposal.paths.length || proposal.paths.length > 2
     || !Array.isArray(proposal.limitations)) return null;
+  const moneyAISkills = source === 'moneyai';
+  if (moneyAISkills && (!Array.isArray(proposal.skillsUsed)
+    || proposal.skillsUsed.length !== MONEYAI_ANALYSIS_SKILLS.length
+    || MONEYAI_ANALYSIS_SKILLS.some((skillId, index) => proposal.skillsUsed[index] !== skillId))) return null;
   const suggestions = proposal.paths.map((path) => record(path) ? {
-    title: proposalText(path.title, 160), action: proposalText(path.action, 1200)
+    title: proposalText(path.title, 160), action: proposalText(path.action, 1200),
+    skillId: moneyAISkills && MONEYAI_EXECUTION_SKILLS.includes(path.skillId) ? path.skillId : null,
   } : null);
   if (suggestions.some((path) => !path?.title || !path?.action)
+    || moneyAISkills && suggestions.some((path) => !path.skillId)
     || proposal.limitations.some((item) => !proposalText(item, 500))) return null;
   const generated = buildDemoAnalysis(state);
   if (!generated?.ok || !Array.isArray(generated.analysis?.paths) || !generated.analysis.paths.length) return null;
@@ -200,6 +216,7 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'mone
       ...base, title: suggestion.title, action: suggestion.action, evidenceRefs,
       experiment: { ...base.experiment, change: suggestion.action }
     };
+    if (suggestion.skillId) path.skillId = suggestion.skillId;
     delete path.actionKey;
     return path;
   });
@@ -215,6 +232,7 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'mone
     status: proposal.status,
     mode: 'real_model',
     analysisSource: branding.analysisSource,
+    ...(moneyAISkills ? { skillIds: [...MONEYAI_ANALYSIS_SKILLS] } : {}),
     summary: proposalText(proposal.summary, 2000) || branding.summaryFallback,
     paths,
     limitations,

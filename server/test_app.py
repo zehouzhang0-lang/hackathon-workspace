@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from email.message import Message
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -355,6 +356,10 @@ class AdapterTests(unittest.TestCase):
 
     def test_analysis_accepts_compact_provider_proposal_for_non_demo_facts(self):
         with tempfile.TemporaryDirectory() as project:
+            for skill_id in ["douyin-data-analysis", "douyin-account-diagnosis", "douyin-copywriter", "douyin-video-creation", "douyin-live-ops"]:
+                skill_dir = Path(project) / ".claude" / "skills" / skill_id
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text("reviewed", encoding="utf-8")
             adapter = MoneyAIAdapter(
                 "http://127.0.0.1:31416", project, analysis_enabled=True, model_timeout=5
             )
@@ -373,7 +378,8 @@ class AdapterTests(unittest.TestCase):
                     "mode": "real_model", "status": "limited",
                     "summary": "先验证说明，不确认根因。",
                     "limitations": ["缺少可比时间窗口。"],
-                    "paths": [{"title": "补全香型与发货说明", "action": "只修改这一段并记录加购变化。"}],
+                    "skillsUsed": ["douyin-data-analysis", "douyin-account-diagnosis"],
+                    "paths": [{"title": "补全香型与发货说明", "action": "只修改这一段并记录加购变化。", "skillId": "douyin-copywriter"}],
                 }},
             }
             latest = iter([
@@ -387,7 +393,7 @@ class AdapterTests(unittest.TestCase):
                     return 200, next(latest)
                 if method == "POST" and path == "/chat/send":
                     self.assertIn("手工香薰礼盒", payload["text"])
-                    self.assertIn("每条精确只有title和action", payload["text"])
+                    self.assertIn("douyin-data-analysis", payload["text"])
                     return 200, {"success": True}
                 raise AssertionError((method, path))
 

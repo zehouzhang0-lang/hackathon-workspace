@@ -27,6 +27,7 @@ const INTAKE_FIELD_LABELS = { merchantName: '商家名称', productName: '具体
 const FIELD_LABELS = { video_views: '播放次数', product_clicks: '商品点击', add_to_carts: '加购', click_to_cart_rate: '商品点击后的加购率', created_orders: '下单', paid_orders: '支付订单', product_detail_visitors: '商品详情访客', price: '价格', units_per_order: '每单件数',
   external_length: '单只外长', external_width: '单只外宽', external_height: '单只外高', dimension_scope: '尺寸口径',
   current_title: '现有标题', current_opening: '现有说明开头', selected_inquiries: '精选咨询' };
+const EXECUTION_SKILL_LABELS = { 'douyin-copywriter': '抖音文案', 'douyin-video-creation': '抖音视频创作', 'douyin-live-ops': '抖音直播运营' };
 
 function textValue(value, fallback = '未知') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -999,6 +1000,7 @@ export function buildMoneyAIDecisionRecord(snapshot, feedbackId) {
     },
     decision: {
       actionKey: nullableString(path.actionKey),
+      skillId: nullableString(path.skillId),
       optionLabel: nullableString(path.optionLabel),
       title: nullableString(path.title),
       experimentId: nullableString(experiment.experimentId),
@@ -1505,7 +1507,8 @@ function render() {
   $('problem-summary').textContent = keepOldDraft
     ? '本轮资料或选择已更新；这里保留原行动的反馈草稿，不把新资料写入原版本。'
     : textValue(state.input.focus || state.input.description, '本轮范围尚未填写');
-  $('context-meta').textContent = `${originLabel(context.mode)}${keepOldDraft ? ' · 历史行动，草稿仍对应原版本' : ''}`;
+  const skillLabel = EXECUTION_SKILL_LABELS[context.path.skillId];
+  $('context-meta').textContent = `${originLabel(context.mode)}${skillLabel ? ` · 执行 Skill：${skillLabel}` : ''}${keepOldDraft ? ' · 历史行动，草稿仍对应原版本' : ''}`;
   renderArtifacts(artifacts, keepOldDraft);
   renderedPackSignature = keepOldDraft ? null : packSignature(state);
   renderRisks(context.path);

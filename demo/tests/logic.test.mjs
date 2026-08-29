@@ -2816,7 +2816,8 @@ test('compact MoneyAI proposal becomes a valid P2 analysis and P3 decision for n
     mode: 'real_model', status: 'limited',
     summary: '先验证香型和发货说明，暂不把咨询后的流失当作已确认根因。',
     limitations: ['没有可比时间窗口，不能估计成功概率。'],
-    paths: [{ title: '补全香型与发货说明', action: '只修改商品详情中的香型和发货说明，价格与投流保持不变，再记录点击后的加购变化。' }]
+    skillsUsed: ['douyin-data-analysis', 'douyin-account-diagnosis'],
+    paths: [{ title: '补全香型与发货说明', action: '只修改商品详情中的香型和发货说明，价格与投流保持不变，再记录点击后的加购变化。', skillId: 'douyin-copywriter' }]
   };
   const result = await requestMoneyAIAnalysis(request, { state: h.state, consentToExternalProcessing: true,
     fetchImpl: async (url, options) => url.endsWith('/status') ? moneyAIJsonResponse(syntheticMoneyAIStatus())
@@ -2825,11 +2826,14 @@ test('compact MoneyAI proposal becomes a valid P2 analysis and P3 decision for n
   assert.equal(result.analysis.mode, 'real_model');
   assert.equal(result.analysis.paths[0].title, proposal.paths[0].title);
   assert.equal(result.analysis.paths[0].action, proposal.paths[0].action);
+  assert.equal(result.analysis.paths[0].skillId, 'douyin-copywriter');
+  assert(result.analysis.processing.some((entry) => entry.name.includes('抖音数据分析')));
   assert.equal(Object.hasOwn(result.analysis.paths[0], 'actionKey'), false);
   assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
 
   selectAndSave(h);
   const artifact = currentArtifacts(h.state)[0];
+  assert.equal(artifact.skillId, 'douyin-copywriter');
   h.send('FEEDBACK_SAVE', makeFeedbackPayload(artifact,
     { adoption: 'unknown', execution: 'unknown', observation: 'unknown', rawText: '尚未执行，先保存本次真实建议。' },
     { detailsVersion: FEEDBACK_DETAILS_VERSION }));
@@ -2839,6 +2843,7 @@ test('compact MoneyAI proposal becomes a valid P2 analysis and P3 decision for n
   assert.equal(record.source, 'confirmed_project_decision');
   assert.equal(record.decision.actionKey, null);
   assert.equal(record.decision.title, proposal.paths[0].title);
+  assert.equal(record.decision.skillId, 'douyin-copywriter');
   assert.match(record.context.focus, /香型/);
 });
 

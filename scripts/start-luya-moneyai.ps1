@@ -97,6 +97,27 @@ if ($resolvedProjectDir.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnor
 }
 New-Item -ItemType Directory -Path $resolvedProjectDir -Force | Out-Null
 
+# Keep the reviewed project skills portable for teammates. Only the explicit
+# allowlist is copied; unrelated MoneyAI skills and local history stay untouched.
+$projectSkillRoot = Join-Path $resolvedProjectDir ".claude\skills"
+New-Item -ItemType Directory -Path $projectSkillRoot -Force | Out-Null
+$projectSkillIds = @(
+    "douyin-account-diagnosis",
+    "douyin-copywriter",
+    "douyin-data-analysis",
+    "douyin-live-ops",
+    "douyin-video-creation"
+)
+foreach ($skillId in $projectSkillIds) {
+    $sourceSkill = Join-Path (Join-Path $repoRoot ".agents\skills") $skillId
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceSkill "SKILL.md") -PathType Leaf)) {
+        throw "缺少已审查项目 Skill：$skillId"
+    }
+    $targetSkill = Join-Path $projectSkillRoot $skillId
+    New-Item -ItemType Directory -Path $targetSkill -Force | Out-Null
+    Copy-Item -Path (Join-Path $sourceSkill "*") -Destination $targetSkill -Recurse -Force
+}
+
 if (Test-TcpListener -Port $MoneyAIPort) {
     throw "端口 $MoneyAIPort 已被占用。脚本不会停止未知进程；请关闭自己的旧 sidecar 或改用 -MoneyAIPort。"
 }

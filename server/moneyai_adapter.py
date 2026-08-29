@@ -27,6 +27,9 @@ from moneyai_contract import (
 
 MAX_PROVIDER_RESPONSE = 1024 * 1024
 MEMORY_MARKER = "LUYADECISIONV1"
+ANALYSIS_SKILLS = ("douyin-data-analysis", "douyin-account-diagnosis")
+EXECUTION_SKILLS = ("douyin-copywriter", "douyin-video-creation", "douyin-live-ops")
+REQUIRED_PROJECT_SKILLS = ANALYSIS_SKILLS + EXECUTION_SKILLS
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -129,12 +132,19 @@ class MoneyAIAdapter:
         except TransportFailure:
             return False
 
+    def _project_skills_ready(self):
+        if not self.project_dir:
+            return False
+        root = Path(self.project_dir) / ".claude" / "skills"
+        return all((root / skill_id / "SKILL.md").is_file() for skill_id in REQUIRED_PROJECT_SKILLS)
+
     def status(self) -> dict:
         configured = self.base_url is not None
         project_configured = self.project_dir is not None
         reachable = self._healthy() if configured else False
         ready_base = configured and project_configured and reachable
-        analysis_ready = ready_base and self.analysis_enabled
+        skills_ready = self._project_skills_ready()
+        analysis_ready = ready_base and self.analysis_enabled and skills_ready
         extraction_ready = ready_base and self.extraction_enabled
         history_write_ready = ready_base and self.history_enabled
         history_read_ready = ready_base and self.history_read_verified
@@ -144,6 +154,8 @@ class MoneyAIAdapter:
             reason = "尚未由服务端指定路芽项目专用MoneyAI空间。"
         elif not reachable:
             reason = "当前指定的MoneyAI项目服务未通过健康检查。"
+        elif self.analysis_enabled and not skills_ready:
+            reason = "MoneyAI项目空间尚未装入路芽所需的抖音分析与执行Skill。"
         elif not (analysis_ready or extraction_ready or history_write_ready or history_read_ready):
             reason = "项目服务可达，但模型与历史能力尚未通过独立验证。"
         else:
@@ -440,12 +452,16 @@ class MoneyAIAdapter:
             operation_instruction = (
                 "本次result必须精确为analysis一个字段。analysis只需返回适合不同模型稳定生成的小型建议结构："
                 "mode固定real_model；status只能是ready、limited或insufficient；summary为不超过2000字的总结；"
-                "limitations为最多20条、每条不超过500字的字符串；paths为1至2条，"
-                "每条精确只有title和action两个非空字符串。只依据payload中的focus、facts、constraints和unknowns；"
+                "limitations为最多20条、每条不超过500字的字符串；skillsUsed精确为"
+                "[\"douyin-data-analysis\",\"douyin-account-diagnosis\"]；paths为1至2条，"
+                "每条精确只有title、action和skillId三个字段，其中skillId只能是douyin-copywriter、"
+                "douyin-video-creation或douyin-live-ops。必须先遵循已安装的douyin-data-analysis与"
+                "douyin-account-diagnosis项目Skill完成分析，再给每条执行路径选择最匹配的执行Skill。"
+                "只依据payload中的focus、facts、constraints和unknowns；"
                 "不得声称根因已确认，不得编造缺失数据、概率、收入或效果，不得输出内部状态树、来源原件或额外字段。"
             )
         prompt = (
-            "你是路芽项目的受限JSON处理器。禁止调用工具、文件、网络或个人历史；只使用下列获准摘要。"
+            "你是路芽项目的受限JSON处理器。除读取本提示明确列出的已安装项目Skill外，禁止调用其他工具、文件、网络或个人历史；只使用下列获准摘要。"
             "只返回一个JSON对象，精确字段为contractVersion、operation、operationId、result。"
             "必须原样回显身份；不得把未知补成0或事实。" + operation_instruction + "请求：" + canonical_json({
                 "contractVersion": CONTRACT_VERSION,
@@ -505,27 +521,33 @@ class MoneyAIAdapter:
     def _analysis_run(self, envelope, _request_hash):
         if not (self.base_url and self.project_dir and self.analysis_enabled):
             return 409, self._outcome(False, False, code="moneyai_analysis_unavailable", message="MoneyAI真实分析尚未通过模型登录与结构验证。")
+        if not self._project_skills_ready():
+            return 409, self._outcome(False, False, code="moneyai_skill_unavailable", message="路芽所需抖音Skill尚未装入当前MoneyAI项目空间。")
         status, outcome = self._run_model(envelope, {"analysis"})
         if status == 200:
             analysis = outcome["result"].get("analysis")
             paths = analysis.get("paths") if isinstance(analysis, dict) else None
             limitations = analysis.get("limitations") if isinstance(analysis, dict) else None
+            skills_used = analysis.get("skillsUsed") if isinstance(analysis, dict) else None
             if (
                 not isinstance(analysis, dict)
                 or analysis.get("mode") != "real_model"
                 or analysis.get("status") not in {"ready", "limited", "insufficient"}
                 or not isinstance(analysis.get("summary"), str)
                 or len(analysis["summary"]) > 2000
+                or skills_used != list(ANALYSIS_SKILLS)
                 or not isinstance(paths, list)
                 or not 1 <= len(paths) <= 2
                 or any(
                     not isinstance(path, dict)
+                    or set(path) != {"title", "action", "skillId"}
                     or not isinstance(path.get("title"), str)
                     or not path["title"].strip()
                     or len(path["title"]) > 160
                     or not isinstance(path.get("action"), str)
                     or not path["action"].strip()
                     or len(path["action"]) > 1200
+                    or path.get("skillId") not in EXECUTION_SKILLS
                     for path in paths
                 )
                 or not isinstance(limitations, list)

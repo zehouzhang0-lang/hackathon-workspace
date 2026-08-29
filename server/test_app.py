@@ -367,7 +367,7 @@ class AdapterTests(unittest.TestCase):
     def test_analysis_accepts_compact_provider_proposal_for_non_demo_facts(self):
         with tempfile.TemporaryDirectory() as project:
             for skill_id in ["douyin-data-analysis", "douyin-account-diagnosis", "douyin-copywriter", "douyin-video-creation", "douyin-live-ops"]:
-                skill_dir = Path(project) / ".claude" / "skills" / skill_id
+                skill_dir = Path(project) / ".agents" / "skills" / skill_id
                 skill_dir.mkdir(parents=True, exist_ok=True)
                 (skill_dir / "SKILL.md").write_text("reviewed", encoding="utf-8")
             adapter = MoneyAIAdapter(
@@ -404,6 +404,7 @@ class AdapterTests(unittest.TestCase):
                 if method == "POST" and path == "/chat/send":
                     self.assertIn("手工香薰礼盒", payload["text"])
                     self.assertIn("douyin-data-analysis", payload["text"])
+                    self.assertIn(".agents/skills/douyin-data-analysis/SKILL.md", payload["text"])
                     return 200, {"success": True}
                 raise AssertionError((method, path))
 

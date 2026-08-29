@@ -1,7 +1,47 @@
 // Read-only projections for the workspace shell. IndexedDB remains the only store.
 import { findIntakeFieldFact } from './intake-draft.js';
 
-const meaningfulInput = (input) => Boolean(input?.description?.trim() || input?.materials?.length || input?.intake);
+const SOURCE_KINDS = new Set(['merchant_statement', 'file_extract', 'derived', 'public_reference', 'scenario_assumption']);
+const MEMORY_FIELDS = ['merchantName', 'productName', 'currentProblem'];
+
+const traceableSource = (fact, field = null) => {
+  const source = fact?.source, locator = source?.locator;
+  if (!source || !SOURCE_KINDS.has(source.kind)) return false;
+  if (source.kind === 'file_extract') {
+    return typeof source.materialId === 'string' && Number.isInteger(source.materialVersion)
+      && locator && typeof locator === 'object' && !Array.isArray(locator);
+  }
+  if (source.kind === 'merchant_statement' && field) {
+    return locator?.type === 'intake' && locator.field === field
+      || locator?.type === 'correction' && fact.intakeField === field;
+  }
+  return true;
+};
+
+const knownFact = (fact, field = null) => Boolean(fact && fact.availability === 'known'
+  && fact.value !== null && fact.value !== undefined && fact.verification !== 'conflicting'
+  && traceableSource(fact, field));
+
+const meaningfulInput = (input) => Boolean(input?.description?.trim() || input?.materials?.length
+  || input?.facts?.some((fact) => knownFact(fact)));
+
+function projectedField(state, field) {
+  const fact = findIntakeFieldFact(state, field);
+  return fact ? { present: true, fact, value: knownFact(fact, field) ? fact.value : null }
+    : { present: false, fact: null, value: null };
+}
+
+// Older or partially written records may contain a populated intake draft without
+// the fact that INTAKE_SET persists with its provenance. Keep that draft out of
+// workspace/archive projections; it remains untouched in the source state.
+function projectedInput(state, input) {
+  const draft = input?.intake?.draft;
+  if (!draft) return input;
+  const scoped = { ...state, input };
+  const values = Object.fromEntries(MEMORY_FIELDS.map((field) => [field, projectedField(scoped, field).value]));
+  if (MEMORY_FIELDS.every((field) => Object.is(draft[field], values[field]))) return input;
+  return { ...input, intake: { ...input.intake, draft: { ...draft, ...values } } };
+}
 
 export function workspaceFeedbackSource(state, feedback) {
   const sameScope = (item) => item && ['roundId', 'analysisId', 'pathId', 'inputVersion'].every((key) => item[key] === feedback[key]);
@@ -18,11 +58,14 @@ export function workspaceFeedbackSource(state, feedback) {
 export function workspaceRounds(state) {
   const rounds = new Map();
   for (const entry of state.history) {
-    if (entry.type === 'round' && entry.round?.id) rounds.set(entry.round.id, { ...entry, archived: true });
+    if (entry.type === 'round' && entry.round?.id
+      && (meaningfulInput(entry.input) || entry.analysis || entry.selection)) {
+      rounds.set(entry.round.id, { ...entry, input: projectedInput(state, entry.input), archived: true });
+    }
   }
   if (meaningfulInput(state.input) || state.analysis || state.selection) {
     rounds.set(state.round.id, {
-      round: state.round, input: state.input, analysis: state.analysis, selection: state.selection,
+      round: state.round, input: projectedInput(state, state.input), analysis: state.analysis, selection: state.selection,
       at: state.savedAt, archived: false
     });
   }
@@ -46,26 +89,30 @@ export function workspaceRounds(state) {
 }
 
 export function workspaceMemory(state) {
-  const draft = state.input.intake?.draft;
   const strings = (items = []) => items.map((item) => typeof item === 'string' ? item : item.description
     ? item.description + (item.value === null || item.value === undefined ? '' : '：' + item.value + (item.unit || '')) : null).filter(Boolean);
-  // A changed fact takes precedence over the old confirmation draft, including an explicit unknown.
-  const fieldValue = (field, fallback) => {
-    const fact = findIntakeFieldFact(state, field);
-    if (fact) {
-      if (fact.availability !== 'known' || fact.verification === 'conflicting') return null;
-      return fact.evidenceStatus === 'owner_hypothesis' ? String(fact.value) + '（商家假设，待验证）' : fact.value;
+  // Only the provenance-bound fact written by INTAKE_SET can populate a draft
+  // field here. An API response that is still only an editable page draft is not
+  // business memory. An explicit unknown also blocks any older fallback value.
+  const fieldValue = (field, fallback = null) => {
+    const projected = projectedField(state, field);
+    if (projected.present) {
+      if (projected.value === null) return null;
+      return projected.fact.evidenceStatus === 'owner_hypothesis'
+        ? String(projected.value) + '（商家假设，待验证）' : projected.value;
     }
     return state.input.intake?.status === 'stale' ? null : fallback;
   };
+  const savedDescription = typeof state.input.description === 'string' && state.input.description.trim()
+    ? state.input.description.trim() : null;
   return {
-    merchant: fieldValue('merchantName', draft?.merchantName) || null,
-    product: fieldValue('productName', draft?.productName) || null,
-    problem: fieldValue('currentProblem', draft?.currentProblem || state.input.description) || null,
+    merchant: fieldValue('merchantName'),
+    product: fieldValue('productName'),
+    problem: fieldValue('currentProblem', savedDescription),
     constraints: [...new Set(strings(state.input.constraints))],
     unknowns: [...new Set(strings(state.input.unknowns))],
     materialCount: state.input.materials.length,
-    knownFactCount: state.input.facts.filter((fact) => fact.availability === 'known').length,
+    knownFactCount: state.input.facts.filter((fact) => knownFact(fact)).length,
     archivedRoundCount: workspaceRounds(state).filter((entry) => entry.archived).length,
     stale: state.input.intake?.status === 'stale',
     synthetic: Boolean(state.fixtureId || state.analysis?.sourceFixtureId || state.analysis?.experimentReview?.sourceFixtureId

@@ -10,7 +10,8 @@ import { readWorkbookSheets } from "./xlsx-reader.js";
 const MAX_ROWS = 500;
 const CALIBER_SHEET_NAMES = new Set(["口径说明", "数据说明", "说明", "备注"]);
 const WINDOW_SOURCE_HEADERS = new Set(["发布时间", "发布日期", "日期"]);
-const SUBJECT_HEADERS = ["主播/达人名", "达人名", "主播", "账号名称", "账号", "商家名称", "店铺名", "作品id", "视频id", "名称", "商品名称", "所属账号", "标题"];
+const SUBJECT_HEADERS = ["主播/达人名", "达人名", "主播", "账号名称", "账号", "商家名称", "店铺名", "作品id", "视频id", "名称", "商品名称", "所属账号", "标题",
+  "用户昵称", "用户名", "评论id", "评论内容", "商品id", "商品编码", "sku", "sku id", "商品标题", "直播间", "场次", "达人账号", "视频标题"];
 const IGNORED_HEADERS = new Set(["序号", "抖音号", "作品标题", "作品类型", "作品作者", "作品网址", "作者主页", "是否全屏",
   "是否购物车", "有无本地生活", "主页备注", "合集备注", "关键词备注", "作品备注", "作者uid", "作者secuid", "封面网址",
   "视频源网址", "话题内容", "作品时长", "作品质量", "直播间标题", "案例类型"]);
@@ -44,6 +45,15 @@ const COLUMN_ALIASES = [
   { headers: ["商品收藏人数"], key: "collects", unit: "人" },
   { headers: ["点赞数"], key: "likes", unit: "次" },
   { headers: ["回复数"], key: "replies", unit: "条" }
+  ,{ headers: ["曝光量", "商品曝光次数", "商品曝光人数"], key: "impressions", unit: "次" }
+  ,{ headers: ["商品访客数", "商品详情访客", "商品详情访客数"], key: "product_visitors", unit: "人" }
+  ,{ headers: ["成交金额", "支付金额", "gmv", "成交gmv"], key: "gmv", unit: "元" }
+  ,{ headers: ["成交件数", "支付件数"], key: "paid_items", unit: "件" }
+  ,{ headers: ["直播间观看人数", "进入直播间人数", "直播观看人数"], key: "live_viewers", unit: "人" }
+  ,{ headers: ["评论数"], key: "comments", unit: "条" }
+  ,{ headers: ["分享数"], key: "shares", unit: "次" }
+  ,{ headers: ["收藏数"], key: "collects", unit: "次" }
+  ,{ headers: ["新增粉丝数", "新增粉丝"], key: "followers_growth", unit: "人" }
 ];
 
 const normalizeHeader = (header) => String(header ?? "").replace(/\s+/g, "").replace(/[（）]/g, "()").trim();
@@ -107,6 +117,29 @@ function summarizeWarnings(warnings) {
   return unique.slice(0, 6).join("；") + (unique.length > 6 ? "；另有 " + (unique.length - 6) + " 项见原件核对。" : "");
 }
 
+function headerProfile(cells) {
+  const header = cells.map(normalizeHeader);
+  const aliasCount = header.filter((value) => COLUMN_ALIASES.some((entry) =>
+    entry.headers.some((name) => normalizeHeader(name) === value))).length;
+  const subject = header.some((value) => SUBJECT_HEADERS.some((name) => normalizeHeader(name) === value));
+  const window = header.some((value) => WINDOW_SOURCE_HEADERS.has(value));
+  const convention = header.includes("metric") && header.includes("value");
+  const nonempty = header.filter(Boolean).length;
+  return { header, aliasCount, subject, convention,
+    score: convention ? 100 : aliasCount * 12 + (subject ? 4 : 0) + (window ? 2 : 0) + Math.min(nonempty, 5) };
+}
+
+function findBestHeader(rows) {
+  let best = null;
+  rows.slice(0, 30).forEach((cells, index) => {
+    const profile = headerProfile(cells);
+    if (!best || profile.score > best.profile.score) best = { index, profile };
+  });
+  if (best && (best.profile.aliasCount > 0 || best.profile.convention)) return best;
+  const index = rows.findIndex((cells) => cells.some((cell) => String(cell ?? "").trim()));
+  return index < 0 ? null : { index, profile: headerProfile(rows[index]) };
+}
+
 // Parses one workbook into the same result shape as the page's text parsers:
 // {status, facts, error}. facts use draft ids; the shared transaction maps and
 // binds them to this material version.
@@ -141,9 +174,10 @@ export async function parseWorkbookFacts(bytes, material) {
 
   for (const sheet of sheets) {
     if (sheet.missing || !sheet.rows.length) continue;
-    const headerIndex = sheet.rows.findIndex((cells) => cells.filter((cell) => String(cell ?? "").trim()).length >= 2);
-    if (headerIndex < 0) continue;
-    const header = sheet.rows[headerIndex].map(normalizeHeader);
+    const bestHeader = findBestHeader(sheet.rows);
+    if (!bestHeader) continue;
+    const headerIndex = bestHeader.index;
+    const header = bestHeader.profile.header;
     if (CALIBER_SHEET_NAMES.has(sheet.name) || header[0] === "数据来源" || header[0] === "口径") {
       let noted = 0;
       for (const cells of sheet.rows.slice(headerIndex)) {
@@ -161,7 +195,7 @@ export async function parseWorkbookFacts(bytes, material) {
       if (alias && !aliasByColumn.has(index)) aliasByColumn.set(index, alias);
       if (subjectColumn < 0 && SUBJECT_HEADERS.some((name) => normalizeHeader(name) === header[index])) subjectColumn = index;
     }
-    if (aliasByColumn.size < 2 || subjectColumn < 0) {
+    if (aliasByColumn.size < 1) {
       const isConvention = header.includes("metric") && header.includes("value");
       if (!isConvention) { warnings.push("工作表“" + sheet.name + "”未识别出足够的已知指标列，未自动提取；可在原件中核对。"); continue; }
       parseConventionSheet(sheet, headerIndex, header, material, exportDate, fact, warnings);
@@ -209,7 +243,8 @@ function parseAliasSheet(sheet, headerIndex, header, aliasByColumn, subjectColum
   }));
   for (const cells of dataRows.slice(0, MAX_ROWS)) {
     const rowNumber = sheet.rows.indexOf(cells) + 1;
-    const subject = String(cells[subjectColumn] ?? "").trim() || "第" + rowNumber + "行";
+    const subject = subjectColumn >= 0 && String(cells[subjectColumn] ?? "").trim()
+      ? String(cells[subjectColumn]).trim() : "工作表“" + sheet.name + "”第" + rowNumber + "行";
     let windowStart = null;
     for (const index of windowColumns) {
       windowStart = parseCellDate(cells[index]);

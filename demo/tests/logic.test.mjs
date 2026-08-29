@@ -15,6 +15,7 @@ import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedInt
   findIntakeFieldFact, TEXT_FIELDS } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
 import { getAiSettings } from '../shared/ai.js';
+import { extractLocalIntakeCandidates } from '../shared/local-intake-parser.js';
 import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, requestMoneyAIHistoryRead } from '../shared/moneyai.js';
 import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
@@ -676,12 +677,12 @@ test('material capability lookup separates local reception, preview and restrict
   }
   assert.equal(getMaterialCapability('table.csv').parse, 'metric_csv');
   assert.equal(getMaterialCapability('table.json').parse, 'metric_json');
-  assert.equal(getMaterialCapability('notes.txt').parse, 'text_only');
+  assert.equal(getMaterialCapability('notes.txt').parse, 'explicit_text');
   const xlsx = getMaterialCapability('table.xlsx');
   assert.equal(xlsx.receive, true);
   assert.equal(xlsx.preview, null);
   assert.equal(xlsx.parse, 'table_xlsx');
-  assert.match(xlsx.reason, /本机解析已知指标列/);
+  assert.match(xlsx.reason, /可信表头、解析已知经营指标列/);
   const xls = getMaterialCapability('table.xls');
   assert.equal(xls.receive, true);
   assert.equal(xls.preview, null);
@@ -987,6 +988,42 @@ test('intake parser preserves missing values and physical locations and rejects 
     assert.deepEqual(result.facts, []);
   }
   assert.equal((await readSupportedMaterial(new Blob([new Uint8Array([0xff])]), material)).status, 'failed');
+});
+
+test('explicit TXT and merchant speech become sourced fields while conflicts stay unknown', async () => {
+  const material = { id: 'merchant_txt', version: 1, name: '经营补充.txt' };
+  const original = '店铺：小路鞋店\n商品：轻量跑步鞋\n平台：抖音\n播放量58000，商品点击1450，加购96，下单54，支付订单42。';
+  const parsed = parseMetricText(original, material);
+  assert.equal(parsed.status, 'needs_review');
+  assert.equal(parsed.facts.find((fact) => fact.key === 'product_name').value, '轻量跑步鞋');
+  assert.equal(parsed.facts.find((fact) => fact.key === 'video_views').value, 58000);
+  assert.equal(parsed.facts.find((fact) => fact.key === 'paid_orders').value, 42);
+  assert(parsed.facts.every((fact) => fact.source.locator.type === 'text'
+    && original.includes(fact.source.note.match(/原文“(.+)”/)[1])));
+
+  const h = harness();
+  const transcript = '店铺：小路鞋店。商品：轻量跑步鞋。平台：抖音。播放量58000，商品点击1450，支付订单42。';
+  const draft = createMerchantIntakeDraft({ sources: ['voice'], transcript });
+  const result = await requestIntakeExtraction(extractionRequest(h, draft, ''), {
+    fetchImpl: async () => unconfiguredResponse()
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.sentToExternal, false);
+  assert.equal(result.draft.merchantName, '小路鞋店');
+  assert.equal(result.draft.productName, '轻量跑步鞋');
+  assert.equal(result.draft.metrics.videoViews, 58000);
+  assert(result.evidenceLedger === undefined);
+  assert(result.draft.evidenceLedger.every((entry) => entry.quoteVerified === true
+    && transcript.includes(entry.quote)));
+
+  const conflict = extractLocalIntakeCandidates('播放量：100。补充记录，播放量：200。');
+  assert.deepEqual(conflict.filter((entry) => entry.field === 'metrics.videoViews').map((entry) => entry.value), [100, 200]);
+  const conflictDraft = createMerchantIntakeDraft({ sources: ['paste'], transcript: '播放量：100。补充记录，播放量：200。' });
+  const unresolved = await requestIntakeExtraction(extractionRequest(h, conflictDraft, ''), {
+    fetchImpl: async () => unconfiguredResponse()
+  });
+  assert.equal(unresolved.draft.metrics.videoViews, null);
+  assert(unresolved.notes.some((note) => note.includes('多个不同取值')));
 });
 
 test('screenshots and Excel originals are received for review without fabricating parsed facts', async () => {
@@ -1584,6 +1621,23 @@ test('local extraction keeps conflicting values empty and reports them instead o
   assert.equal(result.mode, 'local');
   assert.equal(result.draft.metrics.videoViews, null);
   assert(result.notes.some((note) => note.includes('多个不同取值')));
+});
+
+test('AI-verified text lines from an XLSX keep the real file binding and reach the draft', async () => {
+  const h = harness();
+  const xlsx = addMaterial(h, '商家经营数据.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx_ai_text');
+  setFacts(h, [fileFact(xlsx, 'paid_orders', 42, { unit: '笔',
+    locator: { type: 'text', lineStart: 4, lineEnd: 4 } })]);
+  const draft = createMerchantIntakeDraft({ sources: ['xlsx'], transcript: '' });
+  const result = await requestIntakeExtraction(extractionRequest(h, draft, ''), {
+    fetchImpl: async () => unconfiguredResponse()
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.draft.metrics.paidOrders, 42);
+  const binding = result.sourceBindings.find((entry) => entry.field === 'metrics.paidOrders');
+  assert.equal(binding.source, 'xlsx');
+  assert.equal(binding.materialId, xlsx.id);
+  assert.deepEqual(binding.locator, { type: 'text', lineStart: 4, lineEnd: 4 });
 });
 
 test('configured API reads the structured P1 data, fills verified quotes, and reports the external send', async () => {
@@ -2448,6 +2502,69 @@ test('workspace empty session has no invented archive, merchant, materials or bu
   assert.deepEqual(h.state, before);
 });
 
+test('workspace does not promote draft-only API fields into memory or an archive card', () => {
+  const h = harness();
+  const source = structuredClone(h.state);
+  const draft = createMerchantIntakeDraft({ transcript: '用户只保存了这一段原文。', sources: ['paste'] });
+  draft.merchantName = '未入库商家';
+  draft.productName = '未入库商品';
+  draft.currentProblem = '未入库问题';
+  draft.evidenceLedger.push(
+    { field: 'merchantName', value: draft.merchantName, status: 'confirmed_fact', source: 'paste', quote: '未入库商家' },
+    { field: 'productName', value: draft.productName, status: 'confirmed_fact', source: 'paste', quote: '未入库商品' },
+    { field: 'currentProblem', value: draft.currentProblem, status: 'confirmed_fact', source: 'paste', quote: '未入库问题' }
+  );
+  source.input.intake = { draft, sourceBindings: [], status: 'current', roundId: source.round.id,
+    inputVersion: source.round.inputVersion, savedAt: '2026-08-29T09:00:00.000Z' };
+  source.savedAt = '2026-08-29T09:00:00.000Z';
+
+  assert.deepEqual(workspaceRounds(source), [], 'an intake shell without saved facts is still an empty workspace');
+  const memory = workspaceMemory(source);
+  assert.equal(memory.merchant, null);
+  assert.equal(memory.product, null);
+  assert.equal(memory.problem, null);
+
+  source.input.description = '用户真正保存的原始描述';
+  const [round] = workspaceRounds(source);
+  assert.equal(round.input.intake.draft.merchantName, null);
+  assert.equal(round.input.intake.draft.productName, null);
+  assert.equal(round.input.intake.draft.currentProblem, null);
+  assert.equal(workspaceMemory(source).problem, '用户真正保存的原始描述');
+  assert.equal(source.input.intake.draft.productName, '未入库商品', 'read-only projection never rewrites source state');
+});
+
+test('workspace exposes API-filled intake only after INTAKE_SET saves provenance-bound facts', () => {
+  const h = harness();
+  const transcript = '店铺是青禾商店，商品是轻便随行杯，当前问题是有点击但下单少。';
+  const draft = createMerchantIntakeDraft({ transcript, sources: ['paste'] });
+  const values = {
+    merchantName: '青禾商店',
+    productName: '轻便随行杯',
+    currentProblem: '有点击但下单少'
+  };
+  const sourceBindings = [];
+  for (const [field, value] of Object.entries(values)) {
+    draft[field] = value;
+    draft.evidenceLedger.push({ field, value, status: 'confirmed_fact', source: 'paste', quote: value });
+    sourceBindings.push({ field, source: 'paste', materialId: null, materialVersion: null,
+      locator: { type: 'intake', field, source: 'paste', quote: value } });
+  }
+  h.send('INTAKE_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    description: '', draft, sourceBindings });
+
+  const memory = workspaceMemory(h.state);
+  assert.equal(memory.merchant, values.merchantName);
+  assert.equal(memory.product, values.productName);
+  assert.equal(memory.problem, values.currentProblem);
+  for (const field of Object.keys(values)) {
+    const fact = findIntakeFieldFact(h.state, field);
+    assert.equal(fact.source.kind, 'merchant_statement');
+    assert.deepEqual(fact.source.locator, { type: 'intake', field, source: 'paste', quote: values[field] });
+  }
+  const [round] = workspaceRounds(h.state);
+  assert.equal(round.input.intake.draft.productName, values.productName);
+});
+
 test('workspace corrected unknown product does not restore old intake draft or hide synthetic provenance', () => {
   const h = harness('juicer_cup_v1');
   analyze(h);
@@ -2716,7 +2833,9 @@ test('a verified MoneyAI real_model draft is isolated from local modes and remai
   const local = buildDemoAnalysis(h.state).analysis;
   const { processing: _processing, ...base } = local;
   const draft = { ...base, mode: 'real_model', analysisSource: 'moneyai',
-    paths: base.paths.map(({ actionKey: _actionKey, ...path }) => path) };
+    skillIds: ['douyin-data-analysis', 'douyin-account-diagnosis'],
+    paths: base.paths.map(({ actionKey: _actionKey, ...path }, index) => ({ ...path,
+      skillId: index ? 'douyin-video-creation' : 'douyin-copywriter' })) };
   const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
     inputVersion: h.state.round.inputVersion, operationId: 'real_analysis_1', attemptId: 'real_attempt_1' },
   analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
@@ -2769,7 +2888,9 @@ test('P3 MoneyAI history accepts a saved real-model decision without an actionKe
   const local = buildDemoAnalysis(h.state).analysis;
   const { processing: _processing, ...base } = local;
   const draft = { ...base, mode: 'real_model', analysisSource: 'moneyai',
-    paths: base.paths.map(({ actionKey: _actionKey, ...path }) => path) };
+    skillIds: ['douyin-data-analysis', 'douyin-account-diagnosis'],
+    paths: base.paths.map(({ actionKey: _actionKey, ...path }, index) => ({ ...path,
+      skillId: index ? 'douyin-video-creation' : 'douyin-copywriter' })) };
   const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
     inputVersion: h.state.round.inputVersion, operationId: 'p3_real_analysis', attemptId: 'p3_real_attempt' },
   analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
@@ -2856,7 +2977,10 @@ test('直连AI（AI 设置）提议可重建为可保存的 real_model 分析，
   analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
     constraints: h.state.input.constraints, unknowns: h.state.input.unknowns }));
   const proposal = { mode: 'real_model', status: 'ready', summary: '先核对当前问题与已确认指标。',
-    limitations: ['仅基于已确认摘要。'], paths: [{ title: '先核对现状', action: '保持价格与投流不变，记录一周加购与订单变化后复核。' }] };
+    limitations: ['仅基于已确认摘要。'],
+    skillsUsed: ['douyin-data-analysis', 'douyin-account-diagnosis'],
+    paths: [{ title: '先核对现状', action: '保持价格与投流不变，记录一周加购与订单变化后复核。',
+      skillId: 'douyin-copywriter' }] };
   const chatBodies = [];
   const result = await requestProviderAnalysis(request, { state: h.state, consentToExternalProcessing: true,
     fetchImpl: async (url, options) => {
@@ -2868,6 +2992,10 @@ test('直连AI（AI 设置）提议可重建为可保存的 real_model 分析，
   assert.equal(result.analysis.analysisSource, 'ai_settings');
   assert.equal(result.analysis.providerReceipt.provider, 'ai-settings');
   assert.equal(result.analysis.providerReceipt.sentToProvider, true);
+  assert.deepEqual(result.analysis.skillIds, ['douyin-data-analysis', 'douyin-account-diagnosis']);
+  assert.equal(result.analysis.paths[0].skillId, 'douyin-copywriter');
+  assert(result.analysis.processing.some((entry) => entry.name.includes('抖音数据分析')));
+  assert(result.analysis.processing.some((entry) => entry.skillId === 'douyin-account-diagnosis'));
   assert.equal(result.analysis.providerReceipt.model, 'test-model');
   assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
   assert.equal(h.state.analysis.analysisSource, 'ai_settings');
@@ -2877,10 +3005,33 @@ test('直连AI（AI 设置）提议可重建为可保存的 real_model 分析，
   const branded = structuredClone(result.analysis);
   branded.analysisSource = 'moneyai';
   assert.throws(() => h.send('ANALYSIS_SET', { analysis: branded }), { code: 'invalid_structure' });
+  const missingSkill = structuredClone(result.analysis);
+  delete missingSkill.paths[0].skillId;
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: missingSkill }), { code: 'invalid_structure' });
   assert.equal(chatBodies.length, 1);
   assert(!('temperature' in chatBodies[0]));
   assert(chatBodies[0].messages.some((m) => m.content.includes('"focus"')));
   assert(chatBodies[0].messages.some((m) => m.content.includes('provider_analysis_1')));
+});
+
+test('直连AI在没有可核验事实时只能保存insufficient空方案，不能借Skill补造路径', async () => {
+  const { requestProviderAnalysis } = await import('../shared/moneyai.js');
+  const h = harness();
+  h.send('INPUT_EDIT', { description: '资料尚未读取出任何可核验字段。' });
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
+    inputVersion: h.state.round.inputVersion, operationId: 'provider_insufficient_1', attemptId: 'provider_insufficient_attempt_1' },
+  analysisPayload({ focus: h.state.input.focus, facts: [], constraints: [], unknowns: h.state.input.unknowns }));
+  const proposal = { mode: 'real_model', status: 'insufficient', summary: '尚无可核验事实，不能生成行动路径。',
+    limitations: ['请先读取并确认资料。'], skillsUsed: ['douyin-data-analysis', 'douyin-account-diagnosis'], paths: [] };
+  const result = await requestProviderAnalysis(request, { state: h.state, consentToExternalProcessing: true,
+    fetchImpl: async (url) => url === '/api/ai/settings'
+      ? jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true })
+      : jsonResponse({ ok: true, content: JSON.stringify(proposal) }) });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.analysis.paths, []);
+  assert.equal(result.analysis.status, 'insufficient');
+  assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
 });
 
 test('requestAiInsight 未配置不发送；已配置时解析提议且聊天不携带temperature', async () => {
@@ -2906,6 +3057,7 @@ test('requestAiInsight 未配置不发送；已配置时解析提议且聊天不
 
 test('直连数据提取：勾选同意后材料文本随请求发送，quote可在材料文本中核验', async () => {
   const h = harness('underbed_complete_v1');
+  const material = addMaterial(h, '评价.csv', 'text/csv', 'ai_material_quote');
   const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
   const bodies = [];
   const fetchImpl = async (url, options) => {
@@ -2919,6 +3071,10 @@ test('直连数据提取：勾选同意后材料文本随请求发送，quote可
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.mode, 'api');
   assert.equal(result.draft.productName, '先锋牌榨汁杯');
+  const binding = result.sourceBindings.find((entry) => entry.field === 'productName');
+  assert.equal(binding.materialId, material.id);
+  assert.equal(binding.materialVersion, material.version);
+  assert.equal(binding.source, 'csv');
   assert(result.sentToExternal === true);
   assert(result.notes.some((note) => note.includes('评价.csv')));
   const sentUserMessage = bodies[0].messages.find((message) => message.role === 'user');
@@ -2946,10 +3102,13 @@ test('直连数据提取：未勾选时材料文本不发送，无处核验的qu
 
 test('直连数据提取：整理请求复用提取结果摘要，材料原文不重复发送', async () => {
   const h = harness('underbed_complete_v1');
+  const material = addMaterial(h, '店.csv', 'text/csv', 'ai_digest_material');
   const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
   const bodies = [];
   const digest = [{ metric: '成交订单数', value: 124, unit: '单', subject: '轻量透气跑步鞋',
-    window_start: null, window_end: null, source_line: '轻量透气跑步鞋,124', material: '店.csv' }];
+    window_start: null, window_end: null, source_line: '轻量透气跑步鞋,124', material: '店.csv',
+    materialId: material.id, materialVersion: material.version,
+    locator: { type: 'text', lineStart: 2, lineEnd: 2 } }];
   const fetchImpl = async (url, options) => {
     if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
     bodies.push(JSON.parse(options.body));
@@ -2966,7 +3125,9 @@ test('直连数据提取：整理请求复用提取结果摘要，材料原文�
   assert(!userMessage.content.includes('上传材料文本（'), '携带提取结果时不得再发送材料原文');
   assert(result.notes.some((note) => note.includes('未重复发送材料原文')));
   const binding = result.sourceBindings.find((entry) => entry.field === 'productName');
-  assert.equal(binding.locator.quote, '轻量透气跑步鞋');
+  assert.equal(binding.materialId, material.id);
+  assert.equal(binding.materialVersion, material.version);
+  assert.deepEqual(binding.locator, { type: 'text', lineStart: 2, lineEnd: 2 });
 });
 
 test('直连数据提取：提取结果摘要结构不合法时整体拒绝，不发送任何内容', async () => {
@@ -3005,6 +3166,7 @@ test('直连数据提取：AI可对指标提出有依据质疑，无依据的质
 
 test('重新整理以最新提取为准：AI填字段时清掉与当前值不一致的旧提取记录', async () => {
   const h = harness('underbed_complete_v1');
+  addMaterial(h, '评价.csv', 'text/csv', 'ai_refresh_material');
   const draft = createMerchantIntakeDraft({ sources: ['csv', 'paste'], transcript: '我家卖便携榨汁杯。' });
   draft.evidenceLedger.push({ field: 'productName', value: '上一次的旧品牌名', status: 'confirmed_fact', source: 'paste', quote: '上一次的旧品牌名' });
   const result = await requestIntakeExtraction({ ...extractionRequest(h, draft),
@@ -3022,6 +3184,32 @@ test('重新整理以最新提取为准：AI填字段时清掉与当前值不一
   const background = groups.find((group) => group.id === 'background');
   assert(background.items.length > 0);
   assert(background.items.every((item) => !item.conflicting), '字段不应再标记来源冲突');
+});
+
+test('直连数据提取只接受实际发送片段中的逐字quote，截断后的原文不能补字段', async () => {
+  const h = harness();
+  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '' });
+  const beyond = '只存在于截断之后的商品名';
+  const description = '前'.repeat(6500) + beyond;
+  const result = await requestIntakeExtraction(extractionRequest(h, draft, description), {
+    fetchImpl: async (url) => url === '/api/ai/settings'
+      ? jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true })
+      : jsonResponse({ ok: true, content: JSON.stringify({ fields: {
+        productName: { value: beyond, quote: beyond }
+      } }) })
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.draft.productName, null);
+});
+
+test('真实资料未形成任何可核验事实时不生成预编分析路径', () => {
+  const h = harness();
+  h.send('INPUT_EDIT', { description: '只写了一句，但还没有读取出任何可核验字段。' });
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const result = buildDemoAnalysis(h.state);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.analysis.paths, []);
+  assert.match(result.analysis.summary, /没有足够依据/);
 });
 
 test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {

@@ -15,6 +15,7 @@ const ICONS = {
   document: ['M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z', 'M14 3v6h6', 'M8 13h8M8 17h5'],
   memory: ['M8 3a4 4 0 0 0-4 4v1a4 4 0 0 0-1 7 4 4 0 0 0 5 5 3 3 0 0 0 4-2V6a3 3 0 0 0-4-3Z', 'M16 3a4 4 0 0 1 4 4v1a4 4 0 0 1 1 7 4 4 0 0 1-5 5 3 3 0 0 1-4-2', 'M7 9c3 0 3 4 0 4M17 9c-3 0-3 4 0 4'],
   archive: ['M3 3h18v5H3Z', 'M5 8v13h14V8', 'M10 12h4'],
+  settings: ['M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z', 'M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2 3.46-.08-.03a1.7 1.7 0 0 0-1.8.25l-.5.29a1.7 1.7 0 0 0-.84 1.69V22h-4v-.09a1.7 1.7 0 0 0-.84-1.69l-.5-.29a1.7 1.7 0 0 0-1.8-.25l-.08.03-2-3.46.06-.06A1.7 1.7 0 0 0 4.6 15v-.58a1.7 1.7 0 0 0-1-1.55L3.5 12.8v-4l.09-.05a1.7 1.7 0 0 0 1-1.55v-.58a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2-3.46.08.03a1.7 1.7 0 0 0 1.8-.25l.5-.29A1.7 1.7 0 0 0 9.42 0h4v.09a1.7 1.7 0 0 0 .84 1.69l.5.29a1.7 1.7 0 0 0 1.8.25l.08-.03 2 3.46-.06.06a1.7 1.7 0 0 0-.34 1.88v.58a1.7 1.7 0 0 0 1 1.55l.09.05v4l-.09.05a1.7 1.7 0 0 0-1 1.55Z'],
   help: ['M9 9a3 3 0 1 1 5 2c-1 1-2 1-2 3', 'M12 17h.01', 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z'],
   close: ['m6 6 12 12M6 18 18 6']
 };
@@ -72,7 +73,8 @@ export function mountShell(pageId) {
   }
   const memoryButton = button('商业记忆', 'shared-step', () => openWorkspace('memory'), 'memory');
   const archiveButton = button('活动档案', 'shared-step', () => openWorkspace('archive'), 'archive');
-  navigation.append(memoryButton, archiveButton);
+  const aiSettingsButton = button('大模型配置', 'shared-step', () => openAiSettings(), 'settings');
+  navigation.append(memoryButton, archiveButton, aiSettingsButton);
   sidebar.append(brand, el('p', '我的工作台', 'shared-nav-label'), navigation);
   const sidebarBottom = el('div', undefined, 'shared-sidebar-bottom');
   sidebarBottom.append(button('演示指南', 'shared-step', () => openWorkspace('guide'), 'help'));
@@ -226,7 +228,7 @@ export function mountShell(pageId) {
       } finally { load.disabled = false; }
     });
     controls.append(select, load); dialogBody.append(controls);
-    dialogBody.append(el('p', '示例会在你确认后替换当前会话。当前为本地规则演示；AI 整理可在底部「AI 设置」配置你自己的 API 后使用，未配置前不会外发任何材料。', 'workspace-dialog-note'));
+    dialogBody.append(el('p', '示例会在你确认后替换当前会话。当前为本地规则演示；可在左侧「大模型配置」接入自己的 API，未配置且未逐次同意前不会外发任何材料。', 'workspace-dialog-note'));
     const reset = button('清空本次演示', 'button button--quiet workspace-reset', async () => {
       if (!window.confirm('清空本会话的资料、原件与历史？已导出的文件不能撤回。')) return;
       if (!(await resolveDrafts({ notify: show }))) return;
@@ -258,7 +260,7 @@ export function mountShell(pageId) {
   }
 
   const bar = el('div', undefined, 'shared-footer');
-  const provenanceStatus = { ai: '本地规则演示 · 可在「AI 设置」配置你自己的 API', moneyai: 'MoneyAI接入核对中' };
+  const provenanceStatus = { ai: '本地规则演示 · 可在左侧「大模型配置」接入 API', moneyai: 'MoneyAI接入核对中' };
   const provenance = el('p');
   function renderProvenance() {
     provenance.textContent = `${provenanceStatus.ai} · ${provenanceStatus.moneyai} · 资料与记录保存在当前浏览器`;
@@ -272,17 +274,15 @@ export function mountShell(pageId) {
     renderProvenance();
   });
   const saved = el('span', '正在读取本机记录…');
-  const aiSettingsButton = el('span');
-  aiSettingsButton.append(button('AI 设置', 'shared-footer-link', () => openAiSettings()));
-  bar.append(provenance, saved, aiSettingsButton); footer.append(bar);
+  bar.append(provenance, saved); footer.append(bar);
 
-  // 「AI 设置」dialog: the only external path is the API the user saves here.
+  // 「大模型配置」dialog: the only external path is the API the user saves here.
   // The key stays in the local backend (server/ai-settings.json), never in the browser.
   const aiDialog = el('dialog', undefined, 'workspace-dialog');
   aiDialog.setAttribute('aria-labelledby', 'ai-settings-title');
   const aiHeader = el('div', undefined, 'workspace-dialog-header');
   const aiHeading = el('div');
-  const aiTitle = el('h2', 'AI 设置'); aiTitle.id = 'ai-settings-title';
+  const aiTitle = el('h2', '大模型配置'); aiTitle.id = 'ai-settings-title';
   const aiSubtitle = el('p', '配置你自己的 OpenAI 兼容 API 后，「整理」会把当前结构化草稿、描述与转写原文发送到你设置的地址，由 AI 辅助补全仍为空的字段；未配置时不外发任何内容。');
   aiHeading.append(aiTitle, aiSubtitle);
   const aiClose = button('', 'button button--quiet workspace-dialog-close', () => aiDialog.close(), 'close');
@@ -327,7 +327,7 @@ export function mountShell(pageId) {
         if (!result.ok) { aiStatus(result.message || '保存失败，请核对填写内容。', true); return; }
         apiKey.value = '';
         if (result.hasKey) apiKey.placeholder = '已保存在本机；重新输入可更换';
-        aiStatus('已保存。');
+        aiStatus('已保存。第一页整理资料时，可在逐次同意后让模型补齐本机规则未读出的字段。');
         await refreshAiProvenance();
       } finally { save.disabled = false; }
     });
@@ -352,7 +352,7 @@ export function mountShell(pageId) {
     aiBody.append(aiField('API 地址（OpenAI 兼容；填到 /v1 为止，不要带 /chat/completions）', baseUrl),
       aiField('API Key（只保存在本机后端，不会进入浏览器）', apiKey),
       aiField('模型名', model), actions,
-      el('p', '发送范围：第一页「整理」时的当前结构化草稿、描述与转写原文；AI 不覆盖已有字段，每条新增值都必须带描述或原文引文，你可以逐项核对。', 'workspace-dialog-note'));
+      el('p', '发送范围：第一页「整理」时的当前结构化草稿、描述、转写原文，以及你逐次同意发送的材料文本。AI 只补仍为空的字段，不覆盖已有字段；每条新增值必须带本次实际发送内容中的原文引文，引文无法核对就拒收。', 'workspace-dialog-note'));
     if (!(settings.ok && settings.configured)) aiStatus('尚未配置；当前为纯本地演示，不会外发任何内容。');
     aiDialog.showModal();
   }
@@ -360,7 +360,7 @@ export function mountShell(pageId) {
     const result = await getAiSettings();
     provenanceStatus.ai = result.ok && result.configured
       ? `AI 已配置（${result.model}）· 原文只发送到你设置的地址`
-      : '本地规则演示 · 可在「AI 设置」配置你自己的 API';
+      : '本地规则演示 · 可在左侧「大模型配置」接入 API';
     renderProvenance();
   }
   refreshAiProvenance();

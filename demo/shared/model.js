@@ -16,10 +16,10 @@ export const MATERIAL_CAPABILITIES = Object.freeze(Object.fromEntries([
   ['jpg', 'image/jpeg', true, 'image', 'none', '图片可接收和预览；未进行OCR，内容仍待核对。'],
   ['jpeg', 'image/jpeg', true, 'image', 'none', '图片可接收和预览；未进行OCR，内容仍待核对。'],
   ['webp', 'image/webp', true, 'image', 'none', '保留WebP接收预览兼容；未进行OCR。'],
-  ['txt', 'text/plain', true, 'text', 'text_only', '只读取UTF-8原文，不自动提取业务事实。'],
+  ['txt', 'text/plain', true, 'text', 'explicit_text', '读取UTF-8原文，并仅从明确标签和值提取可定位字段；其余内容保持未知。'],
   ['csv', 'text/csv', true, 'text', 'metric_csv', '仅支持UTF-8约定指标表头；其他结构保留原文待核对。'],
   ['json', 'application/json', true, 'text', 'metric_json', '仅支持UTF-8的demo.metrics.v1结构；不执行导入内容。'],
-  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, null, 'table_xlsx', 'Excel原件可接收并在本机解析已知指标列（抖音作品导出、榜单快照、metric约定表）；无法识别的列保留待核对。'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, null, 'table_xlsx', 'Excel原件可接收并在本机寻找可信表头、解析已知经营指标列；无法识别的列保留待核对。'],
   ['xls', 'application/vnd.ms-excel', true, null, 'none', 'XLS旧格式仅接收保存；解析未支持，请另存为XLSX或导出UTF-8 CSV后再上传以自动读取指标。']
 ].map(([extension, mime, receive, preview, parse, reason]) => [extension, Object.freeze({ extension, mime, receive, preview, parse, reason })])));
 
@@ -304,6 +304,8 @@ function checkRefs(ids, available) {
 export function validateAnalysis(analysis, state) {
   const acceptedExperiment = isAcceptedExperimentAnalysis(analysis, state);
   const realModel = analysis?.mode === 'real_model';
+  const analysisSkillIds = ['douyin-data-analysis', 'douyin-account-diagnosis'];
+  const executionSkillIds = new Set(['douyin-copywriter', 'douyin-video-creation', 'douyin-live-ops']);
   requireValue(['ready', 'limited', 'insufficient'].includes(analysis.status), '分析状态不合法。', 'invalid_structure');
   requireValue(['demo_fixture', 'local_limited', 'real_model'].includes(analysis.mode), '当前没有可核对的分析能力。', 'invalid_structure');
   requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
@@ -321,6 +323,11 @@ export function validateAnalysis(analysis, state) {
       && receipt.sessionId === state.sessionId && receipt.roundId === state.round.id
       && receipt.inputVersion === state.round.inputVersion && /^sha256:[a-f0-9]{64}$/.test(receipt.inputFingerprint),
     '真实分析缺少提供方回执、输入身份或路径上限。', 'invalid_structure');
+    requireValue(Array.isArray(analysis.skillIds)
+      && analysis.skillIds.length === analysisSkillIds.length
+      && analysisSkillIds.every((skillId, index) => analysis.skillIds[index] === skillId)
+      && analysis.paths.every((path) => executionSkillIds.has(path.skillId)),
+    '真实分析缺少已核对的分析Skill或路径执行Skill身份。', 'invalid_structure');
   }
   uniqueIds(analysis.paths);
   const reviewPolicy = analysisReviewPolicy(state);
@@ -374,7 +381,8 @@ export function validateAnalysis(analysis, state) {
         ? (analysis.analysisSource === 'ai_settings' ? entry.kind === 'provider_ai' : entry.kind === 'moneyai')
           && entry.status === 'done'
           && entry.operationId === analysis.providerReceipt.operationId
-        : entry.kind === 'local_rule' && ['done', 'not_run'].includes(entry.status))),
+        : entry.kind === 'local_rule' && ['done', 'not_run'].includes(entry.status)))
+    && (!realModel || analysisSkillIds.every((skillId) => analysis.processing.some((entry) => entry.skillId === skillId))),
   '不能伪造专家或模型调用过程。', 'invalid_structure');
   const actionKeys = new Set();
 

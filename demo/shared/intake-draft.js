@@ -252,6 +252,15 @@ function positions(locator, field, errors, startKey, endKey, minimum) {
 
 function checkLocator(locator, binding, field, errors) {
   if (!record(locator)) { issue(errors, field, '须提供原解析器的定位对象。'); return; }
+  if (locator.type === 'text' && FILE_SOURCES.has(binding.source)) {
+    if (!keys(locator, ['type', 'start', 'end', 'lineStart', 'lineEnd'], ['type'], field, errors)) return;
+    const offset = own(locator, 'start') || own(locator, 'end');
+    const lines = own(locator, 'lineStart') || own(locator, 'lineEnd');
+    if (!offset && !lines) issue(errors, field, '文件文本定位须有字符范围或行范围。');
+    if (offset) positions(locator, field, errors, 'start', 'end', 0);
+    if (lines) positions(locator, field, errors, 'lineStart', 'lineEnd', 1);
+    return;
+  }
   if (binding.source === 'csv') {
     if (!keys(locator, ['type', 'recordIndex', 'lineStart', 'lineEnd', 'column'],
       ['type', 'recordIndex', 'lineStart', 'lineEnd', 'column'], field, errors)) return;

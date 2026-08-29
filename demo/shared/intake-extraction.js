@@ -10,6 +10,7 @@
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput,
   TEXT_FIELDS, FIELD_LABELS } from './intake-draft.js';
 import { getAiSettings, requestAiChat } from './ai.js';
+import { extractLocalIntakeCandidates } from './local-intake-parser.js';
 
 const VERSION = 'v0.5-intake-1';
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
@@ -31,7 +32,7 @@ const FACT_KEY_FIELDS = {
 };
 const COUNT_FIELDS = new Set(['metrics.videoViews', 'metrics.productClicks', 'metrics.addToCarts',
   'metrics.createdOrders', 'metrics.paidOrders']);
-const LOCATOR_SOURCES = { csv: 'csv', json: 'json', xlsx: 'xlsx' };
+const LOCATOR_SOURCES = { csv: 'csv', json: 'json', xlsx: 'xlsx', txt: 'txt' };
 const AI_TEXT_LIMIT = 6000;
 const AI_STRUCTURED_LIMIT = 12000;
 const AI_CONTEXT_ARRAY_LIMIT = 20;
@@ -76,13 +77,23 @@ function ensureSource(draft, source) {
   if (!draft.sources.includes(source)) draft.sources.push(source);
 }
 
+function factFileSource(fact, state) {
+  const direct = LOCATOR_SOURCES[fact?.source?.locator?.type];
+  if (direct) return direct;
+  if (fact?.source?.locator?.type !== 'text') return null;
+  const material = (state?.input?.materials || []).find((item) =>
+    item.id === fact.source.materialId && item.version === fact.source.materialVersion);
+  const extension = String(material?.name || '').toLowerCase().split('.').at(-1);
+  return ['txt', 'csv', 'json', 'xlsx'].includes(extension) ? extension : null;
+}
+
 // Layer 1: project locally parsed file facts into empty scalar fields.
 // Only fills fields that are still null and unbound; conflicts stay empty and
 // are reported instead of guessed.
 function applyLocalFacts(draft, bindings, state, notes) {
   const facts = (state?.input?.facts || []).filter((fact) =>
     fact && fact.availability === 'known' && fact.value !== null && fact.value !== undefined &&
-    fact.source?.kind === 'file_extract' && LOCATOR_SOURCES[fact.source.locator?.type] &&
+    fact.source?.kind === 'file_extract' && factFileSource(fact, state) &&
     Object.prototype.hasOwnProperty.call(FACT_KEY_FIELDS, fact.key));
   const candidates = new Map();
   for (const fact of facts) {
@@ -105,7 +116,7 @@ function applyLocalFacts(draft, bindings, state, notes) {
       continue;
     }
     const fact = distinct.values().next().value;
-    const source = LOCATOR_SOURCES[fact.source.locator.type];
+    const source = factFileSource(fact, state);
     setLeaf(draft, field, clone(fact.value));
     draft.evidenceLedger.push({ field, value: clone(fact.value), status: 'confirmed_fact', source });
     bindings.push({ field, source, materialId: fact.source.materialId,
@@ -124,7 +135,7 @@ function applyLocalFacts(draft, bindings, state, notes) {
     }
     if (windows.size === 1) {
       const fact = windows.values().next().value;
-      const source = LOCATOR_SOURCES[fact.source.locator.type];
+      const source = factFileSource(fact, state);
       for (const field of ['metrics.windowStart', 'metrics.windowEnd']) {
         const value = field === 'metrics.windowStart' ? fact.window.start : fact.window.end;
         setLeaf(draft, field, value);
@@ -136,6 +147,46 @@ function applyLocalFacts(draft, bindings, state, notes) {
     } else if (windows.size > 1) {
       notes.push('材料的观察窗口不一致，未自动填入起止日期；请核对原件。');
     }
+  }
+}
+
+// Project only explicit label/value pairs from the saved transcript and
+// description.  Distinct values for the same field are a conflict: neither is
+// selected and the field remains unknown.  Every accepted value keeps the
+// exact quote that justified it.
+function applyLocalNarrative(draft, bindings, transcript, description, notes) {
+  const transcriptSource = draft.sources.includes('voice') ? 'voice'
+    : draft.sources.includes('paste') ? 'paste' : 'manual';
+  const inputs = [
+    { value: transcript, source: transcriptSource },
+    { value: description, source: 'manual' }
+  ].filter((entry) => typeof entry.value === 'string' && entry.value.trim());
+  const candidates = new Map();
+  for (const input of inputs) {
+    for (const candidate of extractLocalIntakeCandidates(input.value)) {
+      if (!candidates.has(candidate.field)) candidates.set(candidate.field, []);
+      candidates.get(candidate.field).push({ ...candidate, source: input.source });
+    }
+  }
+  for (const [field, list] of candidates) {
+    if (leafValue(draft, field) !== null || bindings.some((binding) => binding.field === field)) continue;
+    const distinct = new Map();
+    for (const candidate of list) {
+      const key = JSON.stringify(candidate.value);
+      if (!distinct.has(key)) distinct.set(key, candidate);
+    }
+    if (distinct.size !== 1) {
+      notes.push('文字中“' + (FIELD_LABELS[field] || field) + '”存在多个不同取值，未自动填入。');
+      continue;
+    }
+    const candidate = distinct.values().next().value;
+    setLeaf(draft, field, clone(candidate.value));
+    ensureSource(draft, candidate.source);
+    const status = field.endsWith('Hypothesis') ? 'owner_hypothesis' : 'confirmed_fact';
+    draft.evidenceLedger.push({ field, value: clone(candidate.value), status,
+      source: candidate.source, quote: candidate.quote, quoteVerified: true });
+    bindings.push({ field, source: candidate.source, materialId: null, materialVersion: null,
+      locator: { type: 'intake', field, source: candidate.source, quote: candidate.quote } });
   }
 }
 
@@ -177,9 +228,11 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   const fieldLines = emptyFields.length
     ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
-  const materialBlock = !digestBlock && materialTexts.length
-    ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
-        .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 12000)).join('\n\n')
+  let sentMaterialTexts = !digestBlock
+    ? materialTexts.map((entry) => ({ name: entry.name, text: clip(entry.text, 12000) })) : [];
+  const materialBlock = sentMaterialTexts.length
+    ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + sentMaterialTexts
+        .map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n')
     : '';
   let descriptionText = clip(request.description);
   let transcriptText = clip(request.transcript);
@@ -198,9 +251,11 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   let userContent = composeUserContent();
   if (userContent.length > 38000) {
     materialLimit = 6000;
-    const shrunkMaterialBlock = !digestBlock && materialTexts.length
-      ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
-          .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 6000)).join('\n\n')
+    sentMaterialTexts = !digestBlock
+      ? materialTexts.map((entry) => ({ name: entry.name, text: clip(entry.text, 6000) })) : [];
+    const shrunkMaterialBlock = sentMaterialTexts.length
+      ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + sentMaterialTexts
+          .map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n')
       : '';
     descriptionText = clip(request.description, 3000);
     transcriptText = clip(request.transcript, 3000);
@@ -225,7 +280,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
         '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
       { role: 'user', content: userContent }
     ]
-  }, { fetchImpl, signal, timeoutMs: 120000 });
+  }, { fetchImpl, signal, timeoutMs: 60000 });
   if (!reply.ok) {
     notes.push('已配置 AI 但整理请求未完成（' + reply.message + '）；已保留本机提取结果，未替换任何内容。');
     return { added: 0, challenges: [], configured: true, attempted: true, completed: false };
@@ -254,9 +309,9 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     const issue = typeof entry.issue === 'string' ? entry.issue.trim().slice(0, 300) : '';
     const quote = typeof entry.quote === 'string' ? entry.quote.trim() : '';
     if (!metric || !issue || !quote || quote.length > 4000) continue;
-    const verifiable = request.transcript.includes(quote) || request.description.includes(quote)
+    const verifiable = transcriptText.includes(quote) || descriptionText.includes(quote)
       || Boolean(digestText && digestText.includes(quote))
-      || materialTexts.some((material) => material.text.includes(quote));
+      || sentMaterialTexts.some((material) => material.text.includes(quote));
     if (!verifiable) continue;
     challenges.push({ metric, issue, quote });
   }
@@ -270,30 +325,46 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     if (!value || value.length > 4000 || !quote || quote.length > 4000 || value.includes('\0')) continue;
     let source = null;
     let materialName = null;
-    if (request.transcript.includes(quote)) {
+    if (transcriptText.includes(quote)) {
       source = ['voice', 'paste', 'manual'].find((name) => draft.sources.includes(name)) || 'paste';
-    } else if (request.description.includes(quote)) {
+    } else if (descriptionText.includes(quote)) {
       source = ['manual', 'paste'].find((name) => draft.sources.includes(name)) || 'manual';
     } else {
-      const hit = materialTexts.find((entry2) => entry2.text.includes(quote));
+      const hit = sentMaterialTexts.find((entry2) => entry2.text.includes(quote));
       const digestHit = hit ? null : materialDigest.find((entry2) => entry2.source_line.includes(quote)) || null;
       if (!hit && !digestHit) continue; // quote not verified against the text actually sent — drop it
-      source = 'paste';
       materialName = hit ? hit.name : digestHit.material;
+      const matches = (request.state?.input?.materials || []).filter((item) => item.name === materialName);
+      if (matches.length !== 1) continue;
+      const material = matches[0];
+      source = String(material.name).toLowerCase().split('.').at(-1);
+      if (!['txt', 'csv', 'json', 'xlsx'].includes(source)) continue;
+      let locator;
+      if (digestHit) {
+        if (digestHit.materialId !== material.id || digestHit.materialVersion !== material.version
+          || digestHit.locator?.type !== 'text') continue;
+        locator = clone(digestHit.locator);
+      } else {
+        const at = hit.text.indexOf(quote);
+        const lineStart = hit.text.slice(0, at).split('\n').length;
+        locator = { type: 'text', lineStart, lineEnd: lineStart + quote.split('\n').length - 1 };
+      }
+      bindings.push({ field, source, materialId: material.id,
+        materialVersion: material.version, locator });
     }
     setLeaf(draft, field, value);
     // 重新整理时以最新提取为准：清掉该字段与本值不一致的旧提取记录，
     // 避免跨次整理累积出"来源冲突"；同一次运行内不同来源的真冲突仍会标记。
     draft.evidenceLedger = draft.evidenceLedger.filter((entry) =>
       !(entry.field === field && !Object.is(entry.value, value)));
-    draft.evidenceLedger.push({ field, value, status: 'confirmed_fact', source, quote });
-    bindings.push({ field, source, locator: { type: 'intake', field, source, quote } });
+    draft.evidenceLedger.push({ field, value, status: 'confirmed_fact', source, quote, quoteVerified: true });
+    if (!materialName) bindings.push({ field, source, locator: { type: 'intake', field, source, quote } });
     ensureSource(draft, source);
     added += 1;
     if (materialName) materialHits.push('“' + (FIELD_LABELS[field] || field) + '”来自材料《' + materialName + '》');
   }
   if (materialHits.length) {
-    notes.push('其中' + materialHits.join('、') + '；该来源按现有契约标记为手动粘贴，请在核对时留意。');
+    notes.push('其中' + materialHits.join('、') + '；已绑定当前材料版本与本次实际发送的原文行，请在核对时展开来源。');
   }
   if (digestBlock) {
     notes.push('本次整理未重复发送材料原文，只附带其已核验的AI提取结果' + digestLines.length + '条。');
@@ -349,15 +420,24 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
       if (!Array.isArray(request.materialDigest) || request.materialDigest.length > 400) throw new Error('context');
       for (const entry of request.materialDigest) {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('context');
+        const locator = entry.locator;
+        const material = (snapshot.input.materials || []).find((item) => item.id === entry.materialId);
         if (typeof entry.metric !== 'string' || !text(entry.metric, 120)
           || typeof entry.value !== 'number' || !Number.isFinite(entry.value)
           || typeof entry.source_line !== 'string' || !text(entry.source_line, 400)
-          || typeof entry.material !== 'string' || !text(entry.material, 200)) throw new Error('context');
+          || typeof entry.material !== 'string' || !text(entry.material, 200)
+          || !ID.test(entry.materialId) || !Number.isSafeInteger(entry.materialVersion) || entry.materialVersion < 1
+          || !material || material.version !== entry.materialVersion || material.name !== entry.material
+          || !locator || locator.type !== 'text'
+          || !Number.isSafeInteger(locator.lineStart) || locator.lineStart < 1
+          || !Number.isSafeInteger(locator.lineEnd) || locator.lineEnd < locator.lineStart) throw new Error('context');
         materialDigest.push({
           metric: entry.metric, value: entry.value,
           unit: optString(entry.unit, 40), subject: optString(entry.subject, 300),
           window_start: optString(entry.window_start, 10), window_end: optString(entry.window_end, 10),
           source_line: entry.source_line, material: entry.material,
+          materialId: entry.materialId, materialVersion: entry.materialVersion,
+          locator: clone(locator),
         });
       }
     }
@@ -383,6 +463,7 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
         || (entry.value === null && entry.status === 'unknown' && current === null);
     });
     applyLocalFacts(draft, sourceBindings, snapshot, notes);
+    applyLocalNarrative(draft, sourceBindings, transcript, description, notes);
     if (signal?.aborted) return fallback('cancelled', '已取消整理，未发送任何内容。');
     const ai = await applyAiExtraction(draft, sourceBindings,
       { state: snapshot, transcript, description, materialTexts, materialDigest }, fetchImpl, signal, notes);

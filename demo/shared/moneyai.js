@@ -139,7 +139,7 @@ export async function requestMoneyAIAnalysis(request, options = {}) {
       name: 'MoneyAI项目分析', kind: 'moneyai', status: 'done', operationId: response.receipt.operationId
     }, ...(Array.isArray(value.skillIds) ? value.skillIds.map((skillId) => ({
       name: `Skill · ${SKILL_LABELS[skillId] ?? skillId}`,
-      kind: 'moneyai', status: 'done', operationId: response.receipt.operationId,
+      kind: 'moneyai', status: 'done', operationId: response.receipt.operationId, skillId,
     })) : [])],
     providerReceipt,
   } : null;
@@ -190,21 +190,24 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'mone
   if (!branding) return null;
   if (!record(proposal) || proposal.mode !== 'real_model'
     || !['ready', 'limited', 'insufficient'].includes(proposal.status)
-    || !Array.isArray(proposal.paths) || !proposal.paths.length || proposal.paths.length > 2
+    || !Array.isArray(proposal.paths) || proposal.paths.length > 2
+    || proposal.status === 'insufficient' && proposal.paths.length
+    || proposal.status !== 'insufficient' && !proposal.paths.length
     || !Array.isArray(proposal.limitations)) return null;
-  const moneyAISkills = source === 'moneyai';
-  if (moneyAISkills && (!Array.isArray(proposal.skillsUsed)
+  const routedSkills = source === 'moneyai' || source === 'ai_settings';
+  if (routedSkills && (!Array.isArray(proposal.skillsUsed)
     || proposal.skillsUsed.length !== MONEYAI_ANALYSIS_SKILLS.length
     || MONEYAI_ANALYSIS_SKILLS.some((skillId, index) => proposal.skillsUsed[index] !== skillId))) return null;
   const suggestions = proposal.paths.map((path) => record(path) ? {
     title: proposalText(path.title, 160), action: proposalText(path.action, 1200),
-    skillId: moneyAISkills && MONEYAI_EXECUTION_SKILLS.includes(path.skillId) ? path.skillId : null,
+    skillId: routedSkills && MONEYAI_EXECUTION_SKILLS.includes(path.skillId) ? path.skillId : null,
   } : null);
   if (suggestions.some((path) => !path?.title || !path?.action)
-    || moneyAISkills && suggestions.some((path) => !path.skillId)
+    || routedSkills && suggestions.some((path) => !path.skillId)
     || proposal.limitations.some((item) => !proposalText(item, 500))) return null;
   const generated = buildDemoAnalysis(state);
-  if (!generated?.ok || !Array.isArray(generated.analysis?.paths) || !generated.analysis.paths.length) return null;
+  if (!generated?.ok || !Array.isArray(generated.analysis?.paths)) return null;
+  if (suggestions.length && !generated.analysis.paths.length) return null;
   const count = Math.min(suggestions.length, generated.analysis.paths.length, 2);
   const paths = generated.analysis.paths.slice(0, count).map((base, index) => {
     const suggestion = suggestions[index];
@@ -232,7 +235,7 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'mone
     status: proposal.status,
     mode: 'real_model',
     analysisSource: branding.analysisSource,
-    ...(moneyAISkills ? { skillIds: [...MONEYAI_ANALYSIS_SKILLS] } : {}),
+    ...(routedSkills ? { skillIds: [...MONEYAI_ANALYSIS_SKILLS] } : {}),
     summary: proposalText(proposal.summary, 2000) || branding.summaryFallback,
     paths,
     limitations,
@@ -270,7 +273,10 @@ export async function requestProviderAnalysis(request, options = {}) {
     ...analysis,
     processing: [{
       name: '直连AI分析（AI 设置）', kind: 'provider_ai', status: 'done', operationId: frozen.envelope.operationId,
-    }],
+    }, ...MONEYAI_ANALYSIS_SKILLS.map((skillId) => ({
+      name: `Skill · ${SKILL_LABELS[skillId]}`,
+      kind: 'provider_ai', status: 'done', operationId: frozen.envelope.operationId, skillId,
+    }))],
     providerReceipt,
   };
   try { validateRealModelAnalysisDraft(branded, options.state, scope); }

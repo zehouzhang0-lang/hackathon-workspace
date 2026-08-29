@@ -191,13 +191,22 @@ export function buildDemoAnalysis(state) {
       };
       return result;
     }
+    // A real, non-fixture round must not receive a canned action merely because
+    // the page was confirmed. At least one provenance-bound known fact is needed
+    // before local rules may offer a path; otherwise the honest result is empty.
+    const hasTraceableFact = state.input.facts.some((fact) => fact?.availability === 'known'
+      && fact.value !== null && fact.value !== undefined && fact.verification !== 'conflicting'
+      && ['merchant_statement', 'file_extract'].includes(fact.source?.kind)
+      && fact.source?.locator && typeof fact.source.locator === 'object');
     let paths = completeDemo
       ? [
         path('把尺寸和套装说明写清楚', '先核对外尺寸、套装数量和价格，再只改商品说明中的这一段。', ['price', 'units_per_order', 'external_length', 'external_width', 'external_height', 'dimension_scope', 'current_title', 'current_opening', 'selected_inquiries']),
         path('先统一尺寸咨询回复', '先使用一份不保证适配的测量与核对回复，记录顾客仍不清楚的地方。', ['external_length', 'external_width', 'external_height', 'dimension_scope', 'selected_inquiries'])
       ]
       : juicerReady ? [juicerPath('juicer_first_screen'), juicerPath('juicer_question_video')]
-      : [path('先留一份可核对的记录', '选择同一商品、同一渠道和同一时间窗口的一份现有记录，保留原值与出处，再比较变化。', ['product_detail_visitors', 'paid_orders'])];
+      : state.fixtureId || hasTraceableFact
+        ? [path('先留一份可核对的记录', '选择同一商品、同一渠道和同一时间窗口的一份现有记录，保留原值与出处，再比较变化。', ['product_detail_visitors', 'paid_orders'])]
+        : [];
     paths = applyAnalysisReviewPolicy(paths, reviewPolicy);
     if (reviewPolicy.withdrawn) limitations.push('本轮此前异议已撤回原优先假设；后续认可或不确定不自动解除，须补充可核对资料。');
     if (reviewPolicy.unresolved || reviewPolicy.blockedActionKeys.length || reviewPolicy.blockedTitles.length) {

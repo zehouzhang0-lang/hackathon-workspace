@@ -98,12 +98,26 @@ export async function requestAiChat({ messages, temperature, maxTokens = 2048 },
   return { ok: true, content: result.payload.content };
 }
 
+const SAFE_ANALYSIS_RULES = '只依据摘要中的焦点、事实、限制与未知；不得把未知补成0或事实；不得声称根因已确认；'
+  + '不得编造缺失数据、概率、收入或效果；总结必须说明结论仍需商家核对。';
 const INSIGHT_INSTRUCTION = '只输出一个JSON对象，不要输出其他文字或代码块外的内容。'
   + 'JSON精确字段为：mode固定"real_model"；status只能是"ready"、"limited"或"insufficient"；'
   + 'summary为不超过2000字的总结；limitations为最多20条、每条不超过500字的字符串数组；'
   + 'paths为1至2条，每条精确只有title（不超过160字）与action（不超过1200字）两个非空字符串。'
-  + '只依据摘要中的焦点、事实、限制与未知；不得把未知补成0或事实；不得声称根因已确认；'
-  + '不得编造缺失数据、概率、收入或效果；总结必须说明结论仍需商家核对。';
+  + SAFE_ANALYSIS_RULES;
+
+const ANALYSIS_SKILLS = ['douyin-data-analysis', 'douyin-account-diagnosis'];
+const EXECUTION_SKILLS = ['douyin-copywriter', 'douyin-video-creation', 'douyin-live-ops'];
+const PROVIDER_SKILL_INSTRUCTION = '只输出一个JSON对象，不要输出其他文字或代码块外的内容。'
+  + 'JSON精确字段为mode、status、summary、limitations、skillsUsed、paths；mode固定real_model；'
+  + 'status只能是ready、limited或insufficient；summary不超过2000字；limitations为最多20条字符串。'
+  + '本次必须按仓库已审查Skill职责路由：'
+  + 'douyin-data-analysis只分析已确认且口径可核对的数据，证据不足时只给补数方向；'
+  + 'douyin-account-diagnosis只把账号状态分成事实、推断、待验证和未知，不确认限流或根因；'
+  + '每条执行路径只选择一个最匹配的Skill：文字成品用douyin-copywriter，短视频脚本/分镜/拍摄草稿用douyin-video-creation，直播执行稿或复盘用douyin-live-ops。'
+  + '不得为了凑Skill生成路径。返回skillsUsed必须精确为["douyin-data-analysis","douyin-account-diagnosis"]；'
+  + '每条path精确包含title、action、skillId，skillId只能是上述三个执行Skill之一；status为insufficient时paths必须为空。'
+  + SAFE_ANALYSIS_RULES;
 
 const clampText = (value, limit) => typeof value === 'string' && value.trim() ? value.trim().slice(0, limit) : null;
 
@@ -155,7 +169,7 @@ export function compactSummaryForModel(summary, budgetChars = 18000) {
 }
 
 /** 解析模型返回的小型提议JSON；不符合结构时返回null，由调用方降级为原文展示。 */
-function parseProposalText(content) {
+function parseProposalText(content, { requireSkills = false } = {}) {
   const text = String(content ?? '').trim();
   const start = text.indexOf('{'), end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
@@ -165,15 +179,22 @@ function parseProposalText(content) {
     || !['ready', 'limited', 'insufficient'].includes(parsed.status)
     || !clampText(parsed.summary, 2000)
     || !Array.isArray(parsed.limitations) || !parsed.limitations.length
-    || !Array.isArray(parsed.paths) || !parsed.paths.length) return null;
+    || !Array.isArray(parsed.paths) || parsed.paths.length > 2
+    || parsed.status === 'insufficient' && parsed.paths.length
+    || parsed.status !== 'insufficient' && !parsed.paths.length
+    || requireSkills && (!Array.isArray(parsed.skillsUsed)
+      || parsed.skillsUsed.length !== ANALYSIS_SKILLS.length
+      || ANALYSIS_SKILLS.some((skillId, index) => parsed.skillsUsed[index] !== skillId))) return null;
   const limitations = parsed.limitations.map((item) => clampText(item, 500)).filter(Boolean).slice(0, 20);
   const paths = parsed.paths.map((path) => record(path) ? {
     title: clampText(path.title, 160), action: clampText(path.action, 1200),
+    ...(requireSkills ? { skillId: EXECUTION_SKILLS.includes(path.skillId) ? path.skillId : null } : {}),
   } : null).filter(Boolean).slice(0, 2);
-  if (!limitations.length || !paths.length || paths.some((path) => !path.title || !path.action)) return null;
+  if (!limitations.length || paths.some((path) => !path.title || !path.action || requireSkills && !path.skillId)) return null;
   return {
     mode: 'real_model', status: parsed.status,
     summary: clampText(parsed.summary, 2000), limitations, paths,
+    ...(requireSkills ? { skillsUsed: [...ANALYSIS_SKILLS] } : {}),
   };
 }
 
@@ -215,7 +236,7 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
     maxTokens: 2048,
     messages: [
       { role: 'system', content: '你是路芽项目的受限JSON处理器。禁止调用工具、文件、网络或个人历史；只使用下列获准摘要。'
-        + '必须原样回显身份；不得把未知补成0或事实。' + INSIGHT_INSTRUCTION },
+        + '必须原样回显身份；不得把未知补成0或事实。' + PROVIDER_SKILL_INSTRUCTION },
       { role: 'user', content: '请求：' + JSON.stringify({
         contractVersion: envelope.contractVersion, operation: envelope.operation,
         operationId: envelope.operationId, scope: envelope.scope, payload: compacted.summary,
@@ -223,7 +244,7 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
     ],
   }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return { ...result, sentToProvider: true, model: settings.model };
-  const proposal = parseProposalText(result.content);
+  const proposal = parseProposalText(result.content, { requireSkills: true });
   if (!proposal) {
     return { ...failed('provider_response_invalid', '直连AI返回未通过提议结构校验；不会保存，不会替换当前分析。'),
       sentToProvider: true, model: settings.model };
@@ -252,7 +273,7 @@ export async function requestMaterialFacts(materials, options = {}) {
         + '只使用材料文本中真实出现的数字；禁止编造、推断、补0或求和；一行只提取一次；缺失字段用null。' },
       { role: 'user', content: materials.map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n') },
     ],
-  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return result;
   const text = result.content.trim();
   const start = text.indexOf('['), end = text.lastIndexOf(']');

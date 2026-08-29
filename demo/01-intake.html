@@ -83,7 +83,7 @@
                 </div>
                 <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,text/csv,.csv,.xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
                 <input id="replacement-input" type="file" accept="image/png,image/jpeg,image/webp,text/plain,text/csv,application/json,.png,.jpg,.jpeg,.webp,.txt,.csv,.json,.xlsx,.xls" hidden>
-                <p id="table-capability-note" class="input-panel-note">原件仅保存在本机；截图不做文字识别，内容待核对；CSV / Excel 会在本机读取约定指标；点「整理」生成可核对的结构化草稿（配置 AI 后见底部「AI 设置」）。</p>
+                <p id="table-capability-note" class="input-panel-note">原件仅保存在本机；截图不做文字识别，内容待核对；TXT / CSV / Excel 会先在本机提取可定位字段；左侧「大模型配置」接入 API 后，点「整理」可在逐次同意下让模型补齐仍未读出的字段。</p>
               </section>
             </div>
 
@@ -101,7 +101,7 @@
               <p class="intake-choice-note">一句描述或一份有效材料即可开始；先核对，再分析。</p>
               <label class="intake-material-consent" for="material-text-consent">
                 <input type="checkbox" id="material-text-consent">
-                <span>本次整理同意将已上传材料的文本内容（TXT/CSV/JSON/XLSX，每份截取前12000字、最多6份）发送给「AI 设置」的模型协助提取；已随直连数据提取发送过的材料，整理时只附带其提取结果，不重复发送原文。不含图片与表格二进制原件。仅这一次有效。</span>
+                <span>本次整理同意将已上传材料的文本内容（TXT/CSV/JSON/XLSX，每份截取前12000字、最多6份）发送给左侧「大模型配置」中的模型协助提取；已随直连数据提取发送过的材料，整理时只附带其提取结果，不重复发送原文。不含图片与表格二进制原件。仅这一次有效。</span>
               </label>
               <button id="return-to-review" class="button button--quiet" type="button" hidden>返回核对</button>
               <button id="organize-button" class="button" type="submit" disabled>开始整理<svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
@@ -225,7 +225,7 @@
     <dialog id="voice-consent" class="intake-dialog voice-consent" aria-labelledby="voice-consent-title" aria-describedby="voice-consent-description">
       <h2 id="voice-consent-title">开始前，确认语音处理方式</h2>
       <p id="voice-consent-description">浏览器可能把麦克风音频发送给其语音识别服务处理，无法保证离线。同意后再次按住说话，才会申请麦克风权限；你可以随时停止。本页不保存音频文件。保存时会保留转写原文和你编辑后的文字。</p>
-      <p class="muted">这不授权向任何外部服务发送材料；仅在底部「AI 设置」配置后，「整理」才会把文字发送到你设置的地址。也不会安装语言包或调用付费转写接口。</p>
+      <p class="muted">这不授权向任何外部服务发送材料；仅在左侧「大模型配置」完成配置且你逐次同意后，「整理」才会把本次允许的文字发送到你设置的地址。也不会安装语言包或调用付费转写接口。</p>
       <div class="dialog-actions">
         <button id="voice-consent-cancel" class="button button--secondary" type="button">改用文字</button>
         <button id="voice-consent-start" class="button" type="button">同意，返回按住说话</button>

@@ -2,6 +2,7 @@ import { enhanceFoldTitle } from "../shared/title-motion.js";
 import { findIntakeFieldFact } from "../shared/intake-draft.js";
 import { parseWorkbookFacts } from "../shared/table-facts.js";
 import { readWorkbookSheets } from "../shared/xlsx-reader.js";
+import { extractLocalIntakeCandidates } from "../shared/local-intake-parser.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -155,7 +156,21 @@ export function parseMetricText(rawText, material) {
     return { status: "failed", facts: [], error: "文本含 NUL 字符，不能按 UTF-8 文本提取；原件已保留。" };
   }
   if (extension === "txt") {
-    return { status: "needs_review", facts: [], error: "文本已读取，业务信息仍待核对。" };
+    const candidates = extractLocalIntakeCandidates(text);
+    const facts = candidates.map((candidate, index) => ({
+      id: "draft_f" + (index + 1), key: candidate.key, value: candidate.value,
+      availability: "known", unit: null, subject: null,
+      window: { start: null, end: null }, channel: null, cohort: null,
+      source: { kind: "file_extract", materialId: material.id, materialVersion: material.version,
+        locator: { type: "text", start: candidate.start, end: candidate.end,
+          lineStart: candidate.lineStart, lineEnd: candidate.lineEnd },
+        note: "本机仅从明确标签和值提取；原文“" + candidate.quote + "”；尚未核验业务真实性。" },
+      verification: "unreviewed"
+    }));
+    return { status: "needs_review", facts,
+      error: facts.length
+        ? "本机从明确标签和值提取 " + facts.length + " 项；请结合原文逐项核对，未识别内容保持未知。"
+        : "文本已读取，但没有发现可由明确标签和值直接核验的字段；未猜测内容。" };
   }
   const warnings = [], facts = [];
   if (extension === "csv") {
@@ -535,7 +550,7 @@ export function getIntakeCorrectionConflicts(draft, facts, state = null, sourceB
     // Only an explicit file binding overrides current/history lookup. An empty
     // local binding list must not hide the original file after a manual review.
     const explicit = sourceBindings?.some((binding) => binding.field === field &&
-      ["txt", "csv", "json"].includes(binding.source)) ? sourceBindings : null;
+      ["txt", "csv", "json", "xlsx"].includes(binding.source)) ? sourceBindings : null;
     const fact = findIntakeFieldFact(current, field, explicit);
     if (fact) return fact.verification === "user_corrected" ? conflictFor(field, fact) : [];
     // Keep ambiguous associations visible but unusable. Probe with the shared
@@ -611,7 +626,7 @@ export function editIntakeField(draft, sourceBindings, field, rawText, baselineF
     findIntakeFieldFact(state, field)?.id !== baselineFact.id;
   return { draft: next, sourceBindings: structuredClone(sourceBindings.filter((entry) =>
     !changedFields.has(entry.field) || keepFileAssociation && entry.field === field &&
-      ["txt", "csv", "json"].includes(entry.source))), changed: true };
+      ["txt", "csv", "json", "xlsx"].includes(entry.source))), changed: true };
 }
 
 export function getNextIntakeQuestion(draft, clarification) {
@@ -1305,7 +1320,7 @@ function startIntakePage() {
     ])];
     for (const message of cautions) ui.reviewCautionsList.append(element("p", message));
     ui.reviewCautions.hidden = !cautions.length;
-    const sourceNames = { voice: "语音自述", manual: "手动填写", paste: "粘贴文字", txt: "TXT材料", csv: "CSV材料", json: "JSON材料" };
+    const sourceNames = { voice: "语音自述", manual: "手动填写", paste: "粘贴文字", txt: "TXT材料", csv: "CSV材料", json: "JSON材料", xlsx: "XLSX材料" };
     for (const group of getIntakeSummaryGroups(contextDraft, state, projection, contextBindings)) {
       const card = element("section", undefined, "summary-card");
       card.dataset.summaryGroup = group.id;
@@ -1496,9 +1511,10 @@ function startIntakePage() {
           textsSentWithFacts = true;
           status("已同意直连数据提取；正在把 " + candidates.length + " 份材料交给 AI 解析…");
           const parsed = await intakeApi.requestMaterialFacts(candidates,
-            { signal: extractionController.signal, timeoutMs: 120000 });
+            { signal: extractionController.signal, timeoutMs: 60000 });
           if (parsed.ok && parsed.entries.length) {
             const entriesByMaterial = new Map();
+            const verifiedDigest = [];
             for (const entry of parsed.entries) {
               if (!entriesByMaterial.has(entry.material)) entriesByMaterial.set(entry.material, []);
               entriesByMaterial.get(entry.material).push(entry);
@@ -1511,13 +1527,16 @@ function startIntakePage() {
                 const at = hostText.indexOf(entry.source_line);
                 const lineStart = at < 0 ? 1 : hostText.slice(0, at).split("\n").length;
                 const lineEnd = lineStart + entry.source_line.split("\n").length - 1;
+                const locator = { type: "text", lineStart, lineEnd };
+                verifiedDigest.push({ ...entry, materialId: material.id,
+                  materialVersion: material.version, locator });
                 return {
                   id: "draft_ai_f" + (index + 1), key: entry.metric, value: entry.value,
                   availability: "known", unit: entry.unit, subject: entry.subject,
                   window: { start: entry.window_start, end: entry.window_end },
                   channel: null, cohort: null,
                   source: { kind: "file_extract", materialId: material.id, materialVersion: material.version,
-                    locator: { type: "text", lineStart, lineEnd },
+                    locator,
                     note: "AI 从材料文本转换提取；已按原文行核验数值与片段，尚未核验业务真实性。" },
                   verification: "unreviewed",
                 };
@@ -1529,7 +1548,7 @@ function startIntakePage() {
               });
             }
             // 复用已核验的提取结果：整理请求不再重复携带材料原文。
-            materialDigest = parsed.entries;
+            materialDigest = verifiedDigest;
             aiParseNote = "直连AI解析：提取 " + parsed.entries.length + " 条指标"
               + (parsed.dropped ? "，剔除 " + parsed.dropped + " 条无法在原文核验的记录" : "") + "。";
           } else if (parsed.ok) {
@@ -1554,7 +1573,7 @@ function startIntakePage() {
       result.requestContext?.inputVersion !== origin.inputVersion) {
       throw errorWithCode("整理返回时输入已变化，未采用旧结果；原文和草稿仍保留。", "stale_input");
     }
-    if (result.draft) { contextDraft = result.draft; contextBindings = result.sourceBindings; }
+    if (result.ok && result.draft) { contextDraft = result.draft; contextBindings = result.sourceBindings; }
     reviewMessage = result.ok
       ? result.mode === "api"
         ? "AI 已读取当前结构化草稿、描述与原文，并返回可核对的整理结果；没有覆盖你已填写的内容。"
@@ -2338,7 +2357,9 @@ function startIntakePage() {
       const fragment = document.createDocumentFragment();
       if (locator) {
         const location = locator.type === "csv" ? "原件第 " + locator.lineStart + "—" + locator.lineEnd + " 行，字段 " + locator.column :
-          locator.type === "json" ? "原件字段 " + locator.pointer : "原文来源";
+          locator.type === "json" ? "原件字段 " + locator.pointer :
+            locator.type === "xlsx" ? "工作表“" + locator.sheet + "”单元格 " + locator.cell :
+              locator.type === "text" || locator.type === "txt" ? "本机读取文本第 " + locator.lineStart + "—" + locator.lineEnd + " 行" : "原文来源";
         fragment.append(element("p", location, "fact-meta"));
       }
       if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {

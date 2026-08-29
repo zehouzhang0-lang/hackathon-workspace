@@ -132,11 +132,17 @@ class MoneyAIAdapter:
         except TransportFailure:
             return False
 
-    def _project_skills_ready(self):
+    def _project_skill_root(self):
         if not self.project_dir:
-            return False
-        root = Path(self.project_dir) / ".claude" / "skills"
-        return all((root / skill_id / "SKILL.md").is_file() for skill_id in REQUIRED_PROJECT_SKILLS)
+            return None
+        for relative in ((".agents", "skills"), (".claude", "skills")):
+            root = Path(self.project_dir).joinpath(*relative)
+            if all((root / skill_id / "SKILL.md").is_file() for skill_id in REQUIRED_PROJECT_SKILLS):
+                return root
+        return None
+
+    def _project_skills_ready(self):
+        return self._project_skill_root() is not None
 
     def status(self) -> dict:
         configured = self.base_url is not None
@@ -449,11 +455,15 @@ class MoneyAIAdapter:
         operation = envelope["operation"]
         operation_instruction = ""
         if operation == "analysis.run":
+            skill_root = self._project_skill_root()
+            skill_paths = [str((skill_root / skill_id / "SKILL.md").relative_to(self.project_dir)).replace("\\", "/")
+                           for skill_id in REQUIRED_PROJECT_SKILLS]
             operation_instruction = (
+                "先逐一读取并遵循这些项目Skill主文件：" + json.dumps(skill_paths, ensure_ascii=False) + "。"
                 "本次result必须精确为analysis一个字段。analysis只需返回适合不同模型稳定生成的小型建议结构："
                 "mode固定real_model；status只能是ready、limited或insufficient；summary为不超过2000字的总结；"
                 "limitations为最多20条、每条不超过500字的字符串；skillsUsed精确为"
-                "[\"douyin-data-analysis\",\"douyin-account-diagnosis\"]；paths为1至2条，"
+                "[\"douyin-data-analysis\",\"douyin-account-diagnosis\"]；status为insufficient时paths必须为空，否则paths为1至2条，"
                 "每条精确只有title、action和skillId三个字段，其中skillId只能是douyin-copywriter、"
                 "douyin-video-creation或douyin-live-ops。必须先遵循已安装的douyin-data-analysis与"
                 "douyin-account-diagnosis项目Skill完成分析，再给每条执行路径选择最匹配的执行Skill。"
@@ -551,7 +561,8 @@ class MoneyAIAdapter:
                 or len(analysis["summary"]) > 2000
                 or skills_used != list(ANALYSIS_SKILLS)
                 or not isinstance(paths, list)
-                or not 1 <= len(paths) <= 2
+                or analysis.get("status") == "insufficient" and len(paths) != 0
+                or analysis.get("status") != "insufficient" and not 1 <= len(paths) <= 2
                 or any(
                     not isinstance(path, dict)
                     or set(path) != {"title", "action", "skillId"}

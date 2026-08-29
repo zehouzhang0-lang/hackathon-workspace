@@ -396,3 +396,28 @@ test('merchant export sheets (抖店商品明细/账号视频表/评论互动) p
   assert.equal(factOf(result.facts, 'likes', '潮流运动鞋集合店')[0].value, 12);
   assert.equal(factOf(result.facts, 'replies', '女鞋工厂直营店')[0].value, 1);
 });
+
+test('merchant workbooks find the real header after title rows and keep a one-metric sheet', async () => {
+  const bytes = buildXlsx([
+    { name: '用户评论互动数据', rows: [
+      ['鞋店账号用户评论互动数据'],
+      ['导出时间', '2026-08-29'],
+      ['用户昵称', '评论内容', '点赞数', '回复数'],
+      ['用户甲', '尺码偏小吗', 12, 3]
+    ] },
+    { name: '直播运营数据', rows: [
+      ['直播运营数据汇总'],
+      ['说明', '以下为本周数据'],
+      ['备注', '支付订单数'],
+      ['本周实际记录', 42]
+    ] }
+  ]);
+  const result = await parseWorkbookFacts(bytes, { id: 'm7', version: 1, name: '鞋店账号经营数据.xlsx' });
+  assert.equal(factOf(result.facts, 'likes', '用户甲')[0].value, 12);
+  assert.equal(factOf(result.facts, 'replies', '用户甲')[0].source.locator.cell, 'D4');
+  const paid = factOf(result.facts, 'paid_orders');
+  assert.equal(paid.length, 1);
+  assert.equal(paid[0].value, 42);
+  assert.equal(paid[0].subject, '工作表“直播运营数据”第4行');
+  assert.equal(paid[0].source.locator.cell, 'B4');
+});

@@ -49,6 +49,7 @@ const validDate = (value) => {
     31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
 };
+const optString = (value, limit) => typeof value === 'string' && text(value, limit) ? value : null;
 
 function buildAiStructuredContext(draft) {
   const shortText = (value) => typeof value === 'string' && value.length > 500
@@ -149,6 +150,25 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   const clip = (value, limit = AI_TEXT_LIMIT) => value.length > limit ? value.slice(0, limit) + '\n…（后略，仅根据以上文字整理）' : value;
   const structuredContext = buildAiStructuredContext(draft);
   const materialTexts = Array.isArray(request.materialTexts) ? request.materialTexts : [];
+  const materialDigest = Array.isArray(request.materialDigest) ? request.materialDigest : [];
+  // 材料文本只发一遍：原文已随直连数据提取发送过时，这里只附带其已核验的提取结果，
+  // 不重复发送材料原文；quote 仍逐字核验——只接受已发送文本中出现过的片段。
+  const DIGEST_CHAR_LIMIT = 10000;
+  const digestLines = [];
+  let digestChars = 0;
+  for (const entry of materialDigest) {
+    const line = '- ' + entry.metric + ' = ' + String(entry.value) + (entry.unit ? ' ' + entry.unit : '')
+      + (entry.subject ? '（' + entry.subject + '）' : '')
+      + '｜材料《' + entry.material + '》原文行：' + entry.source_line;
+    if (digestChars + line.length > DIGEST_CHAR_LIMIT) break;
+    digestLines.push(line);
+    digestChars += line.length;
+  }
+  const digestText = digestLines.join('\n');
+  const digestBlock = digestText
+    ? '\n\n【上传材料AI提取结果（用户已同意发送；数值与原文行已逐字核验）】\n' + digestText
+      + (digestLines.length < materialDigest.length ? '\n（提取结果过长，仅附前' + digestLines.length + '条）' : '')
+    : '';
   const factLines = (request.state?.input?.facts || [])
     .filter((fact) => fact && fact.availability === 'known' && fact.value !== null)
     .slice(0, 40)
@@ -157,7 +177,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   const fieldLines = emptyFields.length
     ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
-  const materialBlock = materialTexts.length
+  const materialBlock = !digestBlock && materialTexts.length
     ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
         .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 12000)).join('\n\n')
     : '';
@@ -169,6 +189,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     + '\n\n【语音或粘贴原文】\n' + transcriptText
     + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
     + (factLines.length ? '\n\n【本机已从上传材料解析的指标（可核对；发现矛盾可用challenges质疑，但不得直接改写数值）】\n' + factLines.join('\n') : '')
+    + digestBlock
     + materialBlock
     + '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n')
     + '\n\n只输出JSON，不要输出其他文字。JSON精确字段：{"fields":{"<字段名>":{"value":"...","quote":"..."}},'
@@ -177,7 +198,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   let userContent = composeUserContent();
   if (userContent.length > 38000) {
     materialLimit = 6000;
-    const shrunkMaterialBlock = materialTexts.length
+    const shrunkMaterialBlock = !digestBlock && materialTexts.length
       ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
           .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 6000)).join('\n\n')
       : '';
@@ -188,6 +209,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
       + '\n\n【语音或粘贴原文】\n' + transcriptText
       + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
       + (factLines.length ? '\n\n【本机已从上传材料解析的指标（可核对；发现矛盾可用challenges质疑，但不得直接改写数值）】\n' + factLines.join('\n') : '')
+      + digestBlock
       + shrunkMaterialBlock
       + '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n')
       + '\n\n只输出JSON，不要输出其他文字。JSON精确字段：{"fields":{"<字段名>":{"value":"...","quote":"..."}},'
@@ -197,8 +219,8 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   const reply = await requestAiChat({
     maxTokens: 4096,
     messages: [
-      { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述、原文和上传材料文本，但不得改写已有字段与本机指标数值。' +
-        '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述、原文或上传材料文本中连续出现的原文片段；' +
+      { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述、原文和上传材料文本（或其已核验的提取结果），但不得改写已有字段与本机指标数值。' +
+        '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述、原文、上传材料文本或其提取结果中连续出现的原文片段；' +
         '若发现本机指标之间存在矛盾或与描述明显不符，在 challenges 中提出有依据的质疑（quote 同样须来自已发送文本），不要直接改写数值；' +
         '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
       { role: 'user', content: userContent }
@@ -233,6 +255,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     const quote = typeof entry.quote === 'string' ? entry.quote.trim() : '';
     if (!metric || !issue || !quote || quote.length > 4000) continue;
     const verifiable = request.transcript.includes(quote) || request.description.includes(quote)
+      || Boolean(digestText && digestText.includes(quote))
       || materialTexts.some((material) => material.text.includes(quote));
     if (!verifiable) continue;
     challenges.push({ metric, issue, quote });
@@ -253,9 +276,10 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
       source = ['manual', 'paste'].find((name) => draft.sources.includes(name)) || 'manual';
     } else {
       const hit = materialTexts.find((entry2) => entry2.text.includes(quote));
-      if (!hit) continue; // quote not verified against the text actually sent — drop it
+      const digestHit = hit ? null : materialDigest.find((entry2) => entry2.source_line.includes(quote)) || null;
+      if (!hit && !digestHit) continue; // quote not verified against the text actually sent — drop it
       source = 'paste';
-      materialName = hit.name;
+      materialName = hit ? hit.name : digestHit.material;
     }
     setLeaf(draft, field, value);
     // 重新整理时以最新提取为准：清掉该字段与本值不一致的旧提取记录，
@@ -271,6 +295,9 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   if (materialHits.length) {
     notes.push('其中' + materialHits.join('、') + '；该来源按现有契约标记为手动粘贴，请在核对时留意。');
   }
+  if (digestBlock) {
+    notes.push('本次整理未重复发送材料原文，只附带其已核验的AI提取结果' + digestLines.length + '条。');
+  }
   if (added === 0) {
     notes.push(emptyFields.length
       ? 'AI 已读取当前结构化草稿，但没有返回可由原文核验的新字段。'
@@ -284,7 +311,10 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
 
 /**
  * Organize the round into an editable, provenance-bound merchant draft.
- * request: { state, transcript, description, sources, draft?, sourceBindings? }.
+ * request: { state, transcript, description, sources, draft?, sourceBindings?,
+ *   materialTexts?, materialDigest? }.
+ * materialDigest is verified requestMaterialFacts output; when present it replaces raw
+ * material texts in the prompt, so one organize round sends material content at most once.
  * Never invents facts; never contacts anything but the user-configured API.
  */
 export async function requestIntakeExtraction(request, { signal, fetchImpl = globalThis.fetch } = {}) {
@@ -312,6 +342,25 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
         materialTexts.push({ name: entry.name, text: entry.text });
       }
     }
+    // 直连数据提取结果摘要：requestMaterialFacts 已核验的条目；整理请求以此替代材料
+    // 原文，保证同一次整理中材料文本最多发送一遍。结构与数量同样从严校验。
+    let materialDigest = [];
+    if (request.materialDigest !== undefined) {
+      if (!Array.isArray(request.materialDigest) || request.materialDigest.length > 400) throw new Error('context');
+      for (const entry of request.materialDigest) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('context');
+        if (typeof entry.metric !== 'string' || !text(entry.metric, 120)
+          || typeof entry.value !== 'number' || !Number.isFinite(entry.value)
+          || typeof entry.source_line !== 'string' || !text(entry.source_line, 400)
+          || typeof entry.material !== 'string' || !text(entry.material, 200)) throw new Error('context');
+        materialDigest.push({
+          metric: entry.metric, value: entry.value,
+          unit: optString(entry.unit, 40), subject: optString(entry.subject, 300),
+          window_start: optString(entry.window_start, 10), window_end: optString(entry.window_end, 10),
+          source_line: entry.source_line, material: entry.material,
+        });
+      }
+    }
     requestContext = { sessionId: snapshot.sessionId, roundId: snapshot.round.id, inputVersion: snapshot.round.inputVersion };
     const base = request.draft ?? createMerchantIntakeDraft({ transcript, sources });
     const validated = validateMerchantIntakeDraft(base);
@@ -336,7 +385,7 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     applyLocalFacts(draft, sourceBindings, snapshot, notes);
     if (signal?.aborted) return fallback('cancelled', '已取消整理，未发送任何内容。');
     const ai = await applyAiExtraction(draft, sourceBindings,
-      { state: snapshot, transcript, description, materialTexts }, fetchImpl, signal, notes);
+      { state: snapshot, transcript, description, materialTexts, materialDigest }, fetchImpl, signal, notes);
     const rechecked = validateMerchantIntakeDraft(draft);
     if (!rechecked.ok) throw new Error('draft');
     draft = rechecked.draft;

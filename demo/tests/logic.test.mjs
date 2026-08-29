@@ -2944,6 +2944,43 @@ test('直连数据提取：未勾选时材料文本不发送，无处核验的qu
   assert(!userMessage.content.includes('先锋牌榨汁杯'));
 });
 
+test('直连数据提取：整理请求复用提取结果摘要，材料原文不重复发送', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
+  const bodies = [];
+  const digest = [{ metric: '成交订单数', value: 124, unit: '单', subject: '轻量透气跑步鞋',
+    window_start: null, window_end: null, source_line: '轻量透气跑步鞋,124', material: '店.csv' }];
+  const fetchImpl = async (url, options) => {
+    if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+    bodies.push(JSON.parse(options.body));
+    return jsonResponse({ ok: true, content: JSON.stringify({ fields: {
+      productName: { value: '轻量透气跑步鞋', quote: '轻量透气跑步鞋' } } }) });
+  };
+  const result = await requestIntakeExtraction({ ...extractionRequest(h, draft), materialDigest: digest }, { fetchImpl });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.mode, 'api');
+  assert.equal(result.draft.productName, '轻量透气跑步鞋');
+  const userMessage = bodies[0].messages.find((message) => message.role === 'user');
+  assert(userMessage.content.includes('上传材料AI提取结果'));
+  assert(userMessage.content.includes('轻量透气跑步鞋,124'));
+  assert(!userMessage.content.includes('上传材料文本（'), '携带提取结果时不得再发送材料原文');
+  assert(result.notes.some((note) => note.includes('未重复发送材料原文')));
+  const binding = result.sourceBindings.find((entry) => entry.field === 'productName');
+  assert.equal(binding.locator.quote, '轻量透气跑步鞋');
+});
+
+test('直连数据提取：提取结果摘要结构不合法时整体拒绝，不发送任何内容', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
+  const calls = [];
+  const result = await requestIntakeExtraction({ ...extractionRequest(h, draft),
+    materialDigest: [{ metric: '缺字段' }] },
+  { fetchImpl: async (url) => { calls.push(url); return unconfiguredResponse(); } });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'invalid_intake');
+  assert(!calls.some((url) => String(url).includes('/api/ai/chat')));
+});
+
 test('直连数据提取：AI可对指标提出有依据质疑，无依据的质疑被丢弃', async () => {
   const h = harness('underbed_complete_v1');
   const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });

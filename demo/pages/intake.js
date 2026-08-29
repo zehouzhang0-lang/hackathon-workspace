@@ -1474,6 +1474,8 @@ function startIntakePage() {
     const consentNode = byId("material-text-consent");
     const includeMaterialText = consentNode?.checked === true;
     let materialTexts = null;
+    let materialDigest = null;
+    let textsSentWithFacts = false;
     let aiParseNote = null;
     let result;
     try {
@@ -1490,6 +1492,8 @@ function startIntakePage() {
           return !hasFacts;
         });
         if (candidates.length && typeof intakeApi.requestMaterialFacts === "function") {
+          // 材料文本只发一遍：原文已随数据提取发送，整理请求只附带其提取结果摘要。
+          textsSentWithFacts = true;
           status("已同意直连数据提取；正在把 " + candidates.length + " 份材料交给 AI 解析…");
           const parsed = await intakeApi.requestMaterialFacts(candidates,
             { signal: extractionController.signal, timeoutMs: 120000 });
@@ -1524,6 +1528,8 @@ function startIntakePage() {
                 status: "parsed", facts, error: null,
               });
             }
+            // 复用已核验的提取结果：整理请求不再重复携带材料原文。
+            materialDigest = parsed.entries;
             aiParseNote = "直连AI解析：提取 " + parsed.entries.length + " 条指标"
               + (parsed.dropped ? "，剔除 " + parsed.dropped + " 条无法在原文核验的记录" : "") + "。";
           } else if (parsed.ok) {
@@ -1536,7 +1542,8 @@ function startIntakePage() {
       result = await intakeApi.requestIntakeExtraction({
         state, transcript: local.draft.transcript, description: ui.description.value,
         sources: local.draft.sources, draft: local.draft, sourceBindings: local.sourceBindings,
-        ...(materialTexts && materialTexts.length ? { materialTexts } : {})
+        ...(materialTexts && materialTexts.length && !textsSentWithFacts ? { materialTexts } : {}),
+        ...(materialDigest && materialDigest.length ? { materialDigest } : {})
       }, { signal: extractionController.signal });
     } finally {
       extractionController = null;
@@ -1561,9 +1568,15 @@ function startIntakePage() {
         + result.challenges.map((c) => c.metric + "（" + c.issue + "）").join("；") + "。请结合原件复核。";
     }
     if (includeMaterialText) {
-      reviewMessage += materialTexts && materialTexts.length
-        ? " 已随本次请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、") + "（每份仅截取前4000字）。"
-        : " 没有可发送文本的材料（直连提取仅支持TXT/CSV/JSON/XLSX的文本内容，图片不发送）。";
+      if (materialDigest && materialDigest.length) {
+        reviewMessage += " 材料文本已随直连数据提取发送一遍；整理请求只附带其提取结果（" + materialDigest.length
+          + " 条），没有重复发送材料原文。";
+      } else if (materialTexts && materialTexts.length) {
+        reviewMessage += " 已随本次整理请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、")
+          + "（每份仅截取前12000字）。";
+      } else {
+        reviewMessage += " 没有可发送文本的材料（直连提取仅支持TXT/CSV/JSON/XLSX的文本内容，图片不发送）。";
+      }
     }
     if (aiParseNote) reviewMessage += " " + aiParseNote;
     organizationVisible = true; readyToAnalyze = false;

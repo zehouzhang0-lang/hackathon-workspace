@@ -48,20 +48,25 @@ export function matchesRoadshowShoeQuestion(value) {
   return normalizeRoadshowShoeQuestion(value) === ROADSHOW_SHOE_QUESTION;
 }
 
-export function hasRoadshowShoeFixtureCore(state) {
+export function canUpgradeRoadshowShoeFixture(state) {
   if (state?.fixtureId !== ROADSHOW_SHOE_FIXTURE_ID || !Array.isArray(state.input?.facts)
     || !Array.isArray(state.input?.materials) || state.input.materials.length) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_SHOE_REQUIRED_FACTS)) {
     const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
     if (matches.length !== 1 || !Object.is(matches[0].value, expected)
-      || matches[0].source?.kind !== 'file_extract' || !matches[0].source?.locator) return false;
+      || matches[0].source?.kind !== 'file_extract'
+      || matches[0].source?.locator?.sha256 !== ROADSHOW_SHOE_SOURCE_SHA256) return false;
   }
+  return Array.isArray(state.input.intake?.sourceBindings) && state.input.intake.sourceBindings.length === 0;
+}
+
+export function hasRoadshowShoeFixtureCore(state) {
+  if (!canUpgradeRoadshowShoeFixture(state)) return false;
   for (const [key, expected] of Object.entries(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS)) {
     const matches = state.input.facts.filter((fact) => fact?.key === key && fact.availability === 'known');
     if (matches.length !== 1 || matches[0].value !== expected
       || matches[0].source?.kind !== 'merchant_statement'
       || matches[0].source?.locator?.type !== 'fixed_demo_prompt') return false;
   }
-  return state.input.intake?.draft?.productName === '鞋店60个商品'
-    && Array.isArray(state.input.intake.sourceBindings) && state.input.intake.sourceBindings.length === 0;
+  return state.input.intake?.draft?.productName === '鞋店60个商品';
 }

@@ -8,7 +8,7 @@ import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
 import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
   getIntakeCorrectionConflicts, editIntakeField, isIntakeCorrectionSnapshotCurrent } from '../pages/intake.js';
 import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource, buildMoneyAIDecisionRecord } from '../pages/action.js';
-import { buildMoneyAIAnalysisSummary } from '../pages/decisions.js';
+import { buildMoneyAIAnalysisSummary, currentRoadshowShoeAnswer } from '../pages/decisions.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput,
@@ -21,7 +21,7 @@ import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
   computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 import { ROADSHOW_SHOE_FIXTURE_ID, ROADSHOW_SHOE_QUESTION, ROADSHOW_SHOE_SOURCE_SHA256,
   ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, matchesRoadshowShoeQuestion,
-  hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
+  canUpgradeRoadshowShoeFixture, hasRoadshowShoeFixtureCore } from '../shared/roadshow-shoe-fixture.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -116,6 +116,21 @@ test('shoe fixed fixture separates file facts from user-specified diagnosis answ
   assert.deepEqual(h.state.feedbackRecords, []);
 });
 
+test('legacy shoe fixture state is eligible for one safe upgrade but ordinary input is not', () => {
+  const legacy = structuredClone(harness(ROADSHOW_SHOE_FIXTURE_ID).state);
+  legacy.input.facts = legacy.input.facts.filter((fact) =>
+    !Object.hasOwn(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, fact.key));
+  legacy.input.intake.draft.productName = '鞋店60个商品（旧版标识）';
+  assert.equal(canUpgradeRoadshowShoeFixture(legacy), true);
+  assert.equal(hasRoadshowShoeFixtureCore(legacy), false);
+  assert.equal(currentRoadshowShoeAnswer(legacy), false);
+
+  const wrongDigest = structuredClone(legacy);
+  wrongDigest.input.facts.find((fact) => fact.key === 'roadshow_source_sha256').value = 'WRONG';
+  assert.equal(canUpgradeRoadshowShoeFixture(wrongDigest), false);
+  assert.equal(canUpgradeRoadshowShoeFixture(harness().state), false);
+});
+
 test('roadshow question guard is exact apart from trim and one terminal punctuation mark', () => {
   for (const value of [ROADSHOW_SHOE_QUESTION, '  ' + ROADSHOW_SHOE_QUESTION + '  ',
     ROADSHOW_SHOE_QUESTION + '？', ROADSHOW_SHOE_QUESTION + '?', ROADSHOW_SHOE_QUESTION + '。']) {
@@ -162,6 +177,7 @@ test('explicit shoe fixture plus the fixed P1 question builds the requested two-
   assert.ok(analysis.processing.every((entry) => entry.kind === 'local_rule'));
   h.send('ANALYSIS_SET', { analysis });
   assert.equal(h.state.analysis.sourceFixtureId, ROADSHOW_SHOE_FIXTURE_ID);
+  assert.equal(currentRoadshowShoeAnswer(h.state), true);
 });
 
 test('wrong question, changed source digest or fake receipt cannot activate the fixed answer', () => {

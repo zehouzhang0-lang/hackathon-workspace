@@ -17,6 +17,17 @@ export function currentDecisionAnalysis(snapshot) {
     && ['ready', 'limited', 'insufficient'].includes(snapshot.analysis.status));
 }
 
+export function currentRoadshowShoeAnswer(snapshot) {
+  return Boolean(snapshot?.fixtureId === 'shoe_store_report_fixed_v1'
+    && snapshot.analysis?.mode === 'demo_fixture'
+    && snapshot.analysis?.analysisSource === 'local_fallback'
+    && snapshot.analysis?.sourceFixtureId === snapshot.fixtureId
+    && snapshot.analysis?.priority?.title === '三个账号的优先问题已经定位'
+    && snapshot.analysis?.paths?.length === 2
+    && snapshot.analysis.paths[0]?.optionLabel === 'A'
+    && snapshot.analysis.paths[1]?.optionLabel === 'B');
+}
+
 export function latestDecisionReview(snapshot) {
   return [...(snapshot?.history ?? [])].reverse().find((record) => record.type === 'analysis_review'
     && record.roundId === snapshot.round.id && record.inputVersion === snapshot.round.inputVersion) ?? null;
@@ -1416,10 +1427,19 @@ async function refreshSession(autoAnalyze = true) {
       if (!state) showStart('资料暂时没有读回', '共享存储读取失败，不能将其当成首次访问。已有资料不会被空会话覆盖，请重试。');
       throw error;
     }
+    if (snapshot.fixtureId === api.ROADSHOW_SHOE_FIXTURE_ID
+      && !api.hasRoadshowShoeFixtureCore(snapshot)
+      && api.canUpgradeRoadshowShoeFixture(snapshot)) {
+      snapshot = await upgradeLegacyRoadshowShoe(snapshot);
+      message('已把浏览器中保存的旧鞋店实例升级为当前三账号诊断版本。');
+    }
     recordEvent('page_viewed', { pageId: 'decisions', inputVersion: snapshot.round.inputVersion }, snapshot, `page:${snapshot.sessionId}`);
     if (snapshot.savedAt) recordEvent('session_read', { pageId: 'decisions', stateRevision: snapshot.revision }, snapshot, `read:${snapshot.sessionId}`);
-    if (autoAnalyze && !hasPendingReview() && confirmed(snapshot) && !currentAnalysis(snapshot)) {
-      if (snapshot.fixtureId === 'shoe_store_report_fixed_v1') await generateAnalysis();
+    const fixedAnswerNeedsRefresh = snapshot.fixtureId === api.ROADSHOW_SHOE_FIXTURE_ID
+      && api.hasRoadshowShoeFixtureCore(snapshot) && !currentRoadshowShoeAnswer(snapshot);
+    if (autoAnalyze && !hasPendingReview() && confirmed(snapshot)
+      && (!currentAnalysis(snapshot) || fixedAnswerNeedsRefresh)) {
+      if (snapshot.fixtureId === api.ROADSHOW_SHOE_FIXTURE_ID) await generateAnalysis();
       else message('资料已确认；请明确点击“用已确认资料更新判断”后再发送摘要。');
     }
   });
@@ -2223,17 +2243,18 @@ async function boot() {
   booting = true;
   try {
     if (!['http:', 'https:'].includes(window.location.protocol)) throw new Error('请使用统筹提供的同源本地 HTTP 地址，不能通过 file:// 运行共享会话。');
-    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model, ai] = await Promise.all([
+    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model, ai, shoeFixture] = await Promise.all([
       import('../shared/state.js'), import('../shared/navigation.js'), import('../shared/shell.js'),
       import('../shared/demo-data.js'), import('./report.js'), import('../shared/moneyai.js'),
       import('../shared/moneyai-contract.js'), import('../shared/model.js'), import('../shared/ai.js'),
+      import('../shared/roadshow-shoe-fixture.js'),
     ]);
-    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai, ...ai,
+    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai, ...ai, ...shoeFixture,
       computeMoneyAIInputFingerprint: moneyaiContract.computeMoneyAIInputFingerprint,
       createMoneyAIEnvelope: moneyaiContract.createMoneyAIEnvelope,
       validateRealModelAnalysisDraft: model.validateRealModelAnalysisDraft,
       MONEYAI_OPERATIONS: moneyaiContract.MONEYAI_OPERATIONS };
-    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft', 'getAiSettings', 'requestProviderAnalysis']) {
+    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft', 'getAiSettings', 'requestProviderAnalysis', 'canUpgradeRoadshowShoeFixture', 'hasRoadshowShoeFixtureCore']) {
       if (typeof api[name] !== 'function') throw new Error(`共享或报告模块缺少 ${name}，未创建替代实现。`);
     }
     if (api.MONEYAI_OPERATIONS?.analysis !== 'analysis.run') throw new Error('MoneyAI分析操作契约不兼容。');

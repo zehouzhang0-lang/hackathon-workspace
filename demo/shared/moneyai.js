@@ -63,7 +63,7 @@ export async function getMoneyAIStatus({ signal, fetchImpl = globalThis.fetch, t
 const OPERATIONS = Object.freeze({
   [MONEYAI_OPERATIONS.analysis]: {
     endpoint: '/api/moneyai/analysis', ready: 'analysisReady', unavailable: 'analysis_unavailable',
-    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。', timeoutMs: 60000
+    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。', timeoutMs: 8000
   },
   [MONEYAI_OPERATIONS.decisionWrite]: {
     endpoint: '/api/moneyai/decisions', ready: 'historyWriteReady', unavailable: 'history_write_unavailable',

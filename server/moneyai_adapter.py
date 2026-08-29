@@ -51,7 +51,7 @@ class MoneyAIAdapter:
         extraction_enabled: bool = False,
         history_enabled: bool = False,
         history_read_verified: bool = False,
-        model_timeout: float = 45.0,
+        model_timeout: float = 7.0,
     ):
         self.base_url = self.validate_base_url(base_url) if base_url else None
         self.project_dir = self.validate_project_dir(project_dir) if project_dir else None

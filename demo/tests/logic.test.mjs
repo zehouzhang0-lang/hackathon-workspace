@@ -2944,6 +2944,28 @@ test('直连数据提取：未勾选时材料文本不发送，无处核验的qu
   assert(!userMessage.content.includes('先锋牌榨汁杯'));
 });
 
+test('直连数据提取：AI可对指标提出有依据质疑，无依据的质疑被丢弃', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
+  const reply = {
+    fields: {},
+    challenges: [
+      { metric: '销量', issue: '销量与描述中无订单的说法存在口径张力。', quote: '先锋牌榨汁杯' },
+      { metric: '粉丝数', issue: '没有依据的质疑。', quote: '不存在的一句话' },
+    ],
+  };
+  const result = await requestIntakeExtraction({ ...extractionRequest(h, draft),
+    materialTexts: [{ name: '评价.csv', text: '先锋牌榨汁杯销量数据来自后台。' }] },
+    { fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+      return jsonResponse({ ok: true, content: JSON.stringify(reply) });
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.challenges.length, 1);
+  assert.equal(result.challenges[0].metric, '销量');
+  assert(result.notes.some((note) => note.includes('1 条有依据的质疑')));
+});
+
 test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {
   const { compactSummaryForModel } = await import('../shared/ai.js');
   const small = { focus: 'f', facts: [{ id: 'f1', key: '销量', value: 6, availability: 'known' }], constraints: [], unknowns: [] };

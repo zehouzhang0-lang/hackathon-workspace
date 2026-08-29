@@ -159,37 +159,54 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
   const materialBlock = materialTexts.length
     ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
-        .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 4000)).join('\n\n')
+        .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 12000)).join('\n\n')
     : '';
   let descriptionText = clip(request.description);
   let transcriptText = clip(request.transcript);
   let contextText = structuredContext;
+  let materialLimit = 12000;
   const composeUserContent = () => '【商家描述】\n' + descriptionText
     + '\n\n【语音或粘贴原文】\n' + transcriptText
     + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
-    + (factLines.length ? '\n\n【本机已从上传材料解析的指标（仅供参考，不要改动）】\n' + factLines.join('\n') : '')
+    + (factLines.length ? '\n\n【本机已从上传材料解析的指标（可核对；发现矛盾可用challenges质疑，但不得直接改写数值）】\n' + factLines.join('\n') : '')
     + materialBlock
     + '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n')
-    + '\n\n只输出JSON，格式：{"fields":{"<字段名>":{"value":"...","quote":"..."}}}';
+    + '\n\n只输出JSON，不要输出其他文字。JSON精确字段：{"fields":{"<字段名>":{"value":"...","quote":"..."}},'
+    + '"challenges":[{"metric":"指标名","issue":"不超过300字的矛盾或异常说明","quote":"来自已发送文本的原文片段"}]}'
+    + '。fields与challenges都可以为空对象/空数组。';
   let userContent = composeUserContent();
-  if (userContent.length > 19000) {
+  if (userContent.length > 38000) {
+    materialLimit = 6000;
+    const shrunkMaterialBlock = materialTexts.length
+      ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
+          .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 6000)).join('\n\n')
+      : '';
     descriptionText = clip(request.description, 3000);
     transcriptText = clip(request.transcript, 3000);
     contextText = structuredContext.slice(0, 8000) + '\n…（结构化草稿后略，已有值仍不得改写）';
-    userContent = composeUserContent();
+    userContent = '【商家描述】\n' + descriptionText
+      + '\n\n【语音或粘贴原文】\n' + transcriptText
+      + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
+      + (factLines.length ? '\n\n【本机已从上传材料解析的指标（可核对；发现矛盾可用challenges质疑，但不得直接改写数值）】\n' + factLines.join('\n') : '')
+      + shrunkMaterialBlock
+      + '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n')
+      + '\n\n只输出JSON，不要输出其他文字。JSON精确字段：{"fields":{"<字段名>":{"value":"...","quote":"..."}},'
+      + '"challenges":[{"metric":"指标名","issue":"不超过300字的矛盾或异常说明","quote":"来自已发送文本的原文片段"}]}'
+      + '。fields与challenges都可以为空对象/空数组。';
   }
   const reply = await requestAiChat({
     maxTokens: 4096,
     messages: [
-      { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述和原文，但不得改写已有字段。' +
+      { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述、原文和上传材料文本，但不得改写已有字段与本机指标数值。' +
         '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述、原文或上传材料文本中连续出现的原文片段；' +
+        '若发现本机指标之间存在矛盾或与描述明显不符，在 challenges 中提出有依据的质疑（quote 同样须来自已发送文本），不要直接改写数值；' +
         '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
       { role: 'user', content: userContent }
     ]
   }, { fetchImpl, signal, timeoutMs: 120000 });
   if (!reply.ok) {
     notes.push('已配置 AI 但整理请求未完成（' + reply.message + '）；已保留本机提取结果，未替换任何内容。');
-    return { added: 0, configured: true, attempted: true, completed: false };
+    return { added: 0, challenges: [], configured: true, attempted: true, completed: false };
   }
   let payload;
   try {
@@ -199,12 +216,26 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     payload = JSON.parse(body.slice(start, end + 1));
   } catch {
     notes.push('AI 返回不是可用 JSON；已保留本机提取结果，未替换任何内容。');
-    return { added: 0, configured: true, attempted: true, completed: false };
+    return { added: 0, challenges: [], configured: true, attempted: true, completed: false };
   }
   const fields = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.fields : null;
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
     notes.push('AI 返回缺少 fields 对象；已保留本机提取结果。');
-    return { added: 0, configured: true, attempted: true, completed: false };
+    return { added: 0, challenges: [], configured: true, attempted: true, completed: false };
+  }
+  // 指标质疑：必须携带能在已发送文本中核验的原文quote，否则丢弃。
+  const challenges = [];
+  const challengeList = Array.isArray(payload.challenges) ? payload.challenges.slice(0, 10) : [];
+  for (const entry of challengeList) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const metric = typeof entry.metric === 'string' ? entry.metric.trim().slice(0, 120) : '';
+    const issue = typeof entry.issue === 'string' ? entry.issue.trim().slice(0, 300) : '';
+    const quote = typeof entry.quote === 'string' ? entry.quote.trim() : '';
+    if (!metric || !issue || !quote || quote.length > 4000) continue;
+    const verifiable = request.transcript.includes(quote) || request.description.includes(quote)
+      || materialTexts.some((material) => material.text.includes(quote));
+    if (!verifiable) continue;
+    challenges.push({ metric, issue, quote });
   }
   let added = 0;
   const materialHits = [];
@@ -241,7 +272,10 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
       ? 'AI 已读取当前结构化草稿，但没有返回可由原文核验的新字段。'
       : 'AI 已读取当前结构化草稿；现有文字字段已完整，未覆盖用户填写内容。');
   }
-  return { added, configured: true, attempted: true, completed: true };
+  if (challenges.length) {
+    notes.push('AI 对本机指标提出 ' + challenges.length + ' 条有依据的质疑（quote 已核验），请结合原件复核。');
+  }
+  return { added, challenges, configured: true, attempted: true, completed: true };
 }
 
 /**
@@ -267,7 +301,7 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     // 直连数据提取：仅当用户逐次勾选同意，页面才附带材料文本（每份≤12000字符、最多4份）。
     let materialTexts = [];
     if (request.materialTexts !== undefined) {
-      if (!Array.isArray(request.materialTexts) || request.materialTexts.length > 4) throw new Error('context');
+      if (!Array.isArray(request.materialTexts) || request.materialTexts.length > 6) throw new Error('context');
       for (const entry of request.materialTexts) {
         if (!entry || typeof entry.name !== 'string' || !text(entry.name, 200)
           || typeof entry.text !== 'string' || !text(entry.text, 12000)) throw new Error('context');
@@ -296,7 +330,8 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     }
     return { ok: true, mode: ai.completed ? 'api' : ai.attempted ? 'api_failed' : 'local', draft: clone(draft),
       sourceBindings: clone(sourceBindings), requestContext,
-      editable: true, sentToExternal: ai.completed ? true : ai.attempted ? null : false, notes: [...notes] };
+      editable: true, sentToExternal: ai.completed ? true : ai.attempted ? null : false, notes: [...notes],
+      challenges: clone(ai.challenges || []) };
   } catch (error) {
     if (error?.message === 'draft' || error?.message === 'bindings' || error?.message === 'context') {
       return fallback('invalid_intake', '原文、草稿、材料版本或来源不一致；保留当前编辑，请核对后重试。');

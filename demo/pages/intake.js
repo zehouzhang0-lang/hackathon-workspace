@@ -1421,7 +1421,7 @@ function startIntakePage() {
   async function collectMaterialTexts(signal) {
     const decodable = state.input.materials
       .filter((material) => ["txt", "csv", "json", "xlsx"].includes(fileExtension(material.name)))
-      .slice(0, 4);
+      .slice(0, 6);
     const texts = [];
     for (const material of decodable) {
       if (signal?.aborted) return texts;
@@ -1439,7 +1439,7 @@ function startIntakePage() {
             const lines = sheet.rows.slice(0, 40).map((cells) =>
               cells.map((cell) => String(cell ?? "").trim()).filter(Boolean).join(","));
             const block = "【工作表:" + sheet.name + "】\n" + lines.filter(Boolean).join("\n");
-            if (used + block.length > 3800) { parts.push("…（后续工作表略）"); break; }
+            if (used + block.length > 11000) { parts.push("…（后续工作表略）"); break; }
             parts.push(block);
             used += block.length;
           }
@@ -1449,7 +1449,7 @@ function startIntakePage() {
           if (content.includes("\0")) continue;
         }
         if (!content.trim()) continue;
-        if (content.length > 4000) content = content.slice(0, 4000) + "\n…（材料文本后略，仅根据以上内容整理）";
+        if (content.length > 12000) content = content.slice(0, 12000) + "\n…（材料文本后略，仅根据以上内容整理）";
         texts.push({ name: material.name, text: content });
       } catch { /* 单份材料读取失败不影响其余材料 */ }
     }
@@ -1503,6 +1503,10 @@ function startIntakePage() {
           : "已在本机根据材料整理出结构化内容，未发送到外部服务；请逐项核对，确认不等于外部核验。"
       : "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
     if (result.notes?.length) reviewMessage += " " + result.notes.join(" ");
+    if (result.challenges?.length) {
+      reviewMessage += " AI 对本机指标提出 " + result.challenges.length + " 条有依据的质疑："
+        + result.challenges.map((c) => c.metric + "（" + c.issue + "）").join("；") + "。请结合原件复核。";
+    }
     if (includeMaterialText) {
       reviewMessage += materialTexts && materialTexts.length
         ? " 已随本次请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、") + "（每份仅截取前4000字）。"

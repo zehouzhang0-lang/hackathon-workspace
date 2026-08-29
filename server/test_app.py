@@ -51,6 +51,13 @@ class SettingsValidationTests(unittest.TestCase):
 class LocalHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # 测试必须与真实 ai-settings.json 隔离：setUp/tearDown 的 clear_settings()
+        # 只允许清到临时文件，否则每跑一次测试就会删掉用户保存的 API 配置。
+        cls._real_settings_path = app.SETTINGS_PATH
+        cls._test_settings_path = Path(tempfile.gettempdir()) / ("luya-demo-test-settings-" + Path(tempfile.gettempdir()).name + "-1.json")
+        app.SETTINGS_PATH = cls._test_settings_path
+        if cls._test_settings_path.exists():
+            cls._test_settings_path.unlink()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler))
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -61,6 +68,9 @@ class LocalHTTPTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
+        app.SETTINGS_PATH = cls._real_settings_path
+        if cls._test_settings_path.exists():
+            cls._test_settings_path.unlink()
 
     def setUp(self):
         app.clear_settings()

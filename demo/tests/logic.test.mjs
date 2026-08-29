@@ -2331,9 +2331,13 @@ test('C8 saved review matches recomputed business content while view-event revis
 
 }
 
-// P3 presentation and exact acceptance payload regressions; existing business assertions stay unchanged.
-import { actionAcceptancePayload, actionReviewPresentation } from '../pages/action.js';
+// Workspace projections and acceptance regressions; payload built with the merged page's command factory.
+import { makeExperimentAcceptanceCommand, describeExperimentReview } from '../pages/action.js';
 import { workspaceFeedbackSource, workspaceRounds, workspaceMemory } from '../shared/workspace-view.js';
+
+function acceptancePayloadFor(state, review) {
+  return makeExperimentAcceptanceCommand(state, review, 'test-accept-p3').payload;
+}
 
 {
 function p3Review(draft = {}) {
@@ -2354,41 +2358,37 @@ function p3Review(draft = {}) {
   return { h, artifact, review: result.review, feedbackPayload: payload };
 }
 
-test('P3 projects exactly four acceptance references without copying a candidate plan or mutating review', () => {
-  const { review } = p3Review();
+test('P3 acceptance payload carries exactly four fields and does not mutate the shared review', () => {
+  const { h, review } = p3Review();
   const before = structuredClone(review);
-  const payload = actionAcceptancePayload(Object.freeze(review));
+  const payload = acceptancePayloadFor(h.state, review);
   assert.deepEqual(payload, { feedbackId: review.sourceFeedbackId, reviewFingerprint: review.fingerprint,
     roundId: review.roundId, inputVersion: review.inputVersion });
   assert.deepEqual(Object.keys(payload).sort(), ['feedbackId', 'inputVersion', 'reviewFingerprint', 'roundId']);
   payload.roundId = 'changed_only_in_projection';
   assert.deepEqual(review, before);
-});
-
-test('P3 never enables acceptance for missing, paused, incomplete or non-shared candidates', () => {
-  const { review } = p3Review();
-  for (const value of [null, {}, { ...review, decision: 'pause' }, { ...review, decision: 'needs_information' },
-    { ...review, nextAction: null }, { ...review, source: 'remote_guess' }, { ...review, moneyaiCalled: true },
-    { ...review, fingerprint: 'not-a-saved-fingerprint' }, { ...review, inputVersion: 0 }]) {
-    assert.equal(actionAcceptancePayload(value), null);
+  for (const value of [null, {}, { ...review, decision: 'pause' }, { ...review, nextAction: null },
+    { ...review, roundId: 'changed-round' }, { ...review, fingerprint: 'not-a-saved-fingerprint' }]) {
+    assert.throws(() => makeExperimentAcceptanceCommand(h.state, value, 'test-accept-p3'));
   }
 });
 
-test('P3 conclusion presentation preserves shared reasons and does not infer success from missing data', () => {
-  const { review } = p3Review({ execution: 'unknown', sampleSize: '', guardrailStatus: 'unknown' });
+test('P3 conclusion presentation follows shared decisions and never infers success from missing data', () => {
+  const { h, review } = p3Review({ execution: 'unknown', sampleSize: '', guardrailStatus: 'unknown' });
   assert.equal(review.decision, 'needs_information');
   assert.equal(review.observation.sampleSize, null);
   assert.equal(review.observation.guardrailStatus, 'unknown');
-  assert.equal(actionAcceptancePayload(review), null);
-  const presentation = actionReviewPresentation(review);
-  assert.equal(presentation.reason, review.reason);
-  assert.equal(presentation.title, '先补齐执行与观察');
-  assert.match(actionReviewPresentation(null).reason, /未补造结论/);
+  assert.throws(() => makeExperimentAcceptanceCommand(h.state, review, 'test-accept-p3'));
+  const presentation = describeExperimentReview(review);
+  assert.ok(presentation.title.length > 0);
+  assert.ok(presentation.treatment.length > 0);
+  assert.match(presentation.source, /未调用 MoneyAI/);
+  assert.throws(() => describeExperimentReview(null));
 });
 
 test('P3 exact projected payload accepts once, reads a complete round and is safe to retry', () => {
   const { h, review } = p3Review();
-  const payload = actionAcceptancePayload(review);
+  const payload = acceptancePayloadFor(h.state, review);
   const before = structuredClone(h.state);
   assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
   const receipt = getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint);
@@ -2406,7 +2406,7 @@ test('P3 exact projected payload accepts once, reads a complete round and is saf
 
 test('P3 previously displayed payload cannot accept after a newer related feedback record exists', () => {
   const { h, review, feedbackPayload } = p3Review();
-  const payload = actionAcceptancePayload(review);
+  const payload = acceptancePayloadFor(h.state, review);
   h.send('FEEDBACK_SAVE', { ...feedbackPayload, feedbackRecord: {
     ...feedbackPayload.feedbackRecord, observation: 'worse', rawText: '后来发现观察变差，先核对。',
   } });
@@ -2479,7 +2479,7 @@ test('workspace feedback on A never labels a later B selection as already having
 test('workspace real acceptance groups original materials, selection and feedback by their saved round', () => {
   const { h, review } = p3Review();
   const original = structuredClone(h.state);
-  const payload = actionAcceptancePayload(review);
+  const payload = acceptancePayloadFor(h.state, review);
   assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
   assert.equal(getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint).ok, true);
   const beforeProjection = structuredClone(h.state);

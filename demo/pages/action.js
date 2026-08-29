@@ -28,6 +28,10 @@ const FIELD_LABELS = { video_views: '播放次数', product_clicks: '商品点�
   external_length: '单只外长', external_width: '单只外宽', external_height: '单只外高', dimension_scope: '尺寸口径',
   current_title: '现有标题', current_opening: '现有说明开头', selected_inquiries: '精选咨询' };
 const EXECUTION_SKILL_LABELS = { 'douyin-copywriter': '抖音文案', 'douyin-video-creation': '抖音视频创作', 'douyin-live-ops': '抖音直播运营' };
+const ANALYSIS_SKILL_IDS = Object.freeze(['douyin-data-analysis', 'douyin-account-diagnosis']);
+const SKILL_RECEIPT_CONTRACT = 'luya.moneyai.v1';
+const SKILL_OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/;
+const SKILL_INPUT_FINGERPRINT = /^sha256:[a-f0-9]{64}$/;
 
 function textValue(value, fallback = '未知') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -230,6 +234,79 @@ function referenceAnalysis(snapshot, reference) {
       item.roundId === reference.roundId && item.inputVersion === reference.inputVersion) ?? null;
 }
 
+function referenceSelection(snapshot, reference) {
+  return [snapshot?.selection, ...(snapshot?.history ?? []).map((entry) => entry?.selection)].filter(Boolean)
+    .find((selection) => selection.analysisId === reference?.analysisId && selection.pathId === reference.pathId &&
+      selection.inputVersion === reference.inputVersion) ?? null;
+}
+
+function unavailableSkillChain(code, message) {
+  return { ok: false, code, message, path: null, skillId: null, skillLabel: null, operationId: null, sourceLabel: null };
+}
+
+// Projection only: a saved path Skill is not upgraded into a new P3 Skill-call receipt.
+export function resolveActionSkillChain(snapshot, reference = activeSelection(snapshot), artifact = null) {
+  if (!snapshot || snapshot.contractVersion !== CONTRACT_VERSION || !reference) {
+    return unavailableSkillChain('skill_source_missing', '尚未读到同一轮次的分析、选择与执行 Skill，内容准备已禁用。');
+  }
+  const analysis = referenceAnalysis(snapshot, reference);
+  const selection = referenceSelection(snapshot, reference);
+  const path = analysis?.paths?.find((item) => item.id === reference.pathId) ?? null;
+  if (!analysis || !selection || !path || !['ready', 'limited'].includes(analysis.status) ||
+      analysis.id !== reference.analysisId || analysis.roundId !== reference.roundId ||
+      analysis.inputVersion !== reference.inputVersion || selection.analysisId !== analysis.id ||
+      selection.pathId !== path.id || selection.inputVersion !== reference.inputVersion ||
+      typeof analysis.savedAt !== 'string' || !analysis.savedAt ||
+      typeof selection.selectedAt !== 'string' || !selection.selectedAt) {
+    return unavailableSkillChain('skill_source_incomplete', '分析、选择或路径保存链不完整；执行 Skill 保持未知。');
+  }
+  if (analysis.mode !== 'real_model' || !Array.isArray(analysis.skillIds) ||
+      analysis.skillIds.length !== ANALYSIS_SKILL_IDS.length ||
+      ANALYSIS_SKILL_IDS.some((skillId, index) => analysis.skillIds[index] !== skillId)) {
+    return unavailableSkillChain('analysis_skills_missing', '真实分析或两项分析 Skill 身份无法核对；没有把页面标签当作调用回执。');
+  }
+  const receipt = analysis.providerReceipt;
+  const provider = analysis.analysisSource === 'moneyai' && receipt?.provider === 'moneyai' && receipt.sentToMoneyAI === true
+    ? { kind: 'moneyai', label: 'MoneyAI' }
+    : analysis.analysisSource === 'ai_settings' && receipt?.provider === 'ai-settings' && receipt.sentToProvider === true
+      ? { kind: 'provider_ai', label: '直连 API' } : null;
+  if (!provider || receipt.contractVersion !== SKILL_RECEIPT_CONTRACT ||
+      !SKILL_OPERATION_ID.test(receipt.operationId ?? '') || !SKILL_OPERATION_ID.test(receipt.attemptId ?? '') ||
+      receipt.sessionId !== snapshot.sessionId || receipt.roundId !== reference.roundId ||
+      receipt.inputVersion !== reference.inputVersion || !SKILL_INPUT_FINGERPRINT.test(receipt.inputFingerprint ?? '')) {
+    return unavailableSkillChain('skill_receipt_invalid', '真实 provider 回执与本会话、轮次或输入版本不一致。');
+  }
+  const processing = analysis.processing;
+  if (!Array.isArray(processing) || !processing.length || processing.some((entry) =>
+    !entry?.name || entry.kind !== provider.kind || entry.status !== 'done' || entry.operationId !== receipt.operationId) ||
+    ANALYSIS_SKILL_IDS.some((skillId) => !processing.some((entry) => entry.skillId === skillId))) {
+    return unavailableSkillChain('skill_processing_invalid', '分析 processing 未用对应 skillId 完整关联同一 provider 回执。');
+  }
+  if (!Object.hasOwn(EXECUTION_SKILL_LABELS, path.skillId)) {
+    return unavailableSkillChain('execution_skill_missing', '所选路径没有已保存且受支持的执行 Skill；页面不会猜测路由。');
+  }
+  if (artifact && (!sameReference(artifact, reference) || artifact.skillId !== path.skillId ||
+      artifact.mode !== analysis.mode || !artifact.id || !Number.isSafeInteger(artifact.version) ||
+      artifact.version < 1 || typeof artifact.savedAt !== 'string' || !artifact.savedAt)) {
+    return unavailableSkillChain('artifact_skill_mismatch', '稿件 Skill、版本或来源身份与所选路径不一致。');
+  }
+  return { ok: true, code: 'skill_chain_verified', message: 'P2 分析回执、选择与执行 Skill 路由字段已核对；P3 未另报 Skill 调用。',
+    path, skillId: path.skillId, skillLabel: EXECUTION_SKILL_LABELS[path.skillId],
+    operationId: receipt.operationId, sourceLabel: provider.label };
+}
+
+function skillChainLabel(chain) {
+  return chain.ok
+    ? `执行 Skill：${chain.skillLabel} · P2 ${chain.sourceLabel} 分析回执 ${chain.operationId.slice(-8)} 与路径字段已核对`
+    : `执行 Skill：未知 · ${chain.message}`;
+}
+
+export function currentSkillArtifacts(snapshot, context = activeSelection(snapshot)) {
+  const chain = resolveActionSkillChain(snapshot, context);
+  return chain.ok ? currentArtifacts(snapshot, context).filter((artifact) =>
+    resolveActionSkillChain(snapshot, context, artifact).ok) : [];
+}
+
 function analysisSourceFacts(snapshot, reference = null) {
   if (!reference) return snapshot.analysis?.inputSnapshot?.facts ?? snapshot.input?.facts ?? [];
   const analysis = referenceAnalysis(snapshot, reference);
@@ -239,16 +316,21 @@ function analysisSourceFacts(snapshot, reference = null) {
 
 function packSignature(state) {
   const context = activeSelection(state);
-  if (!context) return null;
+  const chain = resolveActionSkillChain(state, context);
+  if (!context || !chain.ok) return null;
   return JSON.stringify([context.roundId, context.inputVersion, context.analysisId, context.pathId,
-    currentArtifacts(state, context).map((artifact) => [artifact.id, artifact.version]).sort((a, b) => a[0].localeCompare(b[0]))]);
+    chain.operationId, chain.skillId, currentSkillArtifacts(state, context)
+      .map((artifact) => [artifact.id, artifact.version, artifact.skillId]).sort((a, b) => a[0].localeCompare(b[0]))]);
 }
 
 // Presentation projections only: no diagnosis, candidate creation, storage or round mutation.
 export function buildActionCopy(snapshot, { expectedSignature } = {}) {
   const context = activeSelection(snapshot);
-  const artifacts = currentArtifacts(snapshot, context).filter((artifact) => artifact.kind === 'copy' && artifact.body.trim());
-  if (!context || !artifacts.length) throw new Error('当前行动还没有已保存的完整文案。可先查看或下载已有核对清单。');
+  const chain = resolveActionSkillChain(snapshot, context);
+  if (!context) throw new Error('当前行动还没有已保存的完整文案。');
+  if (!chain.ok) throw new Error(chain.message);
+  const artifacts = currentSkillArtifacts(snapshot, context).filter((artifact) => artifact.kind === 'copy' && artifact.body.trim());
+  if (!artifacts.length) throw new Error('当前行动还没有通过 Skill 与版本核对的完整文案。');
   const signature = packSignature(snapshot);
   if (expectedSignature !== undefined && signature !== expectedSignature) throw new Error('依据、选择或稿件版本已变化；请核对当前内容后重新取用。');
   return { text: artifacts.map((artifact) => artifact.body).join('\n\n'), artifacts, context, signature };
@@ -388,9 +470,12 @@ export function reviewSnapshotMatches(snapshot, review) {
 
 export function canAcceptExperimentReview(snapshot, review) {
   const current = activeSelection(snapshot);
+  const bundle = resolveFeedbackRecord(snapshot, review?.sourceFeedbackId);
+  const skillChain = bundle ? resolveActionSkillChain(snapshot, bundle.feedback, bundle.artifact) : null;
   const relatedFeedback = (snapshot?.feedbackRecords ?? []).filter((record) => sameReference(record, review));
   const relatedExecutions = (snapshot?.executionRecords ?? []).filter((record) => sameReference(record, review));
   return Boolean(current && review?.decision === 'change_variable' && review.nextAction?.status === 'candidate' &&
+    skillChain?.ok &&
     snapshot.sessionId === review.sessionId && current.roundId === review.roundId &&
     current.inputVersion === review.inputVersion && current.analysisId === review.analysisId &&
     current.pathId === review.pathId && relatedFeedback.at(-1)?.id === review.sourceFeedbackId &&
@@ -426,8 +511,11 @@ export function experimentOriginLines(analysis) {
 
 export function buildActionPack(state, { exportId, generatedAt, allowSummaries = false }) {
   const context = activeSelection(state);
-  const artifacts = currentArtifacts(state, context);
-  if (!context || !artifacts.length) throw new Error('没有当前有效且已保存的执行包。');
+  if (!context) throw new Error('没有当前有效且已保存的执行包。');
+  const chain = resolveActionSkillChain(state, context);
+  if (!chain.ok) throw new Error(chain.message);
+  const artifacts = currentSkillArtifacts(state, context);
+  if (!artifacts.length) throw new Error('没有通过 Skill 与版本核对的已保存执行包。');
   if (![exportId, context.pathId].every((id) => /^[A-Za-z0-9_-]{1,80}$/.test(id))) throw new Error('导出标识无效。');
   if (!allowSummaries) throw new Error('请先确认本次 TXT 可以包含页面所示的必要摘要。');
   const stamp = new Date(generatedAt);
@@ -438,14 +526,16 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
     generatedAt: stamp.toISOString(), sourceRevision: state.revision,
     roundId: context.roundId, roundIndex: state.round.index, inputVersion: context.inputVersion,
     analysisId: context.analysisId, pathId: context.pathId, mode: state.analysis.mode, fixtureId: state.fixtureId,
+    skillId: chain.skillId, skillOperationId: chain.operationId,
   };
   const lines = [originLabel(state.analysis.mode), '行动执行包', '', ...Object.entries(metadata).map(([key, value]) => `${key}: ${value ?? 'null'}`),
     '', `本轮问题：${textValue(state.input.focus || state.input.description).slice(0, 300)}`,
     `选定行动：${context.path.title}`, `方案标识：${textValue(context.path.optionLabel)}；actionKey: ${textValue(context.path.actionKey)}`,
+    `执行 Skill：${chain.skillLabel}（来自 P2 已保存路径；P3 未另报 Skill 调用）`,
     `要做什么：${context.path.action}`, '', '行动内容（整包包含文案、核对清单与观察计划；不等于复制全部文案）'];
   for (const [index, artifact] of artifacts.entries()) {
     lines.push('', `${index + 1}. ${artifact.title}`, `artifactId: ${artifact.id}`, `artifactVersion: ${artifact.version}`,
-      `artifactSavedAt: ${artifact.savedAt ?? 'null'}`, `artifactKind: ${artifact.kind}`, `来源标签：${originLabel(artifact.mode)}`,
+      `artifactSavedAt: ${artifact.savedAt ?? 'null'}`, `artifactKind: ${artifact.kind}`, `artifactSkillId: ${artifact.skillId}`, `来源标签：${originLabel(artifact.mode)}`,
       `使用位置：${textValue(artifact.usage?.placement)}`, '', artifact.body, '', '使用步骤：',
       ...(artifact.usage?.steps?.length ? artifact.usage.steps.map((step, i) => `${i + 1}. ${step}`) : ['未提供额外步骤。']),
       '必要风险：', ...(artifact.usage?.risks?.length ? artifact.usage.risks.map((risk) => `- ${risk}`) : ['没有补充风险资料，不表示没有风险。']),
@@ -673,7 +763,7 @@ function appendList(container, items, fallback) {
 }
 
 function renderSources(context) {
-  const sourceIds = new Set(currentArtifacts(state, context).flatMap((artifact) => artifact.sourceFactIds ?? []));
+  const sourceIds = new Set(currentSkillArtifacts(state, context).flatMap((artifact) => artifact.sourceFactIds ?? []));
   const container = $('source-list');
   container.replaceChildren();
   for (const factId of sourceIds) {
@@ -696,14 +786,18 @@ function renderSources(context) {
 function renderExperiment(path) {
   const container = $('experiment-content');
   const facts = node('dl', undefined, 'experiment-facts');
-  for (const [label, value] of [...experimentIdentityRows(path), ...experimentCardRows(path, shownContext?.mode)]) facts.append(node('dt', label), node('dd', value));
+  const chain = resolveActionSkillChain(state, shownContext);
+  for (const [label, value] of [...experimentIdentityRows(path),
+    ['执行 Skill', chain.ok ? `${chain.skillLabel}（${chain.skillId}）` : '未知'],
+    ...experimentCardRows(path, shownContext?.mode)]) facts.append(node('dt', label), node('dd', value));
   container.replaceChildren(facts);
   for (const line of experimentOriginLines(referenceAnalysis(state, shownContext))) {
     container.append(node('p', line, 'action-field-note'));
   }
+  if (!chain.ok) container.append(node('p', chain.message + ' 页面未生成、保存或开放取用稿件。', 'action-warning'));
   container.append(node('p', '样本与观察时间只是计划条件，不代表统计充分或效果保证；缺失字段按原记录保留未知，不视为风险未触发。', 'action-warning'));
   const basis = $('experiment-basis');
-  basis.replaceChildren(node('p', '沿用当前已选路径的观察计划，没有在本页重新诊断或调用专家。'));
+  basis.replaceChildren(node('p', '沿用 P2 已保存的分析、选择与路径 Skill；P3 没有重新选 Skill，也不会用标签猜测调用。'));
   const plan = path.experiment;
   const scope = node('dl', undefined, 'experiment-facts');
   for (const [label, value] of [
@@ -743,6 +837,7 @@ function logPreviewView() {
   const artifact = selectPreviewArtifact(previewItems, previewKey);
   const context = activeSelection(state);
   if (!artifact?.id || artifact.version < 1 || previewStale || !sameReference(artifact, context) ||
+      !resolveActionSkillChain(state, context, artifact).ok ||
       pageMode !== 'action' || activeWorkspaceTab !== 'work' || $('action-content').hidden ||
       $('artifact-preview').hidden || document.visibilityState === 'hidden') return;
   void logEvent('artifact_viewed', contextRefs(context, artifact), context.roundId, `artifact:${artifact.id}:${artifact.version}`);
@@ -837,8 +932,7 @@ function renderTakeawayChecklists(artifacts, stale) {
 }
 
 function renderArtifacts(artifacts, stale) {
-  const drafts = generationFailures.filter((draft) => sameReference(draft, shownContext) && !artifacts.some((artifact) => matchesDraft(artifact, draft)));
-  previewItems = [...artifacts, ...drafts];
+  previewItems = [...artifacts];
   previewStale = stale;
   $('artifact-count').textContent = `${previewItems.length} 份内容`;
   const fingerprint = JSON.stringify([stale, previewItems.map((artifact) => [previewArtifactKey(artifact), artifact.kind, artifact.title])]);
@@ -889,7 +983,7 @@ function clearFeedbackForm() {
 
 function formChanged() {
   syncFeedbackControls();
-  if (!feedbackBinding) feedbackBinding = currentArtifacts(state).find((artifact) => artifact.id === $('feedback-artifact').value);
+  if (!feedbackBinding) feedbackBinding = currentSkillArtifacts(state).find((artifact) => artifact.id === $('feedback-artifact').value);
   dirty = feedbackHasContent(getFormDraft()) && formSignature() !== lastSavedDraft;
   if (pendingFeedback && pendingFeedback.signature !== formSignature()) pendingFeedback = null;
   $('next-round').disabled = dirty || saving || readingReview || !selectedFeedbackId;
@@ -908,7 +1002,10 @@ function renderSavedFeedback(context) {
   if (!records.some((record) => record.id === selectedFeedbackId)) selectedFeedbackId = records.length === 1 ? records[0].id : null;
   if (records.length > 1) container.append(node('p', '选择一条已保存记录查看复盘；不会自动开始下一轮。'));
   for (const record of records) {
-    const execution = state.executionRecords?.find((item) => item.id === record.executionRecordId);
+    const bundle = resolveFeedbackRecord(state, record.id);
+    const execution = bundle?.execution;
+    const chain = bundle ? resolveActionSkillChain(state, record, bundle.artifact)
+      : unavailableSkillChain('skill_source_incomplete', '原记录来源链不完整。');
     const article = node('div', undefined, 'saved-record');
     const label = node('label');
     const radio = document.createElement('input');
@@ -931,7 +1028,8 @@ function renderSavedFeedback(context) {
     }
     if (record.rawText) article.append(node('p', record.rawText));
     if (execution?.scope) article.append(node('p', `自述执行范围：${execution.scope}`));
-    article.append(node('p', `稿件 v${record.artifactVersion} · 实际执行时间：${execution?.executedAt || '未知'}`, 'muted'),
+    article.append(node('p', skillChainLabel(chain), chain.ok ? 'muted' : 'action-warning'),
+      node('p', `稿件 v${record.artifactVersion} · 实际执行时间：${execution?.executedAt || '未知'}`, 'muted'),
       node('p', `反馈时间：${readableTime(record.reportedAt)}`, 'muted'),
       node('p', `${readFeedbackIds.has(record.id) ? '已读取本机记录' : '已保存到本机浏览器'} · 保存时间：${readableTime(record.savedAt)}`, 'muted'));
     container.append(article);
@@ -968,6 +1066,8 @@ export function buildMoneyAIDecisionRecord(snapshot, feedbackId) {
   if (!bundle?.analysis || !bundle.path || !input
       || ![input.facts, input.constraints, input.unknowns].every(Array.isArray)) return null;
   const { feedback, execution, artifact, path, analysis } = bundle;
+  const skillChain = resolveActionSkillChain(snapshot, feedback, artifact);
+  if (!skillChain.ok) return null;
   const experiment = path.experiment ?? {};
   const source = analysis.sourceFixtureId ? 'synthetic_demo' : 'confirmed_project_decision';
   const contextOrigin = source === 'synthetic_demo' ? 'synthetic_seed' : 'confirmed_merchant_input';
@@ -1003,7 +1103,7 @@ export function buildMoneyAIDecisionRecord(snapshot, feedbackId) {
     },
     decision: {
       actionKey: nullableString(path.actionKey),
-      skillId: nullableString(path.skillId),
+      skillId: skillChain.skillId,
       optionLabel: nullableString(path.optionLabel),
       title: nullableString(path.title),
       experimentId: nullableString(experiment.experimentId),
@@ -1015,6 +1115,7 @@ export function buildMoneyAIDecisionRecord(snapshot, feedbackId) {
       keepFixed: stringArray(experiment.keepFixed),
     },
     artifact: {
+      skillId: skillChain.skillId,
       kind: nullableString(artifact.kind),
       title: nullableString(artifact.title),
       placement: nullableString(artifact.usage?.placement),
@@ -1146,6 +1247,8 @@ function renderMoneyAIHistoryResult(identityKey) {
     ['原写入操作', entry.operationId],
     ['原轮次', record.identity.roundId],
     ['所选行动', [record.decision.optionLabel, record.decision.title].filter(Boolean).join(' · ') || '未提供'],
+    ['执行 Skill', record.decision.skillId && record.artifact.skillId === record.decision.skillId
+      ? `${EXECUTION_SKILL_LABELS[record.decision.skillId] ?? '未知'}（${record.decision.skillId}）` : '未知／读回字段不一致'],
     ['稿件', `${record.artifact.title || '未提供'} · v${record.identity.artifactVersion}`],
     ['采用／执行', `${ADOPTION_LABELS[record.execution.adoption] || '采用未知'} · ${EXECUTION_LABELS[record.execution.execution] || '执行未知'}`],
     ['观察', OBSERVATION_LABELS[record.feedback.observation] || '观察结果未知'],
@@ -1192,8 +1295,8 @@ function renderMoneyAIHistoryGate(context) {
     status('moneyai-history-local-status', '本机记录的原轮次或稿件引用不完整，不能用于 MoneyAI。', true);
     $('moneyai-history-local-reference').textContent = '没有使用当前路径或其他版本补齐旧记录。';
   } else if (!record) {
-    status('moneyai-history-local-status', '原分析缺少完整的已确认输入快照，不能发送到 MoneyAI。', true);
-    $('moneyai-history-local-reference').textContent = '不会用当前资料、其他轮次或原件补齐旧记录。';
+    status('moneyai-history-local-status', '原分析、选择、稿件或 Skill/provider 回执链不完整，不能发送到 MoneyAI。', true);
+    $('moneyai-history-local-reference').textContent = '不会用当前资料、页面标签、其他轮次或原件补齐旧记录。';
   } else {
     status('moneyai-history-local-status', localReadConfirmed
       ? '本机反馈保存与重新读回已确认。'
@@ -1394,10 +1497,14 @@ function renderHistory() {
   const container = $('history-list');
   container.replaceChildren();
   for (const record of records) {
-    const execution = state.executionRecords?.find((item) => item.id === record.executionRecordId);
+    const bundle = resolveFeedbackRecord(state, record.id);
+    const execution = bundle?.execution;
+    const chain = bundle ? resolveActionSkillChain(state, record, bundle.artifact)
+      : unavailableSkillChain('skill_source_incomplete', '原记录来源链不完整。');
     const article = node('div', undefined, 'history-item');
     article.append(node('p', `历史稿件 v${record.artifactVersion} · ${EXECUTION_LABELS[execution?.execution ?? 'unknown']} · ${OBSERVATION_LABELS[record.observation] ?? '观察结果未知'}`),
-      node('p', record.rawText || '未填写观察原话。'), node('p', `实际执行时间：${execution?.executedAt || '未知'}；保存时间：${readableTime(record.savedAt)}`, 'muted'));
+      node('p', record.rawText || '未填写观察原话。'), node('p', skillChainLabel(chain), chain.ok ? 'muted' : 'action-warning'),
+      node('p', `实际执行时间：${execution?.executedAt || '未知'}；保存时间：${readableTime(record.savedAt)}`, 'muted'));
     container.append(article);
   }
 }
@@ -1498,9 +1605,8 @@ function render() {
     selectedFeedbackId = null;
     feedbackBinding = null;
   }
-  const artifacts = keepOldDraft
-    ? (state.artifacts ?? []).filter((artifact) => sameReference(artifact, context) && artifact.id && artifact.version > 0)
-    : currentArtifacts(state, context);
+  const skillChain = resolveActionSkillChain(state, context);
+  const artifacts = skillChain.ok ? currentSkillArtifacts(state, context) : [];
   $('round-label').textContent = `第 ${context.roundIndex} 轮 · 输入 v${context.inputVersion}`;
   $('action-title').textContent = context.path.title;
   const pathPresentation = describeActionPath(context.path, keepOldDraft);
@@ -1510,8 +1616,7 @@ function render() {
   $('problem-summary').textContent = keepOldDraft
     ? '本轮资料或选择已更新；这里保留原行动的反馈草稿，不把新资料写入原版本。'
     : textValue(state.input.focus || state.input.description, '本轮范围尚未填写');
-  const skillLabel = EXECUTION_SKILL_LABELS[context.path.skillId];
-  $('context-meta').textContent = `${originLabel(context.mode)}${skillLabel ? ` · 执行 Skill：${skillLabel}` : ''}${keepOldDraft ? ' · 历史行动，草稿仍对应原版本' : ''}`;
+  $('context-meta').textContent = `${originLabel(context.mode)} · ${skillChainLabel(skillChain)}${keepOldDraft ? ' · 历史行动，草稿仍对应原版本' : ''}`;
   renderArtifacts(artifacts, keepOldDraft);
   renderedPackSignature = keepOldDraft ? null : packSignature(state);
   renderRisks(context.path);
@@ -1525,8 +1630,8 @@ function render() {
     $('export-summary-consent').checked = false;
     consentSignature = null;
   }
-  $('export-pack').disabled = exporting || generating || generationFailures.length > 0 || !artifacts.length || keepOldDraft;
-  $('feedback-fields').disabled = saving || accepting || Boolean(pendingAcceptance) || !artifacts.length;
+  $('export-pack').disabled = exporting || generating || generationFailures.length > 0 || !artifacts.length || keepOldDraft || !skillChain.ok;
+  $('feedback-fields').disabled = saving || accepting || Boolean(pendingAcceptance) || !artifacts.length || !skillChain.ok;
   const select = $('feedback-artifact');
   const optionsKey = artifacts.map((artifact) => `${artifact.id}:${artifact.version}`).join('|');
   if (!dirty && select.dataset.optionsKey !== optionsKey) {
@@ -1544,18 +1649,35 @@ function render() {
   syncFeedbackControls();
   renderCopyAllControls();
   renderReview();
+  if (!skillChain.ok) {
+    generationFailures = [];
+    $('artifact-retry').hidden = false;
+    $('artifact-retry').disabled = true;
+    status('artifact-status', skillChain.message + ' 页面没有生成、保存或开放取用稿件。', true);
+  } else $('artifact-retry').disabled = false;
   if (keepOldDraft) status('feedback-status', '资料或选择已更新。这份草稿仍对应原行动；保存时不会搬到新路径，也可以明确放弃草稿。', true);
 }
 
 function matchesDraft(artifact, draft) {
   return sameReference(artifact, draft) && artifact.kind === draft.kind && artifact.title === draft.title &&
-    artifact.body === draft.body && JSON.stringify(artifact.usage) === JSON.stringify(draft.usage);
+    artifact.body === draft.body && artifact.skillId === draft.skillId && JSON.stringify(artifact.usage) === JSON.stringify(draft.usage);
 }
 
 async function ensureArtifacts() {
   if (generating || dirty || accepting || pendingAcceptance) return;
   const context = activeSelection(state);
   if (!context) return;
+  const skillChain = resolveActionSkillChain(state, context);
+  if (!skillChain.ok) {
+    generationFailures = [];
+    $('artifact-retry').hidden = false;
+    $('artifact-retry').disabled = true;
+    status('artifact-status', skillChain.message + ' 未调用稿件生成或保存接口。', true);
+    render();
+    return false;
+  }
+  const skillIdentity = { sessionId: state.sessionId, roundId: context.roundId, inputVersion: context.inputVersion,
+    analysisId: context.analysisId, pathId: context.pathId, operationId: skillChain.operationId, skillId: skillChain.skillId };
   const token = ++generationToken;
   const acceptanceRequest = acceptanceToken;
   generating = true;
@@ -1567,6 +1689,14 @@ async function ensureArtifacts() {
       throw Object.assign(new Error('本次稿件准备已被后续操作取代，没有继续保存。'), { code: 'request_cancelled' });
     }
     if (acceptedIdentity) checkedAcceptedIdentity(snapshot, acceptedIdentity);
+    const current = activeSelection(snapshot);
+    const currentChain = resolveActionSkillChain(snapshot, current);
+    if (!currentChain.ok || snapshot.sessionId !== skillIdentity.sessionId || current?.roundId !== skillIdentity.roundId ||
+        current.inputVersion !== skillIdentity.inputVersion || current.analysisId !== skillIdentity.analysisId ||
+        current.pathId !== skillIdentity.pathId || currentChain.operationId !== skillIdentity.operationId ||
+        currentChain.skillId !== skillIdentity.skillId) {
+      throw new Error('分析、选择、provider 回执或执行 Skill 已变化；本次稿件没有继续保存。');
+    }
   };
   $('artifact-retry').hidden = true;
   try {
@@ -1575,10 +1705,14 @@ async function ensureArtifacts() {
     const result = shared.buildDemoArtifact(state);
     if (!result.ok) { status('artifact-status', errorText(result), true); $('artifact-retry').hidden = false; return; }
     drafts = result.artifacts;
+    if (!Array.isArray(drafts) || !drafts.length || drafts.some((draft) =>
+      !sameReference(draft, context) || draft.mode !== context.mode || draft.skillId !== skillIdentity.skillId)) {
+      throw new Error('生成结果没有继承所选路径的 Skill 与版本身份；没有保存任何稿件。');
+    }
     generationLimitations = result.limitations ?? [];
     for (const draft of result.artifacts) {
       if (!sameReference(activeSelection(state), context)) break;
-      if (currentArtifacts(state, context).some((artifact) => matchesDraft(artifact, draft))) continue;
+      if (currentSkillArtifacts(state, context).some((artifact) => matchesDraft(artifact, draft))) continue;
       const key = JSON.stringify(draft);
       if (!artifactCommands.has(key)) artifactCommands.set(key, command('ARTIFACT_SAVE', { artifact: draft }));
       const saved = await commit(artifactCommands.get(key), checkBeforeSave);
@@ -1591,6 +1725,10 @@ async function ensureArtifacts() {
       artifactCommands.delete(key);
     }
     checkBeforeSave(state);
+    if (!generationFailures.length && drafts.some((draft) =>
+      !currentSkillArtifacts(state, context).some((artifact) => matchesDraft(artifact, draft)))) {
+      throw new Error('稿件保存后的 Skill、版本或来源读回不一致；本次准备未确认完成。');
+    }
     if (!generationFailures.length) status('artifact-status', '');
   } catch (error) {
     if (token !== generationToken || (acceptedIdentity && acceptanceRequest !== acceptanceToken)) return false;
@@ -1692,7 +1830,7 @@ async function copyArtifact(artifact, area, part = 'content') {
     const fresh = await readState();
     if (!fresh.ok) throw new Error(errorText(fresh));
     const context = activeSelection(state);
-    if (!currentArtifacts(state, context).some((item) => item.id === artifact.id && item.version === artifact.version)) {
+    if (!currentSkillArtifacts(state, context).some((item) => item.id === artifact.id && item.version === artifact.version)) {
       render(); status('artifact-status', '这份内容已失效，未复制。请回第二页核对当前选择。', true); return;
     }
     checked = true;
@@ -1770,7 +1908,7 @@ async function saveFeedback(event) {
   if (signature === lastSavedDraft && !dirty) return true;
   try {
     if (!pendingFeedback || pendingFeedback.signature !== signature) {
-      const artifact = feedbackBinding || currentArtifacts(state).find((item) => item.id === $('feedback-artifact').value);
+      const artifact = feedbackBinding || currentSkillArtifacts(state).find((item) => item.id === $('feedback-artifact').value);
       const payload = makeFeedbackPayload(artifact, getFormDraft(), { detailsVersion: shared?.FEEDBACK_DETAILS_VERSION });
       pendingFeedback = { signature, command: command('FEEDBACK_SAVE', payload), beforeIds: new Set((state.feedbackRecords ?? []).map((item) => item.id)) };
       feedbackBinding = artifact;
@@ -1923,7 +2061,7 @@ function sourceViewEvents() {
   if (!$('evidence-dialog').open || !$('source-details').open || pageMode !== 'action') return;
   const context = activeSelection(state);
   if (!context) return;
-  const ids = new Set(currentArtifacts(state, context).flatMap((artifact) => artifact.sourceFactIds ?? []));
+  const ids = new Set(currentSkillArtifacts(state, context).flatMap((artifact) => artifact.sourceFactIds ?? []));
   for (const factId of ids) void logEvent('source_viewed', { ...contextRefs(context), sourceId: 'fact:' + factId },
     context.roundId, 'source:' + context.inputVersion + ':' + factId);
 }
@@ -1978,7 +2116,7 @@ async function completeAcceptedExperiment(snapshot, review, receipt, token) {
   }
   const current = activeSelection(state);
   if (current?.roundId === receipt.roundId && current.pathId === receipt.pathId) {
-    const count = currentArtifacts(state).length;
+    const count = currentSkillArtifacts(state).length;
     status('acceptance-status', '已接受并重新读回本轮实验 ' + receipt.experimentId + '；当前已保存 ' + count +
       ' 份稿件。' + (generationFailures.length ? '部分稿件尚未准备好，请使用“重试准备内容”。' : '') +
       '接受、稿件保存与实际执行分开；实际状态以本轮已保存记录为准。');
@@ -2097,7 +2235,7 @@ async function openAcceptedContent(kind) {
     if (!identity) throw new Error('尚未核对已建立轮次的接受记录，没有打开稿件。');
     if (!await acceptCandidate(false, true)) return;
     checkedAcceptedIdentity(state, identity);
-    const artifact = currentArtifacts(state).find((item) => item.kind === kind);
+    const artifact = currentSkillArtifacts(state).find((item) => item.kind === kind);
     if (!artifact) {
       status('artifact-status', '本轮已建立，但这份稿件尚未保存，请重试准备内容。', true);
       return;
@@ -2250,11 +2388,14 @@ function renderMemoryList(container) {
   }
   for (const feedback of state.feedbackRecords ?? []) {
     const bundle = resolveFeedbackRecord(state, feedback.id);
+    const chain = bundle ? resolveActionSkillChain(state, feedback, bundle.artifact)
+      : unavailableSkillChain('skill_source_incomplete', '原记录来源链不完整。');
     const item = node('div', undefined, 'history-item');
     item.append(node('p', (bundle?.roundIndex ? '第 ' + bundle.roundIndex + ' 轮 · ' : '') +
       (bundle?.path?.title || '原路径待核对') + ' · 稿件 v' + feedback.artifactVersion),
       node('p', ADOPTION_LABELS[bundle?.execution?.adoption ?? 'unknown'] + ' · ' + EXECUTION_LABELS[bundle?.execution?.execution ?? 'unknown'] + ' · ' +
-        (OBSERVATION_LABELS[feedback.observation] || '观察结果未知') + ' · 本机自述记录', 'muted'));
+        (OBSERVATION_LABELS[feedback.observation] || '观察结果未知') + ' · 本机自述记录', 'muted'),
+      node('p', skillChainLabel(chain), chain.ok ? 'muted' : 'action-warning'));
     const view = node('button', '查看这次完整记录', 'button button--quiet');
     view.type = 'button'; view.disabled = !bundle;
     view.addEventListener('click', () => { void openRecord(feedback.id); });
@@ -2274,13 +2415,16 @@ async function openRecord(feedbackId) {
   try {
     const bundle = await readReviewRecord(feedbackId, token, sessionId);
     if (!bundle) return;
-    const { feedback, execution, artifact, analysis, path } = bundle;
+    const { feedback, execution, artifact, analysis, path, snapshot } = bundle;
+    const skillChain = resolveActionSkillChain(snapshot, feedback, artifact);
     const container = $('record-content');
     const details = node('dl', undefined, 'experiment-facts');
     for (const [label, value] of [
-      ['原行动', path?.title], ['会话', state.sessionId], ['轮次 ID', feedback.roundId],
+      ['原行动', path?.title], ['会话', snapshot.sessionId], ['轮次 ID', feedback.roundId],
       ['分析 ID／输入版本', feedback.analysisId + ' / v' + feedback.inputVersion],
       ['路径 ID', feedback.pathId], ['稿件 ID／版本', artifact.id + ' / v' + artifact.version],
+      ['执行 Skill', skillChain.ok ? `${skillChain.skillLabel}（${skillChain.skillId}）` : '未知'],
+      ['P2 分析调用回执', skillChain.ok ? `${skillChain.sourceLabel} · ${skillChain.operationId}；执行 Skill 为保存的路径字段` : skillChain.message],
       ['执行自述', EXECUTION_LABELS[execution?.execution ?? 'unknown']],
       ['采用', ADOPTION_LABELS[execution?.adoption ?? 'unknown']], ['实际执行时间', execution?.executedAt],
       ['实际范围', execution?.scope], ['观察', OBSERVATION_LABELS[feedback.observation] ?? '未知'],
@@ -2491,7 +2635,7 @@ function connectPage() {
   $('feedback-form').addEventListener('submit', saveFeedback);
   $('feedback-form').addEventListener('input', formChanged);
   $('feedback-form').addEventListener('change', formChanged);
-  $('feedback-artifact').addEventListener('change', () => { feedbackBinding = currentArtifacts(state).find((artifact) => artifact.id === $('feedback-artifact').value); });
+  $('feedback-artifact').addEventListener('change', () => { feedbackBinding = currentSkillArtifacts(state).find((artifact) => artifact.id === $('feedback-artifact').value); });
   $('discard-feedback').addEventListener('click', () => { if (!dirty || window.confirm('放弃这份尚未保存的反馈草稿？已保存的记录不会删除。')) discardFeedback(); });
   $('next-round').addEventListener('click', () => { void openReview(selectedFeedbackId); });
   $('moneyai-history-consent').addEventListener('change', () => renderMoneyAIHistoryGate(activeSelection(state)));

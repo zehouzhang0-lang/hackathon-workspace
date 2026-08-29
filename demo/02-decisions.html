@@ -40,7 +40,7 @@
         </div>
         <div class="decisions-actions">
           <button type="button" class="button button--quiet" data-action="return">查看本轮资料</button>
-          <button type="button" class="button button--quiet" id="refresh-analysis" disabled>更新本轮判断</button>
+          <button type="button" class="button button--quiet" id="refresh-analysis" disabled>用已确认资料更新判断</button>
         </div>
       </header>
       <div data-workflow-steps></div>
@@ -135,7 +135,7 @@
 
         <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>
           <h2 id="no-paths-title">暂时没有足够依据给出可选行动</h2>
-          <p>先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>
+          <p id="no-paths-description">先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>
           <ul id="no-paths-unknowns" class="decisions-notes"></ul>
           <button type="button" class="button button--secondary" data-action="return">返回补充</button>
         </section>
@@ -228,7 +228,7 @@
             <dl class="reasoning-rows">
               <div><dt>已提供事实</dt><dd id="priority-facts"></dd></div>
               <div><dt>待验证假设</dt><dd id="priority-assumptions"></dd></div>
-              <div><dt>本轮实际处理</dt><dd><p class="muted">以下展示这份分析实际保存的处理记录；不表示调用了专家Skill。</p><ul id="analysis-processing" class="processing-list"></ul></dd></div>
+              <div><dt>本轮实际处理</dt><dd><p class="muted">只展示分析中已保存且身份可核对的调用记录；路径 Skill 表示后续执行归属，不等于本轮已经调用。</p><ul id="analysis-processing" class="processing-list"></ul></dd></div>
             </dl>
             <details class="analysis-notes">
               <summary>专业详情：来源、调用记录与限制</summary>

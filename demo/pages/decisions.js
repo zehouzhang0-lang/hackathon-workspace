@@ -181,6 +181,20 @@ export function decisionSelectionLabel(path, selected) {
   return '选择这条行动';
 }
 
+export const DOUYIN_ANALYSIS_SKILL_IDS = Object.freeze([
+  'douyin-data-analysis', 'douyin-account-diagnosis'
+]);
+export const DOUYIN_PATH_SKILL_IDS = Object.freeze([
+  'douyin-copywriter', 'douyin-video-creation', 'douyin-live-ops'
+]);
+const DOUYIN_SKILL_LABELS = Object.freeze({
+  'douyin-data-analysis': '抖音数据分析',
+  'douyin-account-diagnosis': '抖音账号诊断',
+  'douyin-copywriter': '抖音文案',
+  'douyin-video-creation': '抖音视频创作',
+  'douyin-live-ops': '抖音直播运营',
+});
+
 export function decisionTraceRows(analysis) {
   const savedText = (value, fallback = '未知；当前分析未保存') => typeof value === 'string' && value.trim() ? value : fallback;
   const fraction = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
@@ -193,12 +207,17 @@ export function decisionTraceRows(analysis) {
   const stage = typeof routing?.stage === 'string' && routing.stage.trim()
     ? ({ click_cart: '商品点击→加购（click_cart）' }[routing.stage] || routing.stage)
     : routing?.rule?.matched === false ? '本次未命中已保存路由规则' : '未知；当前分析未保存路由断点';
+  const receipt = analysis?.providerReceipt;
+  const real = analysis?.mode === 'real_model' && ['moneyai', 'ai_settings'].includes(analysis?.analysisSource);
+  const skillIds = Array.isArray(analysis?.skillIds) ? analysis.skillIds : [];
   return [
-    ['AI 服务', local ? '本次未调用外部 AI；当前结果来自本机规则' : '调用回执未提供，未验证接通'],
-    ['请求ID', '当前分析未请求外部 AI，没有请求 ID'],
-    ['使用模型', '当前分析未调用外部模型'],
-    ['专家Skill链', routing?.expert ? savedText(routing.expert.label) + '；状态：' + savedText(routing.expert.status)
-      + '；' + savedText(routing.expert.reason) : '未保存专家Skill调用记录'],
+    ['AI 服务', local ? '本次未调用外部 AI；当前结果来自本机规则'
+      : real ? (analysis.analysisSource === 'moneyai' ? 'MoneyAI 项目分析' : 'AI 设置中的模型') : '调用来源未通过核对'],
+    ['请求ID', real ? savedText(receipt?.operationId, '缺少请求 ID') : '当前分析未请求外部 AI，没有请求 ID'],
+    ['使用模型', real ? savedText(receipt?.model, '模型名称未随回执保存') : '当前分析未调用外部模型'],
+    ['分析Skill链', skillIds.length ? skillIds.map((id) => DOUYIN_SKILL_LABELS[id] || id).join(' → ')
+      : routing?.expert ? savedText(routing.expert.label) + '；状态：' + savedText(routing.expert.status)
+        + '；' + savedText(routing.expert.reason) : '未保存可核对的分析 Skill 调用记录'],
     ['分析来源', savedText(source) + '；模式：' + savedText(analysis?.mode)],
     ['数据质量分', score + '；' + savedText(quality?.meaning, '仅说明数据检查，不代表真实性、根因或成功概率')],
     ['质量方法与口径', savedText(quality?.method) + '；口径可用程度：' + savedText(quality?.confidence)],
@@ -231,21 +250,53 @@ const moneyAIScalar = (value) => value === null || typeof value === 'boolean'
 const moneyAIWindow = (value) => value && typeof value === 'object'
   ? { start: boundedMoneyAIText(value.start, 40) || null, end: boundedMoneyAIText(value.end, 40) || null } : null;
 
-export function buildMoneyAIAnalysisSummary(snapshot) {
+const pageRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function currentFactSource(fact, input) {
+  const source = fact?.source;
+  if (!pageRecord(source) || !['merchant_statement', 'file_extract'].includes(source.kind)
+    || !pageRecord(source.locator)) return false;
+  if (source.kind === 'file_extract') {
+    return typeof source.materialId === 'string' && Number.isSafeInteger(source.materialVersion)
+      && input.materials.some((material) => material.id === source.materialId
+        && material.version === source.materialVersion);
+  }
+  return source.materialId == null && source.materialVersion == null
+    && (source.locator.type === 'intake' && typeof source.locator.field === 'string'
+      || source.locator.type === 'correction' && source.locator.factId === fact.id
+      || typeof source.locator.questionId === 'string');
+}
+
+export function verifiedAnalysisInput(snapshot) {
   if (snapshot?.contractVersion !== 'demo.v1' || !snapshot?.round || !snapshot?.input
     || snapshot.input.confirmedVersion !== snapshot.round.inputVersion) {
-    return { ok: false, code: 'unconfirmed_input', message: '请先确认当前轮次和输入，尚未准备发送摘要。' };
+    return { ok: false, code: 'unconfirmed_input', message: '请先回第一页确认当前轮次和资料。', facts: [] };
   }
   const input = snapshot.input;
-  if (![input.facts, input.constraints, input.unknowns].every(Array.isArray)) {
-    return { ok: false, code: 'invalid_input', message: '当前确认资料结构不完整，未准备发送摘要。' };
+  if (input.intake?.status !== 'current' || !pageRecord(input.intake.draft)
+    || ![input.facts, input.materials, input.constraints, input.unknowns].every(Array.isArray)) {
+    return { ok: false, code: 'missing_saved_intake',
+      message: '当前没有第一页已保存且有效的结构化资料；不会生成或发送方案。', facts: [] };
   }
+  const facts = input.facts.filter((fact) => typeof fact?.id === 'string'
+    && fact.availability === 'known' && fact.value !== null
+    && fact.verification !== 'conflicting' && fact.evidenceStatus === 'confirmed_fact'
+    && currentFactSource(fact, input));
+  if (!facts.length) return { ok: false, code: 'no_verifiable_facts',
+    message: '当前没有可定位来源的已确认事实；不会调用 Skill，也不会补造固定方案。', facts: [] };
+  return { ok: true, facts, factIds: new Set(facts.map((fact) => fact.id)) };
+}
+
+export function buildMoneyAIAnalysisSummary(snapshot) {
+  const eligibility = verifiedAnalysisInput(snapshot);
+  if (!eligibility.ok) return eligibility;
+  const input = snapshot.input;
   const dataOrigin = snapshot.fixtureId ? 'synthetic_seed' : 'confirmed_merchant_input';
   const focus = boundedMoneyAIText(input.focus || input.description, 2000);
   const summary = {
     version: 'analysis.request.v1',
     focus,
-    facts: input.facts.slice(0, 100).map((fact) => ({
+    facts: eligibility.facts.slice(0, 100).map((fact) => ({
       id: boundedMoneyAIText(fact?.id, 120) || null,
       key: boundedMoneyAIText(fact?.key, 120) || null,
       value: moneyAIScalar(fact?.value),
@@ -257,10 +308,15 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
       channel: boundedMoneyAIText(fact?.channel, 300) || null,
       cohort: boundedMoneyAIText(fact?.cohort, 500) || null,
       sourceKind: boundedMoneyAIText(fact?.source?.kind, 80) || null,
+      sourceId: 'fact:' + fact.id,
+      sourceMaterialId: boundedMoneyAIText(fact?.source?.materialId, 120) || null,
+      sourceMaterialVersion: Number.isSafeInteger(fact?.source?.materialVersion) ? fact.source.materialVersion : null,
       verification: boundedMoneyAIText(fact?.verification, 80) || null,
       dataOrigin,
     })),
-    constraints: input.constraints.slice(0, 50).map((item) => ({
+    constraints: input.constraints.filter((item) => Array.isArray(item?.sourceFactIds)
+      && item.sourceFactIds.length > 0 && item.sourceFactIds.every((id) => eligibility.factIds.has(id)))
+      .slice(0, 50).map((item) => ({
       id: boundedMoneyAIText(item?.id, 120) || null,
       description: boundedMoneyAIText(item?.description, 1000),
       value: moneyAIScalar(item?.value), unit: boundedMoneyAIText(item?.unit, 80) || null,
@@ -276,12 +332,63 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
       dataOrigin,
     })),
   };
-  if (!summary.focus && !summary.facts.length && !summary.constraints.length && !summary.unknowns.length) {
-    return { ok: false, code: 'empty_input', message: '当前确认资料没有可发送的结构化内容。' };
+  const prefix = snapshot.fixtureId ? 'synthetic_' : 'confirmed_';
+  const dataClasses = [prefix + 'facts'];
+  if (summary.focus) dataClasses.push(prefix + 'focus');
+  if (summary.constraints.length) dataClasses.push(prefix + 'constraints');
+  if (summary.unknowns.length) dataClasses.push(prefix + 'unknowns');
+  return { ok: true, summary, dataClasses, factIds: [...eligibility.factIds] };
+}
+
+function skillIdentityError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_skill_identity' });
+}
+
+export function validateP2SkillAnalysisIdentity(analysis, frozenState, expectedScope = null) {
+  const eligibility = verifiedAnalysisInput(frozenState);
+  if (!eligibility.ok) throw skillIdentityError('本次请求没有可核验事实，真实分析不得保存。');
+  if (analysis?.mode !== 'real_model' || !['moneyai', 'ai_settings'].includes(analysis.analysisSource)
+    || !Array.isArray(analysis.skillIds)
+    || analysis.skillIds.length !== DOUYIN_ANALYSIS_SKILL_IDS.length
+    || DOUYIN_ANALYSIS_SKILL_IDS.some((id, index) => analysis.skillIds[index] !== id)) {
+    throw skillIdentityError('真实分析缺少精确的两个分析 Skill 身份。');
   }
-  return { ok: true, summary, dataClasses: snapshot.fixtureId
-    ? ['synthetic_focus', 'synthetic_facts', 'synthetic_constraints', 'synthetic_unknowns']
-    : ['confirmed_focus', 'confirmed_facts', 'confirmed_constraints', 'confirmed_unknowns'] };
+  const receipt = analysis.providerReceipt;
+  const sourceReceiptValid = analysis.analysisSource === 'moneyai'
+    ? receipt?.provider === 'moneyai' && receipt.sentToMoneyAI === true
+    : receipt?.provider === 'ai-settings' && receipt.sentToProvider === true;
+  if (!receipt || receipt.contractVersion !== 'luya.moneyai.v1' || !sourceReceiptValid
+    || !/^[A-Za-z0-9._:-]{1,120}$/.test(receipt.operationId)
+    || receipt.sessionId !== frozenState.sessionId || receipt.roundId !== frozenState.round.id
+    || receipt.inputVersion !== frozenState.round.inputVersion
+    || !/^sha256:[a-f0-9]{64}$/.test(receipt.inputFingerprint)
+    || expectedScope && (receipt.sessionId !== expectedScope.sessionId
+      || receipt.roundId !== expectedScope.roundId || receipt.inputVersion !== expectedScope.inputVersion
+      || receipt.inputFingerprint !== expectedScope.inputFingerprint)) {
+    throw skillIdentityError('真实分析的输入与回执身份不一致。');
+  }
+  const processingSkills = (Array.isArray(analysis.processing) ? analysis.processing : [])
+    .filter((entry) => entry?.skillId != null);
+  const expectedKind = analysis.analysisSource === 'moneyai' ? 'moneyai' : 'provider_ai';
+  if (processingSkills.length !== DOUYIN_ANALYSIS_SKILL_IDS.length
+    || DOUYIN_ANALYSIS_SKILL_IDS.some((id) => !processingSkills.some((entry) => entry.skillId === id
+      && entry.kind === expectedKind && entry.status === 'done' && entry.operationId === receipt.operationId))
+    || processingSkills.some((entry) => !DOUYIN_ANALYSIS_SKILL_IDS.includes(entry.skillId))) {
+    throw skillIdentityError('处理回执没有逐项证明两个分析 Skill 已调用，或包含不相干 Skill。');
+  }
+  const paths = Array.isArray(analysis.paths) ? analysis.paths : [];
+  if (paths.length > 2 || analysis.status === 'insufficient' && paths.length
+    || paths.some((path) => !DOUYIN_PATH_SKILL_IDS.includes(path?.skillId))) {
+    throw skillIdentityError('路径数量、空方案状态或执行 Skill 身份不合法。');
+  }
+  for (const path of paths) {
+    const factIds = [...new Set((Array.isArray(path.evidenceRefs) ? path.evidenceRefs : [])
+      .flatMap((entry) => Array.isArray(entry?.factIds) ? entry.factIds : []))];
+    if (!factIds.length || factIds.some((id) => !eligibility.factIds.has(id))) {
+      throw skillIdentityError('路径没有引用本次实际发送且可核验的事实来源。');
+    }
+  }
+  return analysis;
 }
 
 export function moneyAIResultMessage(result) {
@@ -410,6 +517,7 @@ function moneyAIStatusText(value, kind = 'info') {
   const node = byId('moneyai-request-status');
   node.textContent = value;
   node.dataset.kind = kind;
+  message(value, kind === 'success' ? 'success' : kind === 'error' ? 'error' : 'info');
 }
 
 function renderMoneyAICapability() {
@@ -645,6 +753,7 @@ async function requestMoneyAIFromPage() {
   } else {
     try {
       api.validateRealModelAnalysisDraft(result.analysis, operation.frozenState, operation.request.scope);
+      validateP2SkillAnalysisIdentity(result.analysis, operation.frozenState, operation.request.scope);
       if (!sameMoneyAIRequestOrigin(state, operation.origin)) {
         throw reviewError('真实分析回执到达时本机revision已变化，未保存旧分析。');
       }
@@ -662,6 +771,7 @@ async function requestMoneyAIFromPage() {
         || saved.analysis.providerReceipt?.inputFingerprint !== operation.origin.inputFingerprint) {
         throw reviewError('真实分析保存回执与本次MoneyAI身份不一致。', 'read_failed');
       }
+      validateP2SkillAnalysisIdentity(saved.analysis, operation.frozenState, operation.request.scope);
       moneyAIStatusText(moneyAIChannelName() + '真实分析已通过共享校验并保存；请重新比较当前最多两条路径。', 'success');
     } catch (error) {
       moneyAIStatusText(moneyAIChannelName() + '回执未能安全保存：' + (error?.message || '共享校验或版本回执不完整。')
@@ -1238,20 +1348,50 @@ async function generateAnalysis() {
   if (hasPendingReview()) throw reviewError('请先处理当前感受保存或判断重试，未另起生成。');
   const snapshot = await readState();
   if (!confirmed(snapshot)) fail({ code: 'invalid_transition', message: '请先回第一页确认本轮问题与资料。' });
-  const key = `analysis:${snapshot.round.id}:${snapshot.round.inputVersion}`;
-  let draft = pendingCommands.get(key)?.command.payload.analysis;
-  if (!draft) {
-    const generated = api.buildDemoAnalysis(structuredClone(snapshot));
-    if (!generated?.ok) fail(generated, '本机分析生成失败，没有替换成预编答案。');
-    draft = generated.analysis;
+  const summaryResult = buildMoneyAIAnalysisSummary(snapshot);
+  if (!summaryResult.ok) {
+    message(summaryResult.message, 'error');
+    renderState();
+    return;
   }
-  const saved = await dispatchIntent(key, 'ANALYSIS_SET', { analysis: draft }, snapshot);
-  message(saved.analysis?.mode === 'demo_fixture'
-    ? '已生成当前合成资料对应的演示判断，未调用真实模型。'
-    : '已根据当前资料完成本机有限分析，不能确定的部分仍保留未知。');
+  if (!moneyAIStatus) {
+    const capability = await api.getMoneyAIStatus();
+    moneyAIStatus = capability?.ok ? capability.status : null;
+  }
+  if (!providerSettings) {
+    const settings = await api.getAiSettings();
+    providerSettings = settings?.ok
+      ? { configured: settings.configured, model: settings.model, hasKey: settings.hasKey } : null;
+  }
+  const route = moneyAIStatus?.analysisReady === true ? 'moneyai'
+    : providerSettings?.configured === true ? 'provider' : null;
+  if (!route) {
+    message('真实分析尚未就绪；没有发送资料，也没有生成固定演示路径。', 'error');
+    return;
+  }
+  if (moneyAIPanelMode !== route) setMoneyAIPanelMode(route);
+  const fingerprint = await api.computeMoneyAIInputFingerprint(summaryResult.summary);
+  if (!sameMoneyAIRequestOrigin(state, moneyAIRequestOrigin(snapshot))) {
+    throw reviewError('准备分析时资料版本已变化；没有发送旧摘要。');
+  }
+  const confirmedByUser = window.confirm('本次只发送第一页已确认且来源可定位的结构化摘要：'
+    + summaryResult.summary.facts.length + ' 条事实、'
+    + summaryResult.summary.constraints.length + ' 条限制、'
+    + summaryResult.summary.unknowns.length + ' 条未知。\n\n'
+    + '不发送附件原件、图片、Excel、录音、完整转写、个人历史或凭据。'
+    + moneyAIChannelName() + '将调用“抖音数据分析”和“抖音账号诊断”Skill；是否继续？');
+  if (!confirmedByUser) {
+    message('已取消本次真实分析；没有发送资料。');
+    return;
+  }
+  moneyAIPreview = { origin: moneyAIRequestOrigin(snapshot), summary: summaryResult.summary,
+    dataClasses: summaryResult.dataClasses, inputFingerprint: fingerprint };
+  moneyAIPreviewToken = JSON.stringify(moneyAIPreview.origin);
+  byId('moneyai-consent').checked = true;
+  await requestMoneyAIFromPage();
 }
 
-async function refreshSession(autoAnalyze = true) {
+async function refreshSession(autoAnalyze = false) {
   await operate(async () => {
     let snapshot;
     try {
@@ -1262,7 +1402,9 @@ async function refreshSession(autoAnalyze = true) {
     }
     recordEvent('page_viewed', { pageId: 'decisions', inputVersion: snapshot.round.inputVersion }, snapshot, `page:${snapshot.sessionId}`);
     if (snapshot.savedAt) recordEvent('session_read', { pageId: 'decisions', stateRevision: snapshot.revision }, snapshot, `read:${snapshot.sessionId}`);
-    if (autoAnalyze && !hasPendingReview() && confirmed(snapshot) && !currentAnalysis(snapshot)) await generateAnalysis();
+    if (autoAnalyze && !hasPendingReview() && confirmed(snapshot) && !currentAnalysis(snapshot)) {
+      message('资料已确认；请明确点击“用已确认资料更新判断”后再发送摘要。');
+    }
   });
 }
 
@@ -1514,14 +1656,23 @@ function renderPriority(analysis) {
   const processing = byId('analysis-processing');
   processing.replaceChildren();
   if (!list(analysis?.processing).length) processing.append(element('li', 'muted', '未保存处理记录'));
+  const real = analysis?.mode === 'real_model' && ['moneyai', 'ai_settings'].includes(analysis?.analysisSource);
+  const receipt = analysis?.providerReceipt;
+  const expectedKind = analysis?.analysisSource === 'ai_settings' ? 'provider_ai' : 'moneyai';
+  const savedSkills = Array.isArray(analysis?.skillIds) ? analysis.skillIds : [];
   list(analysis?.processing).forEach((entry) => {
     const item = element('li');
     item.append(element('span', '', text(entry.name, '处理名称未提供')));
-    const verified = ['moneyai', 'provider_ai'].includes(entry.kind) && entry.status === 'done';
+    const skillCalled = real && DOUYIN_ANALYSIS_SKILL_IDS.includes(entry.skillId)
+      && savedSkills.includes(entry.skillId) && entry.kind === expectedKind
+      && entry.status === 'done' && entry.operationId === receipt?.operationId;
+    const providerDone = real && entry.skillId == null && entry.kind === expectedKind
+      && entry.status === 'done' && entry.operationId === receipt?.operationId;
     const status = element('span', 'processing-status', entry.kind === 'local_rule'
       ? ({ done: '已完成', not_run: '未运行' })[entry.status] || '状态未知'
-      : verified ? '已调用' : '类型未核对');
-    status.dataset.status = entry.kind === 'local_rule' ? entry.status : verified ? 'done' : 'unknown';
+      : skillCalled ? 'Skill 已调用' : providerDone ? '分析已完成' : '身份未核对');
+    status.dataset.status = entry.kind === 'local_rule' ? entry.status
+      : skillCalled || providerDone ? 'done' : 'unknown';
     item.append(status);
     processing.append(item);
   });
@@ -1593,7 +1744,12 @@ function renderState() {
     message('分析的路径结构不完整，无法继续。请更新判断或返回核对。', 'error');
   }
   const paths = visibleDecisionPaths(analysis?.paths);
-  byId('no-paths').hidden = paths.length > 0 || !analysis;
+  const eligibility = verifiedAnalysisInput(state);
+  byId('no-paths').hidden = paths.length > 0;
+  byId('no-paths-description').textContent = analysis
+    ? '当前分析没有保存有依据的行动路径；保留未知，不补造第二条。'
+    : eligibility.ok ? '资料已确认，尚未取得通过身份核验的真实分析；不会先放入固定演示路径。'
+      : eligibility.message;
   byId('path-workspace').hidden = paths.length === 0;
   byId('path-detail-disclosure').hidden = paths.length === 0;
   byId('review-not-actionable').textContent = paths.length === 2 ? '两个都做不了，告诉AI原因'
@@ -1672,6 +1828,8 @@ function renderPathList(paths) {
     card.setAttribute('aria-labelledby', title.id);
     heading.append(title);
     card.append(heading);
+    if (path.skillId) card.append(element('p', 'muted', '后续执行 Skill · '
+      + (DOUYIN_SKILL_LABELS[path.skillId] || path.skillId) + ' · 尚未调用'));
     card.append(element('p', 'path-card-status', [isViewed ? '当前查看' : '', isSelected ? '本轮已选' : '尚未选择'].filter(Boolean).join(' · ')));
     const resources = element('div', 'path-card-resources');
     for (const [label, value] of [['资金投入', costText(path.cost?.money, '元')], ['准备时间', costText(path.cost?.time, '分钟')]]) {

@@ -1,6 +1,16 @@
 /** Pure, single-path HTML export. The caller owns snapshot freshness and downloading. */
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
 const OMITTED = '摘要未获确认';
+const REAL_MODEL_CONTRACT = 'luya.moneyai.v1';
+const ANALYSIS_SKILLS = Object.freeze(['douyin-data-analysis', 'douyin-account-diagnosis']);
+const PATH_SKILLS = new Set(['douyin-copywriter', 'douyin-video-creation', 'douyin-live-ops']);
+const SKILL_LABELS = Object.freeze({
+  'douyin-data-analysis': '抖音数据分析',
+  'douyin-account-diagnosis': '抖音账号诊断',
+  'douyin-copywriter': '抖音文案',
+  'douyin-video-creation': '抖音视频创作',
+  'douyin-live-ops': '抖音直播运营',
+});
 const BRANCHES = Object.freeze({
   not_executed: '明确反馈尚未执行',
   insufficient_evidence: '信息或观察不足',
@@ -182,7 +192,7 @@ function checkSnapshot(state, pathId) {
   check(analysis.status !== 'stale' && analysis.roundId === state.round.id
     && analysis.inputVersion === state.round.inputVersion, '分析已过期，不能导出为当前报告。', 'stale_input');
   check(validId(analysis.id) && ['ready', 'limited', 'insufficient'].includes(analysis.status)
-    && ['demo_fixture', 'local_limited'].includes(analysis.mode)
+    && ['demo_fixture', 'local_limited', 'real_model'].includes(analysis.mode)
     && utcTimestamp(analysis.savedAt) !== null && Array.isArray(analysis.paths)
     && nullableText(analysis.summary) && arrayOfText(analysis.limitations), '分析结构、来源模式或保存版本无效。');
   check(state.fixtureId === null || validId(state.fixtureId), '演示来源标识无效。');
@@ -191,6 +201,34 @@ function checkSnapshot(state, pathId) {
   check(validId(pathId), '路径标识无效。');
   const paths = analysis.paths.filter(path => object(path) && path.id === pathId);
   check(paths.length === 1, '当前分析中没有唯一对应的路径。', 'invalid_transition');
+  if (analysis.mode === 'real_model') {
+    const receipt = analysis.providerReceipt;
+    const sourceValid = analysis.analysisSource === 'moneyai'
+      ? receipt?.provider === 'moneyai' && receipt.sentToMoneyAI === true
+      : analysis.analysisSource === 'ai_settings'
+        ? receipt?.provider === 'ai-settings' && receipt.sentToProvider === true
+        : false;
+    check(sourceValid && analysis.paths.length <= 2 && receipt.contractVersion === REAL_MODEL_CONTRACT
+      && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.operationId)
+      && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.attemptId)
+      && receipt.sessionId === state.sessionId && receipt.roundId === state.round.id
+      && receipt.inputVersion === state.round.inputVersion
+      && /^sha256:[a-f0-9]{64}$/.test(receipt.inputFingerprint),
+    '真实分析缺少可核对的提供方回执或当前输入身份。');
+    check(Array.isArray(analysis.skillIds) && analysis.skillIds.length === ANALYSIS_SKILLS.length
+      && ANALYSIS_SKILLS.every((skillId, index) => analysis.skillIds[index] === skillId),
+    '真实分析的分析 Skill 身份不完整或顺序不符。');
+    const processing = Array.isArray(analysis.processing) ? analysis.processing : [];
+    const skillEntries = processing.filter(entry => object(entry) && nonempty(entry.skillId));
+    const expectedKind = analysis.analysisSource === 'ai_settings' ? 'provider_ai' : 'moneyai';
+    check(skillEntries.length === ANALYSIS_SKILLS.length
+      && ANALYSIS_SKILLS.every(skillId => skillEntries.some(entry => entry.skillId === skillId
+        && entry.kind === expectedKind && entry.status === 'done'
+        && entry.operationId === receipt.operationId))
+      && skillEntries.every(entry => ANALYSIS_SKILLS.includes(entry.skillId)),
+    '真实分析的处理记录与分析 Skill 回执不一致。');
+    check(PATH_SKILLS.has(paths[0].skillId), '路径缺少受支持的后续执行 Skill 身份。');
+  }
   check(Array.isArray(state.input.facts) && Array.isArray(state.input.materials), '事实或材料索引缺失。');
   const facts = new Map();
   for (const fact of state.input.facts) {
@@ -371,6 +409,8 @@ export function buildPathReport(state, pathId, { exportId, generatedAt, allowSum
       '导出标识、UTC生成时间或摘要授权值无效。', 'invalid_export_metadata');
     const { analysis, path, facts } = checkSnapshot(state, pathId);
     const { assumptions, usedFacts } = checkPath(path, facts);
+    check(analysis.mode !== 'real_model' || usedFacts.length > 0,
+      '真实模型路径没有引用本轮可核验事实，不能导出为有依据的方案。');
     const metadata = {
       exportVersion: 'demo.export.v1', contractVersion: state.contractVersion, exportId,
       generatedAt: utcTimestamp(generatedAt), sourceRevision: state.revision,
@@ -422,20 +462,25 @@ export function buildPathReport(state, pathId, { exportId, generatedAt, allowSum
     const metadataHTML = Object.entries(metadata).map(([key, value]) => `<dt>${escapeHTML(key)}</dt><dd><code>${value === null ? '未知 / 未使用' : escapeHTML(value)}</code></dd>`).join('');
     const provenance = analysis.mode === 'demo_fixture'
       ? state.fixtureId === null ? '原分析标记为合成演示；本轮新反馈不因此视为合成' : '合成演示'
-      : '本机有限整理 / 参考稿';
+      : analysis.mode === 'real_model'
+        ? analysis.analysisSource === 'ai_settings' ? 'AI 设置真实模型分析' : 'MoneyAI 真实模型分析'
+        : '本机有限整理 / 参考稿';
+    const skillDisclosure = analysis.mode === 'real_model'
+      ? `<dl><dt>本轮已调用的分析 Skill</dt><dd>${analysis.skillIds.map(skillId => `${escapeHTML(SKILL_LABELS[skillId])} <code>${escapeHTML(skillId)}</code>`).join('、')}</dd><dt>提供方回执</dt><dd>${escapeHTML(analysis.analysisSource === 'ai_settings' ? 'AI 设置' : 'MoneyAI')} · <code>${escapeHTML(analysis.providerReceipt.operationId)}</code></dd><dt>路径执行 Skill</dt><dd>${escapeHTML(SKILL_LABELS[path.skillId])} <code>${escapeHTML(path.skillId)}</code>（后续执行归属，本轮尚未调用）</dd></dl>`
+      : '<p>本轮没有真实模型或外部 Skill 调用回执。</p>';
     const privacy = allowed ? '仅纳入本次允许的必要摘要。来源核对不等于商家数据已被证实真实。'
       : '本次未确认真实材料摘要的导出许可，相关业务内容显示“摘要未获确认”；树的结构和内部标识保留。';
     const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>单路径决策报告</title><style>${STYLE}</style></head>
 <body><main><header><p>${escapeHTML(provenance)} · 单路径决策报告</p><h1>${render(path.title)}</h1><p class="notice">${escapeHTML(privacy)} 本报告不代表已选路、已采用或已执行，不承诺经营效果。</p><p>可离线阅读；请使用浏览器“打印”查看打印版。本文件是HTML，不是已生成的PDF。</p></header>
-<section><h2>1. 本轮问题与版本</h2><p class="multiline">${render(excerpt)}</p>${target(estimate.target)}<p>观察期：${window(estimate.horizon)}</p><dl>${metadataHTML}</dl><p>本机生成时间不等于实际执行时间，也不是可信审计时钟。</p></section>
+<section><h2>1. 本轮问题、版本与分析身份</h2><p class="multiline">${render(excerpt)}</p>${target(estimate.target)}<p>观察期：${window(estimate.horizon)}</p><dl>${metadataHTML}</dl>${skillDisclosure}<p>本机生成时间不等于实际执行时间，也不是可信审计时钟。</p></section>
 <section><h2>2. 路径动作与前置条件</h2><p class="multiline">${render(path.action)}</p>${path.prerequisites.length ? `<ul>${path.prerequisites.map(item => `<li>${escapeHTML({ met: '已满足', unmet: '未满足', unknown: '未知' }[item.status])}：${condition(item)}</li>`).join('')}</ul>` : '<p>未提供前置条件，执行前需核对适用范围。</p>'}<h3>资金与时间投入</h3><table><thead><tr><th>投入</th><th>数值</th><th>性质与依据</th></tr></thead><tbody>${costs}</tbody></table><p>预算或时间上限不是保证的最大损失；未知不等于零。</p></section>
 <section><h2>3. 支持依据、反面线索与来源</h2><h3>支持依据</h3>${evidence(path.evidenceRefs)}<h3>反面线索 / 不支持的材料</h3>${evidence(path.counterEvidence)}<h3>当前路径所引用的事实摘要</h3>${sourceFacts ? `<table><thead><tr><th>内部事实标识</th><th>值及适用口径</th><th>来源定位与核对状态</th></tr></thead><tbody>${sourceFacts}</tbody></table>` : '<p>未提供可引用事实，不能将推断称为已核实结论。</p>'}<p>只列相关摘要与内部定位，不附原件、完整导入文本或其他路径。</p></section>
 <section><h2>4. 结果类型、假设与可复算依据</h2><p><strong>${estimate.kind === 'scenario' ? '假设下的情景测算' : '暂不可估'}</strong></p>${target(estimate.target)}<p>观察期：${window(estimate.horizon)}</p>${estimate.assumptions.length ? `<ul>${estimate.assumptions.map(item => `<li><code>${escapeHTML(item.id)}</code> ${render(item.label)}：${render(item.value)} ${render(item.unit)}<p>${render(item.note)}<br>${refs(item.sourceFactIds)}</p></li>`).join('')}</ul>` : '<p>没有可用情景假设。</p>'}${scenario}<p class="notice">情景只表示给定假设下的期望值，不是统计置信区间、成功概率或实际结果必落入的上下界；不同情景之差不等于行动收益。</p>${list(estimate.limitations)}<h3>行动增量</h3><p>无法估计行动增量。</p><p>${render(estimate.incrementalEffect.reason)}</p></section>
 <section><h2>5. 风险、停止与恢复</h2>${path.risk.length ? path.risk.map(item => `<article><h3>${render(item.description)}</h3><p>${refs(item.sourceFactIds, item.assumptionIds)}</p><dl><dt>触发条件</dt><dd>${condition(item.trigger)}</dd><dt>停止条件</dt><dd>${condition(item.stop)}</dd><dt>恢复 / 回滚</dt><dd>${condition(item.restore)}</dd></dl></article>`).join('') : '<p>未提供具体风险清单，不代表没有风险。</p>'}</section>
 <section><h2>6. 小范围验证计划</h2><p>单一修改对象：${render(path.experiment.change)}</p><h3>保持不变</h3>${list(path.experiment.keepFixed)}${target(path.experiment.target)}<p>观察窗口：${window(path.experiment.window)}</p><p>最低样本：${render(path.experiment.minSample)}；不将该值当作效果已获证明的门槛。</p><p>${refs(path.experiment.sourceFactIds, path.experiment.assumptionIds)}</p>${list(path.experiment.limitations)}<h3>停止</h3>${path.experiment.stopConditions.length ? `<ul>${path.experiment.stopConditions.map(item => `<li>${condition(item)}</li>`).join('')}</ul>` : '<p>停止条件未知，需事先核对。</p>'}<h3>恢复 / 回滚</h3>${path.experiment.restoreConditions.length ? `<ul>${path.experiment.restoreConditions.map(item => `<li>${condition(item)}</li>`).join('')}</ul>` : '<p>恢复条件未知，不能承诺自动回滚。</p>'}</section>
 <section><h2>7. 完整业务树（文字版）</h2><p>共 ${path.tree.nodes.length} 个节点、${path.tree.edges.length} 条条件分支。未反馈保持未知；正向变化不证明建议有效，恶化不自动归因于本行动。</p><ol>${tree}</ol><h3>不适用分支及原因</h3>${path.tree.notApplicableBranches.length ? `<ul>${path.tree.notApplicableBranches.map(item => `<li>${escapeHTML(BRANCHES[item.branch])}：${render(item.reason)}</li>`).join('')}</ul>` : '<p>六类分支均已在树中列出。</p>'}</section>
-<section><h2>8. 本轮分析的已知限制</h2>${list(analysis.limitations)}</section><footer><p>文件只在本机生成，不代表云端同步或获准对外共享。删除应用内材料不能撤回已导出的文件。报告不包含真实模型调用、平台核验或外部记忆验证的证明。</p></footer></main></body></html>`;
+<section><h2>8. 本轮分析的已知限制</h2>${list(analysis.limitations)}</section><footer><p>文件只在本机生成，不代表云端同步或获准对外共享。删除应用内材料不能撤回已导出的文件。真实模型报告只记录保存回执中的模型与 Skill 身份；它不证明平台数据真实、经营效果或 MoneyAI 记忆能力。</p></footer></main></body></html>`;
     const stamp = metadata.generatedAt.replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     return { ok: true, html, filename: `path-report-r${metadata.roundIndex}-i${metadata.inputVersion}-${metadata.pathId}-${stamp}.html`, metadata };
   } catch (error) { return resultError(error); }

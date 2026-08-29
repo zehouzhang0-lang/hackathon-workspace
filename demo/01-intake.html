@@ -82,6 +82,10 @@
             </details>
             <div class="intake-start-actions">
               <p class="intake-choice-note">一句描述或一份有效材料即可开始；先核对，再分析。</p>
+              <label class="intake-material-consent" for="material-text-consent">
+                <input type="checkbox" id="material-text-consent">
+                <span>本次整理同意将已上传材料的文本内容（TXT/CSV/JSON，每份截取前4000字、最多4份）发送给「AI 设置」的模型协助提取；不含图片与表格二进制原件。仅这一次有效。</span>
+              </label>
               <button id="return-to-review" class="button button--quiet" type="button" hidden>返回核对</button>
               <button id="organize-button" class="button" type="submit" disabled>开始整理<svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
             </div>

@@ -2899,6 +2899,46 @@ test('requestAiInsight 未配置不发送；已配置时解析提议且聊天不
   assert(chat.body.messages.some((message) => message.content.includes('"focus":"f"')));
 });
 
+test('直连数据提取：勾选同意后材料文本随请求发送，quote可在材料文本中核验', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+    bodies.push(JSON.parse(options.body));
+    return jsonResponse({ ok: true, content: JSON.stringify({ fields: { productName: { value: '先锋牌榨汁杯', quote: '先锋牌榨汁杯' } } }) });
+  };
+  const request = { ...extractionRequest(h, draft),
+    materialTexts: [{ name: '评价.csv', text: '商品全称：先锋牌榨汁杯，用户普遍反馈出汁快。' }] };
+  const result = await requestIntakeExtraction(request, { fetchImpl });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.mode, 'api');
+  assert.equal(result.draft.productName, '先锋牌榨汁杯');
+  assert(result.sentToExternal === true);
+  assert(result.notes.some((note) => note.includes('评价.csv')));
+  const sentUserMessage = bodies[0].messages.find((message) => message.role === 'user');
+  assert(sentUserMessage.content.includes('上传材料文本'));
+  assert(sentUserMessage.content.includes('先锋牌榨汁杯'));
+});
+
+test('直连数据提取：未勾选时材料文本不发送，无处核验的quote被丢弃', async () => {
+  const h = harness('underbed_complete_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '我家卖便携榨汁杯。' });
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+    bodies.push(JSON.parse(options.body));
+    return jsonResponse({ ok: true, content: JSON.stringify({ fields: { productName: { value: '先锋牌榨汁杯', quote: '先锋牌榨汁杯' } } }) });
+  };
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl });
+  assert.equal(result.ok, true);
+  assert.equal(result.draft.productName, null);
+  assert(result.notes.some((note) => note.includes('没有返回可由原文核验的新字段')));
+  const userMessage = bodies[0].messages.find((message) => message.role === 'user');
+  assert(!userMessage.content.includes('上传材料文本'));
+  assert(!userMessage.content.includes('先锋牌榨汁杯'));
+});
+
 test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {
   const { compactSummaryForModel } = await import('../shared/ai.js');
   const small = { focus: 'f', facts: [{ id: 'f1', key: '销量', value: 6, availability: 'known' }], constraints: [], unknowns: [] };

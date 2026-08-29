@@ -1,4 +1,4 @@
-﻿// Local-first structured intake. MoneyAI was removed by product decision (2026-08-29).
+// Local-first structured intake. MoneyAI was removed by product decision (2026-08-29).
 // Two honest layers, both provenance-bound:
 //   1. local  — metric facts already parsed on this machine (CSV/JSON/XLSX readers)
 //               are projected into matching draft fields with exact file locators.
@@ -146,8 +146,9 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   if (!settings.ok || !settings.configured) {
     return { added: 0, configured: false, attempted: false, completed: false };
   }
-  const clip = (value) => value.length > AI_TEXT_LIMIT ? value.slice(0, AI_TEXT_LIMIT) + '\n…（后略，仅根据以上文字整理）' : value;
+  const clip = (value, limit = AI_TEXT_LIMIT) => value.length > limit ? value.slice(0, limit) + '\n…（后略，仅根据以上文字整理）' : value;
   const structuredContext = buildAiStructuredContext(draft);
+  const materialTexts = Array.isArray(request.materialTexts) ? request.materialTexts : [];
   const factLines = (request.state?.input?.facts || [])
     .filter((fact) => fact && fact.availability === 'known' && fact.value !== null)
     .slice(0, 40)
@@ -156,18 +157,34 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   const fieldLines = emptyFields.length
     ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
+  const materialBlock = materialTexts.length
+    ? '\n\n【上传材料文本（用户已逐次同意发送，可作为quote依据）】\n' + materialTexts
+        .map((entry) => '《' + entry.name + '》\n' + clip(entry.text, 4000)).join('\n\n')
+    : '';
+  let descriptionText = clip(request.description);
+  let transcriptText = clip(request.transcript);
+  let contextText = structuredContext;
+  const composeUserContent = () => '【商家描述】\n' + descriptionText
+    + '\n\n【语音或粘贴原文】\n' + transcriptText
+    + '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + contextText
+    + (factLines.length ? '\n\n【本机已从上传材料解析的指标（仅供参考，不要改动）】\n' + factLines.join('\n') : '')
+    + materialBlock
+    + '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n')
+    + '\n\n只输出JSON，格式：{"fields":{"<字段名>":{"value":"...","quote":"..."}}}';
+  let userContent = composeUserContent();
+  if (userContent.length > 19000) {
+    descriptionText = clip(request.description, 3000);
+    transcriptText = clip(request.transcript, 3000);
+    contextText = structuredContext.slice(0, 8000) + '\n…（结构化草稿后略，已有值仍不得改写）';
+    userContent = composeUserContent();
+  }
   const reply = await requestAiChat({
     maxTokens: 4096,
     messages: [
       { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述和原文，但不得改写已有字段。' +
-        '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述或原文中连续出现的原文片段；' +
+        '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述、原文或上传材料文本中连续出现的原文片段；' +
         '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
-      { role: 'user', content: '【商家描述】\n' + clip(request.description) +
-        '\n\n【语音或粘贴原文】\n' + clip(request.transcript) +
-        '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + structuredContext +
-        (factLines.length ? '\n\n【本机已从上传材料解析的指标（仅供参考，不要改动）】\n' + factLines.join('\n') : '') +
-        '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n') +
-        '\n\n只输出JSON，格式：{"fields":{"<字段名>":{"value":"...","quote":"..."}}}' }
+      { role: 'user', content: userContent }
     ]
   }, { fetchImpl, signal, timeoutMs: 60000 });
   if (!reply.ok) {
@@ -190,6 +207,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     return { added: 0, configured: true, attempted: true, completed: false };
   }
   let added = 0;
+  const materialHits = [];
   for (const field of emptyFields) {
     const entry = fields[field];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
@@ -197,18 +215,26 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     const quote = typeof entry.quote === 'string' ? entry.quote : '';
     if (!value || value.length > 4000 || !quote || quote.length > 4000 || value.includes('\0')) continue;
     let source = null;
+    let materialName = null;
     if (request.transcript.includes(quote)) {
       source = ['voice', 'paste', 'manual'].find((name) => draft.sources.includes(name)) || 'paste';
     } else if (request.description.includes(quote)) {
       source = ['manual', 'paste'].find((name) => draft.sources.includes(name)) || 'manual';
     } else {
-      continue; // quote not verified against the text actually sent — drop it
+      const hit = materialTexts.find((entry2) => entry2.text.includes(quote));
+      if (!hit) continue; // quote not verified against the text actually sent — drop it
+      source = 'paste';
+      materialName = hit.name;
     }
     setLeaf(draft, field, value);
     draft.evidenceLedger.push({ field, value, status: 'confirmed_fact', source, quote });
     bindings.push({ field, source, locator: { type: 'intake', field, source, quote } });
     ensureSource(draft, source);
     added += 1;
+    if (materialName) materialHits.push('“' + (FIELD_LABELS[field] || field) + '”来自材料《' + materialName + '》');
+  }
+  if (materialHits.length) {
+    notes.push('其中' + materialHits.join('、') + '；该来源按现有契约标记为手动粘贴，请在核对时留意。');
   }
   if (added === 0) {
     notes.push(emptyFields.length
@@ -238,6 +264,16 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     const { transcript, description, sources } = request;
     if (!ID.test(snapshot.round.id) || !Number.isSafeInteger(snapshot.round.inputVersion)
       || snapshot.round.inputVersion < 1 || !text(transcript, 20000) || !text(description, 20000)) throw new Error('context');
+    // 直连数据提取：仅当用户逐次勾选同意，页面才附带材料文本（每份≤12000字符、最多4份）。
+    let materialTexts = [];
+    if (request.materialTexts !== undefined) {
+      if (!Array.isArray(request.materialTexts) || request.materialTexts.length > 4) throw new Error('context');
+      for (const entry of request.materialTexts) {
+        if (!entry || typeof entry.name !== 'string' || !text(entry.name, 200)
+          || typeof entry.text !== 'string' || !text(entry.text, 12000)) throw new Error('context');
+        materialTexts.push({ name: entry.name, text: entry.text });
+      }
+    }
     requestContext = { sessionId: snapshot.sessionId, roundId: snapshot.round.id, inputVersion: snapshot.round.inputVersion };
     const base = request.draft ?? createMerchantIntakeDraft({ transcript, sources });
     const validated = validateMerchantIntakeDraft(base);
@@ -249,7 +285,8 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     fallbackDraft = draft;
     applyLocalFacts(draft, sourceBindings, snapshot, notes);
     if (signal?.aborted) return fallback('cancelled', '已取消整理，未发送任何内容。');
-    const ai = await applyAiExtraction(draft, sourceBindings, { state: snapshot, transcript, description }, fetchImpl, signal, notes);
+    const ai = await applyAiExtraction(draft, sourceBindings,
+      { state: snapshot, transcript, description, materialTexts }, fetchImpl, signal, notes);
     const rechecked = validateMerchantIntakeDraft(draft);
     if (!rechecked.ok) throw new Error('draft');
     draft = rechecked.draft;

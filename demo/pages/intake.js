@@ -1415,6 +1415,26 @@ function startIntakePage() {
     };
   }
 
+  // 直连数据提取：读取文本类材料的本机内容（用户逐次勾选同意后才调用）。
+  async function collectMaterialTexts(signal) {
+    const decodable = state.input.materials
+      .filter((material) => ["txt", "csv", "json"].includes(fileExtension(material.name)))
+      .slice(0, 4);
+    const texts = [];
+    for (const material of decodable) {
+      if (signal?.aborted) return texts;
+      try {
+        const blob = await api.getMaterialBlob(material.id);
+        if (!blob) continue;
+        let content = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
+        if (content.includes("\0")) continue;
+        if (content.length > 4000) content = content.slice(0, 4000) + "\n…（材料文本后略，仅根据以上内容整理）";
+        texts.push({ name: material.name, text: content });
+      } catch { /* 单份材料读取失败不影响其余材料 */ }
+    }
+    return texts;
+  }
+
   async function prepareUnderstanding() {
     if (descriptionDirty && draftContext && !contextMatches(draftContext) ||
       contextDirty && contextOrigin && !contextMatches(contextOrigin)) {
@@ -1430,13 +1450,24 @@ function startIntakePage() {
     }
     contextDraft = local.draft; contextBindings = local.sourceBindings; contextOrigin = origin; contextDirty = true;
     extractionController = new AbortController();
+    const consentNode = byId("material-text-consent");
+    const includeMaterialText = consentNode?.checked === true;
+    let materialTexts = null;
     let result;
     try {
+      if (includeMaterialText) {
+        status("已同意发送材料文本；正在本机读取材料内容，尚未发送…");
+        materialTexts = await collectMaterialTexts(extractionController.signal);
+      }
       result = await intakeApi.requestIntakeExtraction({
         state, transcript: local.draft.transcript, description: ui.description.value,
-        sources: local.draft.sources, draft: local.draft, sourceBindings: local.sourceBindings
+        sources: local.draft.sources, draft: local.draft, sourceBindings: local.sourceBindings,
+        ...(materialTexts && materialTexts.length ? { materialTexts } : {})
       }, { signal: extractionController.signal });
-    } finally { extractionController = null; }
+    } finally {
+      extractionController = null;
+      if (consentNode) consentNode.checked = false;
+    }
     if (!sameContext(origin) || origin.inputVersion !== state.round.inputVersion ||
       result.requestContext?.sessionId !== origin.sessionId || result.requestContext?.roundId !== origin.roundId ||
       result.requestContext?.inputVersion !== origin.inputVersion) {

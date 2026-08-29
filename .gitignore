@@ -29,6 +29,8 @@ __pycache__/
 
 # Local logs and operating-system files
 *.log
+# Locally configured AI provider credentials (set via the demo's AI 设置 dialog)
+server/ai-settings.json
 .DS_Store
 Thumbs.db
 Desktop.ini

@@ -86,7 +86,7 @@ export function createDecisionReviewRunner(adapter) {
   const completed = (operation, snapshot) => {
     operation.phase = 'done'; operation.error = null;
     announce(operation, snapshot.analysis.paths.length
-      ? '感受和更新后的本机判断已保存；请重新比较路径。未调用MoneyAI或确认根因。'
+      ? '感受和更新后的本机判断已保存；请重新比较路径。未调用外部 AI 或确认根因。'
       : '感受已保存，已更新本机判断；当前没有有依据的可行路径，请补充资料。未自动选路。');
     return { ok: true, state: snapshot, reviewSaved: true };
   };
@@ -194,9 +194,9 @@ export function decisionTraceRows(analysis) {
     ? ({ click_cart: '商品点击→加购（click_cart）' }[routing.stage] || routing.stage)
     : routing?.rule?.matched === false ? '本次未命中已保存路由规则' : '未知；当前分析未保存路由断点';
   return [
-    ['MoneyAI-Agents', local ? '本次未调用；当前结果来自本机规则' : '调用回执未提供，未验证接通'],
-    ['请求ID', '当前分析未保存MoneyAI请求ID'],
-    ['使用模型', '当前分析未保存真实模型调用记录'],
+    ['AI 服务', local ? '本次未调用外部 AI；当前结果来自本机规则' : '调用回执未提供，未验证接通'],
+    ['请求ID', '当前分析未请求外部 AI，没有请求 ID'],
+    ['使用模型', '当前分析未调用外部模型'],
     ['专家Skill链', routing?.expert ? savedText(routing.expert.label) + '；状态：' + savedText(routing.expert.status)
       + '；' + savedText(routing.expert.reason) : '未保存专家Skill调用记录'],
     ['分析来源', savedText(source) + '；模式：' + savedText(analysis?.mode)],

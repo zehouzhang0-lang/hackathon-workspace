@@ -153,7 +153,7 @@ export function buildDemoBreakpoint(funnel) {
       description: '8%仅为Demo保守路由规则，不是抖音官方或行业标准，也不能证明信任不足是根因。'
     },
     expert: matched ? { id: 'trust_questions', label: '信任与疑问 Skill', status: 'not_called',
-      reason: 'click_cart对应的计划领域专家；本次仅运行本机规则，未实际调用专家或MoneyAI。' } : null,
+      reason: 'click_cart对应的计划领域专家；本次仅运行本机规则，未实际调用专家或外部 AI。' } : null,
     reason: matched ? '同口径点击到加购率低于Demo阈值，先验证商品价值、适用边界与购买风险的表达。'
       : observedRate === null ? '当前缺少可比点击到加购率，停止优先断点判断。'
         : '未命中本Demo的点击到加购路由；没有依据时不另造断点或A/B。'

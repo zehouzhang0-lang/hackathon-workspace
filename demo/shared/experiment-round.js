@@ -24,7 +24,8 @@ function readReview(state, feedbackId) {
   const result = buildExperimentReview(state, feedbackId);
   requireValue(result.ok, result.message, result.code);
   const review = result.review;
-  requireValue(review.decision === 'change_variable' && review.source === 'local_fallback' && review.moneyaiCalled === false
+  requireValue(review.decision === 'change_variable' && review.source === 'local_fallback' &&
+    (review.externalCalled === false || review.moneyaiCalled === false)
     && review.evidence.sourceFixtureId === 'juicer_cup_v1' && review.evidence.analysisMode === 'demo_fixture'
     && review.priorAction.actionKey === 'juicer_first_screen'
     && review.priorAction.experimentId === 'EXP-JUICER01-click_cart-A-R1'
@@ -144,7 +145,7 @@ export function buildAcceptedExperimentAnalysis(archive, nextState, review) {
   analysis.priority = { ...analysis.priority, title: '下一轮先验证：购买问答区', reason: review.reason,
     rootCauseConfirmed: false, unknowns: [...new Set([...analysis.priority.unknowns, ...review.unknowns])] };
   analysis.limitations = [...new Set([...analysis.limitations,
-    '当前是已接受的本机历史反馈候选；未调用MoneyAI或真实模型读取记忆。',
+    '当前是已接受的本机历史反馈候选；未调用外部 AI 或真实模型读取记忆。',
     '原合成资料来源保留在原分析；当前fixtureId不恢复，反馈不重标为合成商家事实。',
     '沿用原已保存漏斗只作先前依据；新增点击样本单独来自反馈自述，未拼入原时间窗。',
     '接受、采用、执行与结果不同；新轮次没有默认执行状态。'])];

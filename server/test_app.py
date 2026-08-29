@@ -1,4 +1,4 @@
-"""Local HTTP boundary tests; no browser, merchant data, or MoneyAI business calls."""
+"""Local HTTP boundary tests; no browser, merchant data, or external AI calls."""
 import http.client
 import io
 import json
@@ -9,46 +9,45 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
+import app
 from app import Handler, MAX_DISCARD_BYTES
-from moneyai_adapter import MoneyAIAdapter
 
 
-class AdapterTests(unittest.TestCase):
-    def test_only_explicit_loopback_without_credentials_or_paths_is_allowed(self):
-        self.assertEqual(MoneyAIAdapter.validate_base_url("http://127.0.0.1:31420/"), "http://127.0.0.1:31420")
-        self.assertEqual(MoneyAIAdapter.validate_base_url("http://[::1]:31420"), "http://[::1]:31420")
-        for value in ["https://127.0.0.1:31420", "http://localhost:31420", "http://example.com:80", "http://user:pass@127.0.0.1:31420", "http://127.0.0.1:31420/api", "http://127.0.0.1:31420?x=1", "http://127.0.0.1:31420#x", "http://127.0.0.1", "http://127.0.0.1:0"]:
+def completion_response(content="ok"):
+    response = MagicMock()
+    response.status = 200
+    response.read.return_value = json.dumps(
+        {"choices": [{"message": {"role": "assistant", "content": content}}]}
+    ).encode("utf-8")
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+    return response
+
+
+class SettingsValidationTests(unittest.TestCase):
+    def test_base_url_accepts_https_and_loopback_http_only(self):
+        self.assertEqual(app.validate_base_url("https://api.example.com/v1"), "https://api.example.com/v1")
+        self.assertEqual(app.validate_base_url("http://127.0.0.1:11434"), "http://127.0.0.1:11434")
+        self.assertEqual(app.validate_base_url("http://localhost:11434/"), "http://localhost:11434")
+        for value in ["http://api.example.com", "https://user:pass@api.example.com",
+                      "https://api.example.com?x=1", "https://api.example.com#x",
+                      "ftp://api.example.com", "not a url", "", "https://"]:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                MoneyAIAdapter.validate_base_url(value)
+                app.validate_base_url(value)
 
-    def test_health_does_not_enable_analysis_or_memory(self):
-        response = MagicMock()
-        response.status = 200
-        response.read.return_value = b'{"status":"ok"}'
-        response.__enter__.return_value = response
-        with patch("moneyai_adapter.build_opener") as opener:
-            opener.return_value.open.return_value = response
-            result = MoneyAIAdapter("http://127.0.0.1:31420").status()
-        self.assertTrue(result["serviceReachable"])
-        self.assertFalse(result["analysisReady"])
-        self.assertFalse(result["historyWriteReady"])
-        self.assertFalse(result["historyReadVerified"])
-
-    def test_unconfigured_status_and_business_never_send(self):
-        adapter = MoneyAIAdapter()
-        with patch("moneyai_adapter.build_opener") as opener:
-            self.assertFalse(adapter.status()["configured"])
-            for operation in ["analysis", "decision_write", "history_read"]:
-                status, result = adapter.business_request(operation, {"synthetic": "test only"})
-                self.assertEqual(status, 409)
-                self.assertFalse(result["sentToMoneyAI"])
-            opener.assert_not_called()
+    def test_public_settings_never_contains_the_key(self):
+        public = app.public_settings({"baseUrl": "https://api.example.com", "apiKey": "SECRET", "model": "m"})
+        self.assertTrue(public["configured"])
+        self.assertTrue(public["hasKey"])
+        self.assertNotIn("apiKey", public)
+        self.assertNotIn("SECRET", json.dumps(public))
+        self.assertEqual(app.public_settings(None)["configured"], False)
 
 
 class LocalHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, adapter=MoneyAIAdapter()))
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler))
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.origin = "http://127.0.0.1:" + str(cls.server.server_port)
@@ -59,6 +58,12 @@ class LocalHTTPTests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=2)
 
+    def setUp(self):
+        app.clear_settings()
+
+    def tearDown(self):
+        app.clear_settings()
+
     def request(self, path, method="GET", body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
@@ -68,23 +73,11 @@ class LocalHTTPTests(unittest.TestCase):
         finally:
             connection.close()
 
-    @staticmethod
-    def intake_payload():
-        return {
-            "version": "v0.5-intake-1",
-            "roundId": "synthetic_round",
-            "inputVersion": 1,
-            "transcript": "synthetic-unshared-voice-text",
-            "description": "synthetic-unshared-description",
-            "sources": ["voice", "manual"],
-            "materials": [],
-        }
-
-    def post_intake(self, payload):
-        return self.request(
-            "/api/intake/extract", "POST", json.dumps(payload).encode("utf-8"),
-            {"Origin": self.origin, "Content-Type": "application/json"},
-        )
+    def post_json(self, path, payload, origin=True):
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = self.origin
+        return self.request(path, "POST", json.dumps(payload).encode("utf-8"), headers)
 
     def test_three_pages_and_modules_are_served_with_local_policy(self):
         for path in ["/01-intake.html", "/02-decisions.html", "/03-action.html", "/shared/state.js"]:
@@ -99,23 +92,132 @@ class LocalHTTPTests(unittest.TestCase):
         for path in ["/AGENTS.md", "/../AGENTS.md", "/%2e%2e/AGENTS.md", "/.local-inbox/", "/api/memory/items", "/server/app.py"]:
             self.assertEqual(self.request(path)[0], 404, path)
 
-    def test_status_exposes_readiness_without_personal_data(self):
-        self.assertTrue(json.loads(self.request("/api/health")[2])["ok"])
-        status, _, body = self.request("/api/moneyai/status")
+    def test_moneyai_routes_are_removed(self):
+        for path in ["/api/moneyai/status", "/api/moneyai/analysis", "/api/moneyai/decisions",
+                     "/api/moneyai/history/read", "/api/intake/extract"]:
+            self.assertEqual(self.request(path)[0], 404, path)
+            self.assertEqual(self.post_json(path, {"synthetic": True})[0], 404, path)
+
+    def test_settings_roundtrip_never_echoes_the_key(self):
+        status, _, body = self.request("/api/ai/settings")
         self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["configured"])
+        saved = {"baseUrl": "https://api.example.com/v1", "apiKey": "SECRET-KEY", "model": "glm-test"}
+        status, _, body = self.post_json("/api/ai/settings", saved)
+        self.assertEqual(status, 200)
+        self.assertNotIn("SECRET-KEY", body.decode("utf-8"))
+        status, _, body = self.request("/api/ai/settings")
         result = json.loads(body)
-        self.assertFalse(result["serviceReachable"])
-        self.assertFalse(result["analysisReady"])
-        self.assertFalse(result["extractionReady"])
-        self.assertNotIn("sessions", result)
-        with patch.object(MoneyAIAdapter, "status", return_value={**result, "serviceReachable": True, "extractionReady": True}):
-            status, _, body = self.request("/api/moneyai/status")
+        self.assertEqual((status, result["configured"], result["hasKey"]), (200, True, True))
+        self.assertEqual(result["baseUrl"], saved["baseUrl"])
+        self.assertEqual(result["model"], saved["model"])
+        self.assertNotIn("apiKey", result)
+
+    def test_settings_update_without_key_keeps_the_existing_one(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "FIRST", "model": "a"})
+        with patch("app.build_opener") as opener:
+            opener.return_value.open.return_value = completion_response("pong")
+            status, _, _ = self.post_json("/api/ai/chat", {"messages": [{"role": "user", "content": "hi"}]})
         self.assertEqual(status, 200)
-        self.assertTrue(json.loads(body)["serviceReachable"])
-        self.assertFalse(json.loads(body)["extractionReady"])
+        request = opener.return_value.open.call_args[0][0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer FIRST")
+        # Partial update without apiKey keeps the stored key.
+        status, _, body = self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "model": "b"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["hasKey"])
+
+    def test_settings_reject_invalid_values_and_first_save_requires_key(self):
+        cases = [
+            ({"baseUrl": "http://api.example.com", "apiKey": "K", "model": "m"}, "invalid_settings"),
+            ({"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m", "extra": 1}, "invalid_payload"),
+            ({"baseUrl": "https://api.example.com", "model": "m"}, "invalid_settings"),
+            ({"baseUrl": "https://api.example.com", "apiKey": "K"}, "invalid_payload"),
+            ({"baseUrl": "https://user:pass@api.example.com", "apiKey": "K", "model": "m"}, "invalid_settings"),
+            ({"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m 型"}, "invalid_settings"),
+        ]
+        for payload, code in cases:
+            with self.subTest(payload=payload):
+                status, _, body = self.post_json("/api/ai/settings", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["code"], code)
+        self.assertFalse(app.load_settings())
+
+    def test_clear_removes_settings(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})
+        status, _, body = self.post_json("/api/ai/settings", {"clear": True})
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["configured"])
+        self.assertFalse(app.load_settings())
+
+    def test_chat_fails_closed_while_unconfigured(self):
+        with patch("app.build_opener") as opener:
+            status, _, body = self.post_json("/api/ai/chat", {"messages": [{"role": "user", "content": "hi"}]})
+            opener.assert_not_called()
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["code"], "ai_not_configured")
+
+    def test_chat_validates_messages_and_optional_fields(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})
+        good = {"role": "user", "content": "hi"}
+        cases = [
+            {},
+            {"messages": []},
+            {"messages": [good] * 21},
+            {"messages": [{"role": "bot", "content": "hi"}]},
+            {"messages": [{"role": "user"}]},
+            {"messages": [{"role": "user", "content": ""}]},
+            {"messages": [{"role": "user", "content": "hi", "name": "x"}]},
+            {"messages": [good], "temperature": 3},
+            {"messages": [good], "temperature": True},
+            {"messages": [good], "maxTokens": 0},
+            {"messages": [good], "maxTokens": 4097},
+            {"messages": [good], "unknown": 1},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                status, _, body = self.post_json("/api/ai/chat", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["code"], "invalid_payload")
+
+    def test_chat_success_forwards_messages_and_returns_content(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})
+        with patch("app.build_opener") as opener:
+            opener.return_value.open.return_value = completion_response("你好")
+            status, _, body = self.post_json("/api/ai/chat", {
+                "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+                "temperature": 0, "maxTokens": 10,
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "content": "你好"})
+        request = opener.return_value.open.call_args[0][0]
+        self.assertEqual(request.full_url, "https://api.example.com/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer K")
+        sent = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(sent["model"], "m")
+        self.assertEqual(len(sent["messages"]), 2)
+
+    def test_chat_provider_errors_and_bad_shapes_are_not_success(self):
+        self.post_json("/api/ai/settings", {"baseUrl": "https://api.example.com", "apiKey": "K", "model": "m"})
+        from urllib.error import HTTPError
+        error = HTTPError("https://api.example.com/chat/completions", 401, "Unauthorized", None, None)
+        with patch("app.build_opener") as opener:
+            opener.return_value.open.side_effect = error
+            status, _, body = self.post_json("/api/ai/chat", {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 502)
+        result = json.loads(body)
+        self.assertFalse(result["ok"])
+        self.assertNotIn("K", json.dumps(result))
+        for payload in [{"choices": []}, {"choices": [{"message": {}}]}, {"choices": [{"message": {"content": " "}}]}, ["x"]]:
+            response = completion_response("x")
+            response.read.return_value = json.dumps(payload).encode("utf-8")
+            with patch("app.build_opener") as opener:
+                opener.return_value.open.return_value = response
+                status, _, body = self.post_json("/api/ai/chat", {"messages": [{"role": "user", "content": "hi"}]})
+            self.assertEqual(status, 502, payload)
+            self.assertFalse(json.loads(body)["ok"])
 
     def test_post_requires_origin_json_and_valid_object(self):
-        for path in ["/api/moneyai/analysis", "/api/intake/extract"]:
+        for path in ["/api/ai/settings", "/api/ai/chat"]:
             for origin in [None, "https://example.com", "null"]:
                 headers = {"Content-Type": "application/json"}
                 if origin is not None:
@@ -123,7 +225,7 @@ class LocalHTTPTests(unittest.TestCase):
                 self.assertEqual(self.request(path, "POST", "{}", headers)[0], 403)
             headers = {"Origin": self.origin, "Content-Type": "text/plain"}
             self.assertEqual(self.request(path, "POST", "{}", headers)[0], 415)
-            headers["Content-Type"] = "application/json"
+            headers = {"Content-Type": "application/json", "Origin": self.origin}
             bodies = [
                 "[]", "not json", "", b"\xff\x00", "x" * (256 * 1024 + 1),
                 '{"synthetic":NaN}', '{"synthetic":1,"synthetic":2}',
@@ -169,104 +271,18 @@ class LocalHTTPTests(unittest.TestCase):
         self.assertTrue(handler.close_connection)
         handler.connection.settimeout.assert_called_with(3)
 
-    def test_project_business_routes_fail_closed(self):
-        headers = {"Origin": self.origin, "Content-Type": "application/json"}
-        with patch("moneyai_adapter.build_opener") as opener:
-            for path in ["/api/moneyai/analysis", "/api/moneyai/decisions", "/api/moneyai/history/read"]:
-                status, _, body = self.request(path, "POST", '{"synthetic":true}', headers)
-                self.assertEqual(status, 409)
-                self.assertFalse(json.loads(body)["sentToMoneyAI"])
-            opener.assert_not_called()
-        self.assertEqual(self.request("/api/unknown", "POST", "{}", headers)[0], 404)
-
     def test_host_must_match_the_loopback_origin_for_get_and_post(self):
         for host in ["", "example.com", "127.0.0.1", "localhost:" + str(self.server.server_port)]:
             with self.subTest(host=host):
                 headers = {"Host": host, "Origin": self.origin, "Content-Type": "application/json"}
                 for path, method, body in [
-                    ("/api/moneyai/status", "GET", None),
-                    ("/api/intake/extract", "POST", json.dumps(self.intake_payload()).encode("utf-8")),
+                    ("/api/ai/settings", "GET", None),
+                    ("/api/ai/settings", "POST", b'{"clear": true}'),
+                    ("/api/ai/chat", "POST", b'{"messages":[{"role":"user","content":"hi"}]}'),
                 ]:
                     status, _, response = self.request(path, method, body, headers)
                     self.assertEqual(status, 403)
                     self.assertEqual(json.loads(response), {"ok": False, "code": "host_not_allowed"})
-
-    def test_intake_text_request_is_editable_but_never_sent_or_echoed(self):
-        populated = {
-            **self.intake_payload(),
-            "sources": ["voice", "paste", "txt", "csv", "json", "manual"],
-            "materials": [
-                {"materialId": "synthetic_txt", "materialVersion": 1, "mime": "text/plain", "text": "synthetic-unshared-text"},
-                {"materialId": "synthetic_csv", "materialVersion": 2, "mime": "text/csv", "text": "synthetic-unshared-csv,value\nsample,1"},
-                {"materialId": "synthetic_json", "materialVersion": 3, "mime": "application/json", "text": '{"synthetic-unshared-json":true}'},
-            ],
-        }
-        with patch("moneyai_adapter.build_opener") as opener, patch.object(MoneyAIAdapter, "business_request") as business:
-            for payload in [self.intake_payload(), populated]:
-                status, _, response = self.post_intake(payload)
-                self.assertEqual(status, 409)
-                result = json.loads(response)
-                self.assertEqual(set(result), {"ok", "code", "message", "sentToMoneyAI", "editable"})
-                self.assertFalse(result["ok"])
-                self.assertEqual(result["code"], "intake_unavailable")
-                self.assertFalse(result["sentToMoneyAI"])
-                self.assertTrue(result["editable"])
-                self.assertIn("手动核对", result["message"])
-                for text in [payload["transcript"], payload["description"], *(material["text"] for material in payload["materials"])]:
-                    self.assertNotIn(text.encode("utf-8"), response)
-            business.assert_not_called()
-            opener.assert_not_called()
-
-    def test_intake_rejects_extra_fields_binary_types_and_invalid_limits(self):
-        material = {"materialId": "synthetic_material", "materialVersion": 1, "mime": "text/plain", "text": "synthetic text"}
-        changes = [
-            {"command": "synthetic-do-not-run"},
-            {"version": "other"},
-            {"roundId": "../outside"},
-            {"roundId": "x" * 81},
-            {"inputVersion": 0},
-            {"inputVersion": True},
-            {"inputVersion": 1.5},
-            {"inputVersion": 1 << 53},
-            {"transcript": {"audio": "not accepted"}},
-            {"transcript": "binary" + chr(0) + "text"},
-            {"transcript": chr(0xD800)},
-            {"transcript": "x" * 20_001},
-            {"description": ["not text"]},
-            {"description": "x" * 20_001},
-            {"sources": "voice"},
-            {"sources": ["audio"]},
-            {"sources": ["voice", "voice"]},
-            {"sources": [{}]},
-            {"materials": {}},
-            {"materials": [None]},
-            {"materials": [material, material]},
-            {"materials": [{**material, "materialId": "synthetic_" + str(index)} for index in range(7)]},
-        ]
-        invalid_materials = [
-            {**material, "audio": "not accepted"},
-            {**material, "mime": "audio/webm"},
-            {**material, "mime": "image/png"},
-            {**material, "materialVersion": True},
-            {**material, "materialVersion": -1},
-            {**material, "text": [1, 2, 3]},
-            {**material, "text": "binary" + chr(0) + "text"},
-            {**material, "text": "x" * 50_001},
-        ]
-        payloads = [{**self.intake_payload(), **change} for change in changes]
-        payloads.extend({**self.intake_payload(), "materials": [invalid]} for invalid in invalid_materials)
-        for field in self.intake_payload():
-            payload = self.intake_payload()
-            del payload[field]
-            payloads.append(payload)
-        with patch("moneyai_adapter.build_opener") as opener, patch.object(MoneyAIAdapter, "business_request") as business:
-            for index, payload in enumerate(payloads):
-                with self.subTest(case=index):
-                    status, _, response = self.post_intake(payload)
-                    self.assertEqual(status, 400)
-                    self.assertEqual(json.loads(response), {"ok": False, "code": "invalid_payload"})
-            business.assert_not_called()
-            opener.assert_not_called()
 
 
 if __name__ == "__main__":

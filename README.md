@@ -6,7 +6,7 @@
 
 2026-08-29：按用户选择的商业第二大脑 Demo 替换本项目界面。现在使用固定侧栏、资料/商业记忆双栏、并排方案卡，以及操作/复盘页签。原生 HTML/CSS/JS 页面直接接回原项目控制器、IndexedDB 和 Python API，无需另启一套前端工程。运行与演示步骤见 [Demo 说明](demo/README.md)。
 
-路芽品牌与原业务规则保留。当前分析仍为明确标注的本地规则演示；MoneyAI 项目分析与历史通路、OCR 和 Excel 内容解析尚未接通。本次没有发布上线或自动推送代码。
+路芽品牌与原业务规则保留。当前分析仍为明确标注的本地规则演示；OCR 尚未接通。按用户当日决定，MoneyAI 接入已全部移除，改为页面底部「AI 设置」自配置 OpenAI 兼容 API（未配置前不外发任何内容），Excel/CSV 由本机解析。本次没有发布上线或自动推送代码。
 
 ## 2026-08-28 开发记录
 
@@ -36,7 +36,7 @@
 python -X utf8 server/app.py --port 4188
 ```
 
-访问 [本机工作台](http://127.0.0.1:4188/01-intake.html)。若 4188 已被本项目占用，复用现有服务，不清理未知进程。运行步骤与真实能力边界见[Demo说明](demo/README.md)，MoneyAI接入见[工作流记录](docs/development/demo/MONEYAI_INTEGRATION.md)。服务只提供 demo 目录与窄项目 API，不暴露仓库私密原件。
+访问 [本机工作台](http://127.0.0.1:4188/01-intake.html)。若 4188 已被本项目占用，复用现有服务，不清理未知进程。运行步骤与真实能力边界见[Demo说明](demo/README.md)，AI 接入方式见[取代声明](docs/development/demo/MONEYAI_INTEGRATION.md)。服务只提供 demo 目录与窄项目 API，不暴露仓库私密原件。
 
 ## 从这里开始
 

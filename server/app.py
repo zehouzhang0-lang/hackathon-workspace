@@ -1,4 +1,10 @@
-"""One local origin for the native Demo and its MoneyAI backend boundary."""
+"""One local origin for the native Demo and its thin user-configured AI boundary.
+
+MoneyAI integration was removed by product decision (2026-08-29). The only
+external path is an OpenAI-compatible chat endpoint that the user configures
+explicitly (base URL + API key + model). The key stays in this directory, is
+never echoed back, and nothing is sent anywhere while unconfigured.
+"""
 from __future__ import annotations
 
 import argparse
@@ -8,25 +14,33 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import monotonic
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-
-from moneyai_adapter import MoneyAIAdapter
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEMO_ROOT = Path(__file__).resolve().parent.parent / "demo"
+SETTINGS_PATH = Path(__file__).resolve().parent / "ai-settings.json"
 MAX_REQUEST_BYTES = 256 * 1024
 # Reject oversized bodies, but discard a bounded amount of in-flight data
 # before closing so Windows does not reset an otherwise valid error response.
 MAX_DISCARD_BYTES = MAX_REQUEST_BYTES + 64 * 1024
 DISCARD_TIMEOUT_SECONDS = 0.5
-MAX_INTAKE_TEXT_CHARS = 20_000
-MAX_MATERIAL_TEXT_CHARS = 50_000
-MAX_SAFE_VERSION = (1 << 53) - 1
-INTAKE_FIELDS = {"version", "roundId", "inputVersion", "transcript", "description", "sources", "materials"}
-MATERIAL_FIELDS = {"materialId", "materialVersion", "mime", "text"}
-INTAKE_SOURCES = {"voice", "paste", "txt", "csv", "json", "manual"}
-TEXT_MIMES = {"text/plain", "text/csv", "application/json"}
-IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}")
-NON_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ud800-\udfff]")
+CHAT_TIMEOUT_SECONDS = 45
+MAX_KEY_CHARS = 200
+MAX_MODEL_CHARS = 100
+MAX_MESSAGES = 20
+MAX_MESSAGE_CHARS = 8000
+MAX_COMPLETION_CHARS = 64 * 1024
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+PRINTABLE = re.compile(r"[\x21-\x7e]+")
+CHAT_FIELDS = {"messages", "temperature", "maxTokens"}
+MESSAGE_FIELDS = {"role", "content"}
+ROLES = {"system", "user", "assistant"}
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def unique_json_object(pairs):
@@ -42,64 +56,127 @@ def reject_json_constant(value):
     raise ValueError("Non-finite JSON number")
 
 
-def valid_identifier(value):
-    return isinstance(value, str) and IDENTIFIER.fullmatch(value) is not None
+def validate_base_url(value):
+    """OpenAI-compatible base URL; http only for explicit loopback test servers."""
+    if not isinstance(value, str) or len(value) > 500:
+        raise ValueError("AI服务地址必须是http(s) URL。")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("AI服务地址必须是http(s) URL。")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError("http地址只允许本机回环；外部服务请使用https。")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("AI服务地址不能包含凭据、查询或片段。")
+    return value.rstrip("/")
 
 
-def valid_version(value):
-    return type(value) is int and 0 < value <= MAX_SAFE_VERSION
+def valid_printable(value, pattern, limit, message):
+    if not isinstance(value, str) or len(value) > limit or pattern.fullmatch(value) is None:
+        raise ValueError(message)
 
 
-def valid_text(value, limit):
-    return isinstance(value, str) and len(value) <= limit and NON_TEXT.search(value) is None
+def load_settings():
+    """Return validated settings dict or None; a broken file reads as unconfigured."""
+    try:
+        payload = json.loads(SETTINGS_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"baseUrl", "apiKey", "model"}:
+        return None
+    try:
+        validate_base_url(payload["baseUrl"])
+        valid_printable(payload["apiKey"], PRINTABLE, MAX_KEY_CHARS, "API Key 不合法。")
+        valid_printable(payload["model"], PRINTABLE, MAX_MODEL_CHARS, "模型名不合法。")
+    except ValueError:
+        return None
+    return payload
 
 
-def valid_intake_payload(payload):
-    """Accept bounded text only; do not interpret instructions or decode media."""
-    if (
-        set(payload) != INTAKE_FIELDS
-        or payload["version"] != "v0.5-intake-1"
-        or not valid_identifier(payload["roundId"])
-        or not valid_version(payload["inputVersion"])
-        or not valid_text(payload["transcript"], MAX_INTAKE_TEXT_CHARS)
-        or not valid_text(payload["description"], MAX_INTAKE_TEXT_CHARS)
-    ):
-        return False
-    sources = payload["sources"]
-    if (
-        not isinstance(sources, list)
-        or len(sources) > len(INTAKE_SOURCES)
-        or not all(isinstance(source, str) and source in INTAKE_SOURCES for source in sources)
-        or len(set(sources)) != len(sources)
-    ):
-        return False
-    materials = payload["materials"]
-    if not isinstance(materials, list) or len(materials) > 6:
-        return False
-    material_ids = set()
-    for material in materials:
-        if (
-            not isinstance(material, dict)
-            or set(material) != MATERIAL_FIELDS
-            or not valid_identifier(material["materialId"])
-            or material["materialId"] in material_ids
-            or not valid_version(material["materialVersion"])
-            or not isinstance(material["mime"], str)
-            or material["mime"] not in TEXT_MIMES
-            or not valid_text(material["text"], MAX_MATERIAL_TEXT_CHARS)
-        ):
-            return False
-        material_ids.add(material["materialId"])
-    return True
+def save_settings(payload):
+    SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False), "utf-8")
+
+
+def clear_settings():
+    try:
+        SETTINGS_PATH.unlink()
+    except OSError:
+        pass
+
+
+def public_settings(settings):
+    if not settings:
+        return {"configured": False, "baseUrl": None, "model": None, "hasKey": False}
+    return {"configured": True, "baseUrl": settings["baseUrl"], "model": settings["model"], "hasKey": True}
+
+
+def validate_chat_payload(payload):
+    if not isinstance(payload, dict) or not set(payload) <= CHAT_FIELDS or "messages" not in payload:
+        raise ValueError("messages 必填，且只允许 messages/temperature/maxTokens。")
+    messages = payload["messages"]
+    if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_MESSAGES:
+        raise ValueError("messages 须为 1-20 条。")
+    for message in messages:
+        if not isinstance(message, dict) or set(message) != MESSAGE_FIELDS:
+            raise ValueError("每条消息只含 role 与 content。")
+        if message["role"] not in ROLES:
+            raise ValueError("消息角色不合法。")
+        if not isinstance(message["content"], str) or not 1 <= len(message["content"]) <= MAX_MESSAGE_CHARS \
+                or "\0" in message["content"]:
+            raise ValueError("消息内容须为 1-8000 字符的文本。")
+    temperature = payload.get("temperature", 0)
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) \
+            or not 0 <= float(temperature) <= 2:
+        raise ValueError("temperature 须在 0 到 2 之间。")
+    max_tokens = payload.get("maxTokens", 2048)
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 1 <= max_tokens <= 4096:
+        raise ValueError("maxTokens 须为 1-4096 的整数。")
+    return messages, float(temperature), max_tokens
+
+
+def ai_chat(settings, messages, temperature, max_tokens):
+    """Return (http_status, result_dict). Never leaks the configured key."""
+    body = json.dumps({
+        "model": settings["model"], "messages": messages,
+        "temperature": temperature, "max_tokens": max_tokens,
+    }, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        settings["baseUrl"] + "/chat/completions", data=body, method="POST",
+        headers={
+            "Authorization": "Bearer " + settings["apiKey"],
+            "Content-Type": "application/json", "Accept": "application/json",
+        },
+    )
+    try:
+        with build_opener(NoRedirect).open(request, timeout=CHAT_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read(MAX_COMPLETION_CHARS).decode("utf-8"))
+    except HTTPError as error:
+        try:
+            detail = error.read(2000).decode("utf-8", "replace").strip()[:200]
+        except Exception:
+            detail = str(getattr(error, "reason", error))[:200]
+        return 502, {"ok": False, "code": "ai_request_failed",
+                     "message": "AI 服务请求失败（HTTP " + str(error.code) + "：" + detail + "）；未获得可用结果，原文仍在本页。"}
+    except (URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as error:
+        detail = str(getattr(error, "reason", error))[:200]
+        return 502, {"ok": False, "code": "ai_request_failed",
+                     "message": "AI 服务请求失败（" + detail + "）；未获得可用结果，原文仍在本页。"}
+    if not isinstance(payload, dict):
+        return 502, {"ok": False, "code": "ai_request_failed", "message": "AI 服务返回不是JSON对象。"}
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        content = None
+    if not isinstance(content, str) or not content.strip():
+        return 502, {"ok": False, "code": "ai_request_failed", "message": "AI 服务返回缺少文本内容。"}
+    return 200, {"ok": True, "content": content}
 
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, adapter: MoneyAIAdapter, **kwargs):
-        self.adapter = adapter
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(DEMO_ROOT), **kwargs)
 
     def log_message(self, format, *args):
-        # Do not write user paths, source text or request bodies to server logs.
+        # Do not write user paths, source text, keys or request bodies to server logs.
         return
 
     def end_headers(self):
@@ -167,46 +244,8 @@ class Handler(SimpleHTTPRequestHandler):
             return False
         return True
 
-    def do_GET(self):
-        if not self.allowed_host():
-            return
-        path = urlsplit(self.path).path
-        if path == "/":
-            self.send_response(302)
-            self.send_header("Location", "/01-intake.html")
-            self.end_headers()
-        elif path == "/api/health":
-            self.send_json(200, {"ok": True, "contractVersion": "demo.v1", "service": "local-demo-backend"})
-        elif path == "/api/moneyai/status":
-            self.send_json(200, {**self.adapter.status(), "extractionReady": False})
-        elif path == "/favicon.ico":
-            self.send_response(204)
-            self.end_headers()
-        else:
-            # Static serving is restricted to demo/, never the repository or private inbox.
-            super().do_GET()
-
-    def do_POST(self):
-        self._body_consumed = False
-        if not self.allowed_host():
-            return
-        path = urlsplit(self.path).path
-        is_intake = path == "/api/intake/extract"
-        operations = {
-            "/api/moneyai/analysis": "analysis",
-            "/api/moneyai/decisions": "decision_write",
-            "/api/moneyai/history/read": "history_read",
-        }
-        expected = "http://127.0.0.1:" + str(self.server.server_port)
-        if self.headers.get_all("Origin", []) != [expected]:
-            self.reject_json(403, "origin_not_allowed")
-            return
-        if not is_intake and path not in operations:
-            self.reject_json(404, "unknown_endpoint")
-            return
-        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-            self.reject_json(415, "json_required")
-            return
+    def read_json_body(self):
+        """Return a parsed JSON object or None (error response already sent)."""
         try:
             lengths = self.headers.get_all("Content-Length", [])
             if len(lengths) != 1 or self.headers.get("Transfer-Encoding") is not None:
@@ -225,33 +264,101 @@ class Handler(SimpleHTTPRequestHandler):
             )
             if not isinstance(payload, dict):
                 raise ValueError
-            if is_intake and not valid_intake_payload(payload):
-                raise ValueError
+            return payload
         except (ValueError, UnicodeError, RecursionError):
             self.reject_json(400, "invalid_payload")
+            return None
+
+    def do_GET(self):
+        if not self.allowed_host():
             return
-        if is_intake:
-            # No project extraction session or send scope is authorized. Never
-            # route this text through a personal session or return invented facts.
-            self.send_json(409, {
-                "ok": False,
-                "code": "intake_unavailable",
-                "message": "本项目的资料提取会话、调用费用和发送范围尚未授权，未向MoneyAI发送内容；请保留原文并手动核对可编辑草稿。",
-                "sentToMoneyAI": False,
-                "editable": True,
-            })
+        path = urlsplit(self.path).path
+        if path == "/":
+            self.send_response(302)
+            self.send_header("Location", "/01-intake.html")
+            self.end_headers()
+        elif path == "/api/health":
+            self.send_json(200, {"ok": True, "contractVersion": "demo.v1", "service": "local-demo-backend"})
+        elif path == "/api/ai/settings":
+            self.send_json(200, {"ok": True, **public_settings(load_settings())})
+        elif path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+        else:
+            # Static serving is restricted to demo/, never the repository or private inbox.
+            super().do_GET()
+
+    def do_POST(self):
+        self._body_consumed = False
+        if not self.allowed_host():
             return
-        status, result = self.adapter.business_request(operations[path], payload)
+        path = urlsplit(self.path).path
+        if path not in {"/api/ai/settings", "/api/ai/chat"}:
+            self.reject_json(404, "unknown_endpoint")
+            return
+        expected = "http://127.0.0.1:" + str(self.server.server_port)
+        if self.headers.get_all("Origin", []) != [expected]:
+            self.reject_json(403, "origin_not_allowed")
+            return
+        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            self.reject_json(415, "json_required")
+            return
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        if path == "/api/ai/settings":
+            self.handle_settings(payload)
+        else:
+            self.handle_chat(payload)
+
+    def handle_settings(self, payload):
+        if payload == {"clear": True}:
+            clear_settings()
+            self.send_json(200, {"ok": True, **public_settings(None)})
+            return
+        if set(payload) - {"baseUrl", "apiKey", "model"} or not {"baseUrl", "model"} <= set(payload):
+            self.reject_json(400, "invalid_payload")
+            return
+        try:
+            base_url = validate_base_url(payload["baseUrl"])
+            model = payload["model"]
+            valid_printable(model, PRINTABLE, MAX_MODEL_CHARS, "模型名不合法。")
+            key = payload.get("apiKey")
+            existing = load_settings()
+            if isinstance(key, str):
+                valid_printable(key, PRINTABLE, MAX_KEY_CHARS, "API Key 不合法。")
+            elif key is None:
+                if not existing:
+                    raise ValueError("首次配置必须提供 API Key。")
+                key = existing["apiKey"]
+            else:
+                raise ValueError("API Key 不合法。")
+        except ValueError as error:
+            self.send_json(400, {"ok": False, "code": "invalid_settings", "message": str(error)})
+            return
+        save_settings({"baseUrl": base_url, "apiKey": key, "model": model})
+        self.send_json(200, {"ok": True, **public_settings(load_settings())})
+
+    def handle_chat(self, payload):
+        try:
+            messages, temperature, max_tokens = validate_chat_payload(payload)
+        except ValueError as error:
+            self.send_json(400, {"ok": False, "code": "invalid_payload", "message": str(error)})
+            return
+        settings = load_settings()
+        if not settings:
+            self.send_json(409, {"ok": False, "code": "ai_not_configured",
+                                 "message": "尚未在「AI 设置」配置 API；未发送任何内容。"})
+            return
+        status, result = ai_chat(settings, messages, temperature, max_tokens)
         self.send_json(status, result)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=4188)
-    parser.add_argument("--moneyai-url", help="当前MoneyAI实例的显式本机地址；不提交配置或凭据")
     args = parser.parse_args()
-    adapter = MoneyAIAdapter(args.moneyai_url)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler, adapter=adapter))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler))
     print("Local Demo: http://127.0.0.1:" + str(args.port) + "/01-intake.html", flush=True)
     try:
         server.serve_forever()

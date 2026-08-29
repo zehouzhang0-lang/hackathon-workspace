@@ -354,11 +354,12 @@ export function resolveFeedbackRecord(snapshot, feedbackId) {
 
 export function describeExperimentReview(review) {
   if (review?.version !== 1 || !Object.hasOwn(REVIEW_LABELS, review.decision) ||
-      review.source !== 'local_fallback' || review.moneyaiCalled !== false) {
-    throw new Error('判断来源或版本无法核对，未展示为 MoneyAI 结果。');
+      review.source !== 'local_fallback' ||
+      !(review.externalCalled === false || review.moneyaiCalled === false)) {
+    throw new Error('判断来源或版本无法核对，未展示为外部 AI 结果。');
   }
   return { title: REVIEW_LABELS[review.decision], treatment: REVIEW_TREATMENTS[review.decision],
-    source: '本机回退规则 · 未调用 MoneyAI · 商家自述尚未独立核验' };
+    source: '本机规则判断 · 未调用外部 AI · 商家自述尚未独立核验' };
 }
 
 export function candidatePlanRows(candidate) {
@@ -415,7 +416,7 @@ export function experimentOriginLines(analysis) {
     '本轮来自明确接受的反馈候选；采用、执行和结果仍分别记录。',
     '漏斗依据为原轮快照：分析 ' + textValue(source.analysisId) + '／轮次 ' + textValue(source.roundId) +
       '／输入 v' + textValue(source.inputVersion) + '。不是本轮新增样本，不把新反馈点击拼进旧时间窗。',
-    '来源反馈：' + textValue(analysis.sourceFeedbackId) + '；原合成来源保留在原分析与接受记录中，不代表 MoneyAI 记忆。',
+    '来源反馈：' + textValue(analysis.sourceFeedbackId) + '；原合成来源保留在原分析与接受记录中，不代表任何外部服务记忆。',
   ];
 }
 
@@ -1696,7 +1697,7 @@ function renderReview() {
   basis.append(node('h3', '本次依据'));
   const values = node('dl', undefined, 'experiment-facts');
   for (const [label, value] of [
-    ['本机判断来源', review.source + '；MoneyAI 未调用'],
+    ['本机判断来源', review.source + '；外部 AI 未调用'],
     ['原分析来源', originLabel(review.evidence.analysisMode)],
     ['原计划样本', textValue(review.evidence.minimumSample) + ' ' + textValue(review.evidence.minimumSampleUnit)],
     ['样本对照', review.evidence.sampleMeetsPlan ? '达到原计划门槛，不代表统计充分'
@@ -1791,7 +1792,7 @@ function renderMemoryList(container) {
     container.append(item);
   }
   if (!state.feedbackRecords?.length) container.append(node('p', '当前项目还没有保存过实验反馈。'));
-  container.append(node('p', '本机判断中的候选不属于正式新轮；未明确接受并成功开始前，不追加下一轮记录。MoneyAI 历史未接通。', 'muted'));
+  container.append(node('p', '本机判断中的候选不属于正式新轮；未明确接受并成功开始前，不追加下一轮记录。未写入外部历史。', 'muted'));
 }
 
 async function openRecord(feedbackId) {
@@ -1815,7 +1816,7 @@ async function openRecord(feedbackId) {
       ['实际范围', execution?.scope], ['观察', OBSERVATION_LABELS[feedback.observation] ?? '未知'],
       ['反馈原话', feedback.rawText], ['观察开始／结束', textValue(feedback.observedWindow?.start) + '—' + textValue(feedback.observedWindow?.end)],
       ['保存时间', readableTime(feedback.savedAt)], ['本机读回', '本次已成功读回'],
-      ['产物来源', originLabel(artifact.mode)], ['MoneyAI 写入／读回', '未接通，未核验'],
+      ['产物来源', originLabel(artifact.mode)], ['外部 AI 写入／读回', '未使用，未核验'],
     ]) details.append(node('dt', label), node('dd', textValue(value)));
     const feedbackDetails = node('dl', undefined, 'experiment-facts');
     for (const [label, value] of feedbackDetailRows(feedback)) feedbackDetails.append(node('dt', label), node('dd', value));
@@ -1874,7 +1875,7 @@ function openProject() {
   container.replaceChildren(node('p', '当前仅有这个本机项目，不是个人账号或多商家中心。'),
     node('p', '会话：' + state.sessionId, 'muted'),
     node('p', '当前第 ' + state.round.index + ' 轮 · 输入 v' + state.round.inputVersion +
-      '；MoneyAI 个人历史未接入。', 'muted'));
+      '；未接入外部个人历史。', 'muted'));
   const records = node('div');
   renderMemoryList(records);
   container.append(records);

@@ -317,7 +317,7 @@ export function buildExperimentReview(state, feedbackId) {
       inputVersion: feedback.inputVersion, analysisId: analysis.id, pathId: path.id,
       artifactId: artifact.id, artifactVersion: artifact.version, sourceFeedbackId: feedback.id,
       sourceExecutionId: executionRecord?.id ?? null, sourceRevision: state.revision,
-      fingerprint: 'sha256:' + sha256(canonical(dependencies)), source: 'local_fallback', moneyaiCalled: false,
+      fingerprint: 'sha256:' + sha256(canonical(dependencies)), source: 'local_fallback', externalCalled: false,
       decision, reason,
       priorAction: { actionKey: path.actionKey ?? null, title: path.title, action: path.action,
         experimentId: plan?.experimentId ?? null, singleVariable: plan?.change ?? null },

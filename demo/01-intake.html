@@ -57,27 +57,16 @@
             </div>
             <p id="demo-load-note" class="input-panel-note demo-load-note">没有资料？可选择一个合成案例体验流程。</p>
             <div class="intake-entry-grid">
-              <section id="screenshot-section" class="screenshot-section" aria-labelledby="screenshot-heading">
-                <div id="image-drop-zone" class="material-drop-zone" role="group" aria-label="截图上传区域" aria-describedby="image-note">
-                  <svg class="upload-icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4a2 2 0 0 0-3 0L3 21"/></svg>
-                  <h3 id="screenshot-heading">抖音后台截图</h3>
-                  <button id="choose-images" class="button button--secondary choose-files" type="button">上传截图</button>
-                  <p>PNG / JPEG / WebP · 支持拖入或粘贴</p>
-                </div>
-                <input id="image-file-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple hidden>
-                <p id="image-note" class="input-panel-note">原件仅保存在本机；未接通文字识别，内容待核对。</p>
-              </section>
-
               <section id="upload-section" class="materials-section" aria-labelledby="materials-heading">
                 <div id="drop-zone" class="material-drop-zone" role="group" aria-labelledby="drop-zone-title" aria-describedby="table-capability-note" tabindex="0">
                   <svg class="upload-icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h8M12 11v8"/></svg>
-                  <h3 id="materials-heading">经营数据表</h3>
-                  <button id="choose-files" class="button button--secondary choose-files" type="button">上传 Excel 或 CSV</button>
-                  <p id="drop-zone-title">CSV / XLSX / XLS · 支持拖入或选择</p>
+                  <h3 id="materials-heading">上传经营资料</h3>
+                  <button id="choose-files" class="button button--secondary choose-files" type="button">上传截图或数据表</button>
+                  <p id="drop-zone-title">截图 PNG / JPEG / WebP · 数据表 CSV / XLSX / XLS · 支持拖入、粘贴或选择</p>
                 </div>
-                <input id="file-input" type="file" accept="text/csv,.csv,.xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
+                <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,text/csv,.csv,.xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
                 <input id="replacement-input" type="file" accept="image/png,image/jpeg,image/webp,text/plain,text/csv,application/json,.png,.jpg,.jpeg,.webp,.txt,.csv,.json,.xlsx,.xls" hidden>
-                <p id="table-capability-note" class="input-panel-note">CSV 可读取约定指标；Excel 仅保存原件，解析待接通。</p>
+                <p id="table-capability-note" class="input-panel-note">原件仅保存在本机；截图不做文字识别，内容待核对；CSV / Excel 会在本机读取约定指标；点「整理」生成可核对的结构化草稿（配置 AI 后见底部「AI 设置」）。</p>
               </section>
             </div>
 
@@ -195,7 +184,7 @@
             <div><dt>当前约束</dt><dd>尚未提供，不默认预算或时间</dd></div>
             <div><dt>上一轮记录</dt><dd>还没有已保存的历史活动</dd></div>
           </dl>
-          <p id="memory-source" class="memory-source">仅展示当前本机项目已保存的资料，不代表 MoneyAI 已写入或读回。</p>
+          <p id="memory-source" class="memory-source">仅展示当前本机项目已保存的资料，不代表已写入或从任何外部服务读回。</p>
           <div class="memory-thought">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>
             <div><h3>先找问题，再选动作</h3><p>核对资料后，再比较可执行的方案；缺失的信息会保留为未知。</p></div>
@@ -215,7 +204,7 @@
     <dialog id="voice-consent" class="intake-dialog voice-consent" aria-labelledby="voice-consent-title" aria-describedby="voice-consent-description">
       <h2 id="voice-consent-title">开始前，确认语音处理方式</h2>
       <p id="voice-consent-description">浏览器可能把麦克风音频发送给其语音识别服务处理，无法保证离线。同意后再次按住说话，才会申请麦克风权限；你可以随时停止。本页不保存音频文件。保存时会保留转写原文和你编辑后的文字。</p>
-      <p class="muted">这不授权向 MoneyAI 或其他模型发送材料，也不会安装语言包或调用付费转写接口。</p>
+      <p class="muted">这不授权向任何外部服务发送材料；仅在底部「AI 设置」配置后，「整理」才会把文字发送到你设置的地址。也不会安装语言包或调用付费转写接口。</p>
       <div class="dialog-actions">
         <button id="voice-consent-cancel" class="button button--secondary" type="button">改用文字</button>
         <button id="voice-consent-start" class="button" type="button">同意，返回按住说话</button>

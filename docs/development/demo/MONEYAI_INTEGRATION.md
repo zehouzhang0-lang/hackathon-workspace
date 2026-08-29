@@ -1,8 +1,8 @@
-# MoneyAI：项目工作流与实际接入状态
+# MoneyAI 接入记录（已被取代，保留追溯）
 
-更新：2026-08-28，落实[REQ-17](../CURRENT_BRIEF.md)。MoneyAI是数据分析、给出路径与记录历史决策的重要载体，前后端必须按这一角色建设；它不是后续可随意删掉的页脚标识。当前已实现项目后端边界，**尚未实现MoneyAI业务通路**。
+> **取代声明（2026-08-29）**：用户明确决定三页全部取消 MoneyAI 接入。AI 能力改为用户自配置的 OpenAI 兼容 API（页面底部「AI 设置」保存 base URL + API key + 模型名，key 只保存在本机后端 `server/ai-settings.json`，不回显、不入库）。本文档记录的 MoneyAI 核验事实与边界设计保留作历史追溯；其中所有“待接通 MoneyAI”的计划不再执行，REQ-17 的核心载体定位同时失效。取代后的新边界见下文「取代后的 AI 边界」与 [server/app.py](../../../server/app.py)、[demo/shared/ai.js](../../../demo/shared/ai.js)、[demo/shared/intake-extraction.js](../../../demo/shared/intake-extraction.js)。
 
-## 已核验的本机事实
+## 已核验的本机事实（历史，2026-08-28）
 
 | 事项 | 实际证据与限制 |
 | --- | --- |
@@ -14,36 +14,20 @@
 
 健康接口只能证明对应进程响应，不能证明模型可用、费用获准、商家资料可发送或历史能正确读回。
 
-## 前后端衔接
+## 已实现后又被取代的边界（2026-08-28 批次，已全部移除）
 
-| 工作流阶段 | 页面与共享层 | 项目后端及MoneyAI责任 |
-| --- | --- | --- |
-| 确认输入 | 第一页整理事实/来源/未知，保存round与inputVersion | 仅接收经过明确授权的必要摘要；原始附件不默认发送 |
-| 分析与路径 | 第二页请求当前快照分析，显示真实来源和进行中/失败状态 | 专用MoneyAI项目会话完成分析，输出经校验的AnalysisDraft；原始模型叙述不直接视为证据 |
-| 接受结果 | 校验round/inputVersion后用现有ANALYSIS_SET写入，ID由共享层分配 | 回传项目请求ID与真实来源，迟到结果不能换成新输入版本；失败不能静默返回演示答案 |
-| 决策与取用 | 选择、查看、复制、下载分别记录；第三页不把取用记为执行 | 记录所选路径及当时输入/分析版本，不推断实际采用或执行 |
-| 自愿反馈与历史 | FEEDBACK_SAVE先明确本地事务结果，再按授权同步必要历史 | 独立幂等写入回执；跨会话读回须实际核对round、path、artifact和执行/结果语义 |
-| 下一轮 | 保留历史与当前未知，不用旧反馈填充首轮 | 专用项目空间读回正确历史；第二个合成商家的数据不得串入 |
+- 原项目服务 127.0.0.1 窄 API 保留三页静态服务与安全头；原 `/api/moneyai/*` 与 `/api/intake/extract` 路由已删除，调用它们返回 404。
+- 原 `moneyai_adapter.py` 只接受显式 loopback HTTP 地址、健康查询不读取会话或 memory；该文件已删除。
+- 原前端 `demo/shared/moneyai.js` 状态/分析入口已删除，页面不再查询 MoneyAI 状态。
+- 当时的明确边界：业务通路全部 409 失败闭合（`sentToMoneyAI:false`），不假装接通；该语义由新的 `sentToExternal` 与「未配置即不外发」继承。
 
-现有`demo.v1`保持不变：`buildDemoAnalysis`/`buildDemoArtifact`仍是无副作用的本地演示生成器，不能在里面偷偷调用MoneyAI。真实模型输出只能经专用服务与完整schema验证进入`ANALYSIS_SET`；`mode=real_model`当前未启用。前端不直接访问本机MoneyAI管理端口，不保存其密钥。
+## 取代后的 AI 边界（2026-08-29 起生效）
 
-## 本轮已实现的边界
+1. 唯一外发路径：`POST /api/ai/chat`，转发到用户在「AI 设置」保存的 OpenAI 兼容 `/chat/completions`；未配置时返回 409，服务端不发出任何请求。
+2. 第一页「整理」：本地优先——本机已解析的 CSV/JSON/XLSX 指标事实带精确文件定位直接填入九组草稿（`xlsx` 已成为草稿契约的合法文件来源）；仍空的文字字段在已配置 API 时发送描述与转写给模型补齐，每条值必须携带可在所发文字中找到的原文引文，否则丢弃；AI 失败或未配置时不影响本地结果，如实标注 mode=local/api 与 sentToExternal。
+3. 第二页分析与第三页复盘仍为本机规则演示，未接外部模型；全部“本机结果”继续明确标注，不冒充真实模型分析或外部记忆。
+4. 前端只请求同源项目后端；CSP `connect-src 'self'` 不变；key 不出后端、不进浏览器存储、不入 Git（`.gitignore` 已含 `server/ai-settings.json`）。
 
-- [项目服务](../../../server/app.py)在127.0.0.1提供三页及窄API；无目录列表，不服务仓库原件，业务POST限制Origin、JSON与请求大小。
-- [适配器](../../../server/moneyai_adapter.py)只接受显式loopback HTTP地址；拒绝凭据、路径、查询和重定向。健康查询不读取会话或memory。
-- [前端入口](../../../demo/shared/moneyai.js)只请求项目后端。健康的`serviceReachable`与`analysisReady`、`historyWriteReady`、`historyReadVerified`分开。
-- `/api/moneyai/analysis`、`/api/moneyai/decisions`、`/api/moneyai/history/read`当前均返回409及`sentToMoneyAI:false`。这是未接通的明确边界，不是已完成分析/历史功能。
-- REQ-25提取接口 `/api/intake/extract` 与 `shared/intake-extraction.js` 已落地：状态返回extractionReady=false，真实合成请求返回409/intake_unavailable/editable:true/sentToMoneyAI:false。客户端先查能力，无就绪或无明确模型/费用/材料授权时不POST原文；超时/丢回执不谎称未发送。成功结构必须绑定当前round/inputVersion及本次实际发送材料。
-- 九组草稿/转写确认与MoneyAI提取分离：本机INTAKE_SET保存不等于AI理解或写入记忆，问题历史由QUESTION_SET独立保留；原始语音识别还须浏览器能力、用户主动开始和真实测试。
-- 2026-08-28接任后补齐客户端保护：状态回包严格校验对象/布尔字段并只返回状态白名单；分析公开入口默认无明确发送许可即不发请求，能力未就绪时不POST摘要。纯JSON正文在首次等待前固定，拒绝getter/toJSON/二进制/隐式转换并限制256KiB；拒绝重定向、支持取消及默认8秒超时，区分未发送false、已确认true与回执丢失null。HTTP错误或尚未校验的成功回包都不生成可用分析，不启用real_model。6项内存替身回归通过，未发送真实业务。该入口尚无页面调用者，不表示项目业务协议、专用空间或来源校验已完成。
-- 当前页面仍使用明确标注的本地生成器及IndexedDB。没有模型/记忆成功伪回执，没有把个人活跃对话当项目会话。
+## 启用前还要完成（历史清单，随取代声明作废）
 
-## 启用前还要完成
-
-1. 使用本项目专用Agent/会话及独立历史空间，核对真实协议和所用模型；不复用用户当前个人对话。
-2. 明确实际调用模型、可能费用、允许发送哪些合成或真实材料。当前健康检查不代表授权新增付费调用或外发商家原件。
-3. 实现AnalysisDraft校验、来源映射、超时/迟到/失败重试；模型叙述、推断、事实和情景分开。后端同步须有可恢复的幂等请求标识。
-4. 实际写入一条获准的合成决策，在新会话读回并核对，再用另一个合成商家验证隔离。分别保存“本地保存”“MoneyAI写入”“MoneyAI读回”的证据。
-5. 通过后再启用对应页面工作流与real_model标识，不因health通过就隐藏未连接提示。
-
-专用会话与真实模型/历史测试尚未完成；PC基础界面可并行推进，不把这项核心接入从后续队列删掉。实际测试记录见[集成检查](QA_INTEGRATION.md)。
+原清单（专用项目会话、费用与发送范围授权、AnalysisDraft 校验与历史读写验证等）针对 MoneyAI 路径，已随本文件一并作废；新 API 路径的剩余验收项是：真实浏览器走查「AI 设置 → 保存 → 测试连接 → 整理」全链路，以及用户自选提供商的真实联调。实际测试记录见[集成检查](QA_INTEGRATION.md)。

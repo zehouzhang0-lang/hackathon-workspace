@@ -903,8 +903,7 @@ function startIntakePage() {
   const ui = {
     form: byId("intake-form"), description: byId("description"), organize: byId("organize-button"),
     manual: byId("manual-entry"), upload: byId("upload-section"),
-    imageDrop: byId("image-drop-zone"), imageMaterials: byId("image-materials-list"),
-    chooseImages: byId("choose-images"), imageFiles: byId("image-file-input"),
+    imageMaterials: byId("image-materials-list"),
     chooseLegacy: byId("choose-legacy"), legacyFiles: byId("legacy-file-input"),
     descriptionCount: byId("description-count"), descriptionLimitNote: byId("description-limit-note"),
     demoNotice: byId("demo-notice"), fullUnderstanding: byId("full-understanding-grid"),
@@ -1003,8 +1002,6 @@ function startIntakePage() {
     ui.organize.disabled = blockedForSubmission || !inputReady();
     ui.choose.disabled = blocked;
     ui.chooseLegacy.disabled = blocked;
-    ui.chooseImages.disabled = blocked;
-    ui.imageDrop.setAttribute("aria-disabled", String(blocked));
     ui.description.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
     ui.focus.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
     ui.confirm.disabled = blockedForSubmission || correctionDirty || contextEdit?.dirty || (questionDirty && !intakeApi) || uploadQueue.length > 0 ||
@@ -1410,7 +1407,7 @@ function startIntakePage() {
     const freshVoice = voiceOriginals.filter((entry) => !included.has(entry)).map((entry) => entry.text).join("\n");
     const transcript = [original, freshVoice].filter(Boolean).join("\n");
     const sources = [...new Set([...(existing?.sources || []), ...inputSources,
-      ...state.input.materials.map((material) => fileExtension(material.name)).filter((extension) => ["txt", "csv", "json"].includes(extension))])];
+      ...state.input.materials.map((material) => fileExtension(material.name)).filter((extension) => ["txt", "csv", "json", "xlsx"].includes(extension))])];
     if (!sources.length && ui.description.value.trim()) sources.push("manual");
     return {
       draft: intakeApi.createMerchantIntakeDraft({ ...(existing || {}), transcript, sources }),
@@ -1428,19 +1425,6 @@ function startIntakePage() {
       if (contextDraft) contextOrigin = context();
     }
     const origin = context(), local = makeLocalReviewDraft();
-    const materials = [], skipped = [];
-    for (const material of state.input.materials) {
-      if (!["txt", "csv", "json"].includes(fileExtension(material.name))) continue;
-      const blob = await api.getMaterialBlob(material.id);
-      if (!blob) { skipped.push(material.name); continue; }
-      try {
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
-        if (text.length > 50000 || !["text/plain", "text/csv", "application/json"].includes(material.mime)) {
-          skipped.push(material.name); continue;
-        }
-        materials.push({ materialId: material.id, materialVersion: material.version, mime: material.mime, text });
-      } catch { skipped.push(material.name); }
-    }
     if (!sameContext(origin) || origin.inputVersion !== state.round.inputVersion) {
       throw errorWithCode("读取期间输入已变化，未采用旧整理草稿。请重新整理。", "stale_input");
     }
@@ -1450,8 +1434,8 @@ function startIntakePage() {
     try {
       result = await intakeApi.requestIntakeExtraction({
         state, transcript: local.draft.transcript, description: ui.description.value,
-        sources: local.draft.sources, draft: local.draft, sourceBindings: local.sourceBindings, materials
-      }, { signal: extractionController.signal, consentToExternalProcessing: false });
+        sources: local.draft.sources, draft: local.draft, sourceBindings: local.sourceBindings
+      }, { signal: extractionController.signal });
     } finally { extractionController = null; }
     if (!sameContext(origin) || origin.inputVersion !== state.round.inputVersion ||
       result.requestContext?.sessionId !== origin.sessionId || result.requestContext?.roundId !== origin.roundId ||
@@ -1459,9 +1443,12 @@ function startIntakePage() {
       throw errorWithCode("整理返回时输入已变化，未采用旧结果；原文和草稿仍保留。", "stale_input");
     }
     if (result.draft) { contextDraft = result.draft; contextBindings = result.sourceBindings; }
-    reviewMessage = result.ok ? "结构化内容已返回，请逐项核对；确认不等于外部核验。" :
-      "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
-    if (skipped.length) reviewMessage += " 部分材料未进入提取请求，原件与已有解析仍保留。";
+    reviewMessage = result.ok
+      ? result.mode === "api"
+        ? "已用你配置的 AI 整理出结构化内容（描述与原文已发送到你设置的地址），请逐项核对；确认不等于外部核验。"
+        : "已在本机根据材料整理出结构化内容，未发送到外部服务；请逐项核对，确认不等于外部核验。"
+      : "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
+    if (result.notes?.length) reviewMessage += " " + result.notes.join(" ");
     organizationVisible = true; readyToAnalyze = false;
     setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
       "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");
@@ -1908,7 +1895,7 @@ function startIntakePage() {
     ui.memorySource.textContent = (includesDemo ? "来源含显式载入的合成演示资料。" :
       state.savedAt ? "来源：当前本机项目已保存资料。" : "尚未保存经营资料。") +
       (savedIntake?.status === "stale" ? "关联输入已变化，需要重新核对。" : "") +
-      "本机展示不代表 MoneyAI 已写入或读回。";
+      "本机展示不代表已写入或从外部服务读回。";
   }
 
   function renderFacts() {
@@ -2137,7 +2124,7 @@ function startIntakePage() {
         throw new Error("还没有有效描述或已接收材料，请核对接收提示。");
       }
       if (intakeApi) {
-        setIntakeStage("extracting", "正在核对可用的整理能力，原文仍保留。");
+        setIntakeStage("extracting", "正在整理原文与已上传材料，生成可核对的结构化草稿…");
         await prepareUnderstanding();
       } else await saveOrganization(focus);
       ui.organization.focus({ preventScroll: true });
@@ -2651,12 +2638,6 @@ function startIntakePage() {
   });
   ui.choose.addEventListener("click", () => { if (!ui.choose.disabled) ui.files.click(); });
   ui.chooseLegacy.addEventListener("click", () => { if (!ui.chooseLegacy.disabled) ui.legacyFiles.click(); });
-  ui.chooseImages.addEventListener("click", () => { if (!ui.chooseImages.disabled) ui.imageFiles.click(); });
-  ui.imageFiles.addEventListener("change", () => {
-    const files = Array.from(ui.imageFiles.files);
-    ui.imageFiles.value = "";
-    receiveFiles(files);
-  });
   ui.legacyFiles.addEventListener("change", () => {
     const files = Array.from(ui.legacyFiles.files);
     ui.legacyFiles.value = "";
@@ -2692,23 +2673,6 @@ function startIntakePage() {
     if (event.target === ui.drop && ["Enter", " "].includes(event.key) && !ui.choose.disabled) {
       event.preventDefault(); ui.files.click();
     }
-  });
-
-  for (const type of ["dragenter", "dragover"]) {
-    ui.imageDrop.addEventListener(type, (event) => {
-      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
-      event.preventDefault();
-      if (!ui.chooseImages.disabled) { event.dataTransfer.dropEffect = "copy"; ui.imageDrop.classList.add("is-dragging"); }
-    });
-  }
-  ui.imageDrop.addEventListener("dragleave", (event) => {
-    if (!ui.imageDrop.contains(event.relatedTarget)) ui.imageDrop.classList.remove("is-dragging");
-  });
-  ui.imageDrop.addEventListener("drop", (event) => {
-    if (!event.dataTransfer?.files.length) return;
-    event.preventDefault();
-    ui.imageDrop.classList.remove("is-dragging");
-    receiveFiles(Array.from(event.dataTransfer.files));
   });
 
   ui.form.addEventListener("paste", (event) => {

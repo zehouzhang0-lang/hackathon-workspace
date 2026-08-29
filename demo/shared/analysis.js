@@ -46,7 +46,7 @@ export function buildLocalAnalysis(state) {
     const id = () => 'draft_' + (++number);
     const mode = state.fixtureId ? 'demo_fixture' : 'local_limited';
     const facts = state.input.facts;
-    const limitations = ['本结果由本机规则生成，不是MoneyAI或真实模型分析。', '观察到的订单变化不能直接归因于建议。'];
+    const limitations = ['本结果由本机规则生成，不是外部 AI 或真实模型分析。', '观察到的订单变化不能直接归因于建议。'];
     const materialsPending = state.input.materials.filter((material) => material.status !== 'parsed');
     if (materialsPending.length) limitations.push('有' + materialsPending.length + '份材料尚未完成解析或核对，当前判断不代表已经读懂全部附件。');
     if (state.input.unknowns.length) limitations.push('仍有' + state.input.unknowns.length + '项重要信息未知。');
@@ -439,7 +439,7 @@ function legacyGeneric({ state, id, mode, facts, limitations }) {
   const lastFeedback = state.feedbackRecords.at(-1);
   let summary = '现有资料不足以判断唯一原因，先给出一个可以执行的核对步骤。';
   if (state.fixtureId === 'juicer_cup_v1') summary = '榨汁杯仅载入首次合成资料；先给一个可以执行的核对步骤。';
-  if (lastFeedback) summary += ' 本轮读取了已保存的本地反馈；执行与观察仍按原自述保留，不代表MoneyAI已读取历史。';
+  if (lastFeedback) summary += ' 本轮读取了已保存的本地反馈；执行与观察仍按原自述保留，不代表外部服务已读取历史。';
   const detail = availableFact('product_detail_visitors');
   const paid = availableFact('paid_orders');
   const scenario = completeScenario({ id, state, detail, comparable: false });

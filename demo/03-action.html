@@ -341,7 +341,7 @@
         <section class="review-receipt-panel" aria-label="本轮记录回执">
           <div>
             <p id="review-receipt" class="review-receipt" role="status" aria-live="polite">尚未读取本轮保存记录。</p>
-            <p id="review-capability" class="action-field-note">本机保存、本机读回、MoneyAI 写入与读回分别核对。</p>
+            <p id="review-capability" class="action-field-note">本机保存、本机读回；未写入或读回任何外部服务。</p>
           </div>
           <button id="open-record" class="button button--secondary" type="button" aria-haspopup="dialog" disabled>查看完整实验记录</button>
         </section>
@@ -381,7 +381,7 @@
               <div id="review-next-suggestion"><p>尚无候选建议，不会自动改选另一条路径。</p></div>
             </article>
           </div>
-          <div id="review-reason" class="review-reason">先重新读取已保存记录并核对来源，再显示本机判断与依据；没有调用 MoneyAI，也没有创建下一轮。</div>
+          <div id="review-reason" class="review-reason">先重新读取已保存记录并核对来源，再显示本机判断与依据；没有调用外部 AI，也没有创建下一轮。</div>
         </section>
 
         <div id="review-candidate-region" class="review-plan-grid" hidden>
@@ -418,7 +418,7 @@
 
         <section class="review-section review-memory" aria-labelledby="review-memory-title">
           <h2 id="review-memory-title">这个商家的实验记忆</h2>
-          <p class="action-field-note">仅展示当前项目的实际记录与候选状态；本机记录不代表 MoneyAI 已记住。</p>
+          <p class="action-field-note">仅展示当前项目的实际记录与候选状态；本机记录不代表任何外部服务已记住。</p>
           <div id="review-memory-list"><p class="empty-note">尚未读取实验记录。</p></div>
         </section>
       </section>

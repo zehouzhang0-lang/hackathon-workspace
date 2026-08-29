@@ -1,9 +1,9 @@
 // Pure boundary for the v0.5 intake slice. No recognition, extraction, storage or I/O.
 const VERSION = 'v0.5-intake-1';
-const SOURCES = new Set(['voice', 'paste', 'txt', 'csv', 'json', 'manual']);
-const FILE_SOURCES = new Set(['txt', 'csv', 'json']);
+const SOURCES = new Set(['voice', 'paste', 'txt', 'csv', 'json', 'xlsx', 'manual']);
+const FILE_SOURCES = new Set(['txt', 'csv', 'json', 'xlsx']);
 const STATUSES = new Set(['confirmed_fact', 'owner_hypothesis', 'unknown']);
-const TEXT_FIELDS = [
+export const TEXT_FIELDS = [
   'merchantName', 'productName', 'category', 'price', 'specifications', 'platform',
   'desiredAction', 'targetCustomerHypothesis', 'usageScenarioHypothesis',
   'purchaseReasonHypothesis', 'differentiationHypothesis', 'currentProblem'
@@ -19,7 +19,7 @@ const TOP_FIELDS = ['version', 'sources', 'transcript', ...TEXT_FIELDS, ...ARRAY
   'metrics', 'evidenceLedger', 'userCorrections'];
 const LIMITS = { transcript: 20000, text: 4000, items: 100, records: 300 };
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
-const FIELD_LABELS = {
+export const FIELD_LABELS = {
   merchantName: '商家名称', productName: '具体商品', category: '商品类目', price: '价格',
   specifications: '规格', platform: '经营平台', desiredAction: '希望改变的动作',
   targetCustomerHypothesis: '老板判断的目标人群', usageScenarioHypothesis: '老板判断的使用场景',
@@ -274,6 +274,14 @@ function checkLocator(locator, binding, field, errors) {
     if (!offset && !lines) issue(errors, field, 'TXT定位须有字符范围或行范围。');
     if (offset) positions(locator, field, errors, 'start', 'end', 0);
     if (lines) positions(locator, field, errors, 'lineStart', 'lineEnd', 1);
+  } else if (binding.source === 'xlsx') {
+    if (!keys(locator, ['type', 'sheet', 'cell'], ['type', 'sheet', 'cell'], field, errors)) return;
+    if (locator.type !== 'xlsx') issue(errors, field, 'XLSX定位类型不合法。');
+    text(locator.sheet, `${field}.sheet`, errors, false, 200);
+    text(locator.cell, `${field}.cell`, errors, false, 40);
+    if (!present(locator.sheet) || !present(locator.cell)) {
+      issue(errors, field, 'XLSX定位缺少工作表或单元格。');
+    }
   } else {
     keys(locator, ['type', 'field', 'source', 'quote'], ['type', 'field', 'source'], field, errors);
     if (locator.type !== 'intake' || locator.field !== binding.field || locator.source !== binding.source) {

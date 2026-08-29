@@ -1,5 +1,11 @@
 # 项目进度
 
+## 2026-08-29：MoneyAI 移除与用户自配置 API 接入
+
+用户明确决定：三页全部取消 MoneyAI 接入，AI 能力改为用户直接配置 API（OpenAI 兼容，底部「AI 设置」保存 base URL + key + 模型，key 只存本机后端）。取代 REQ-17 的 MoneyAI 核心通路计划，详见[接续记录](docs/development/demo/COORDINATOR_HANDOFF.md)最新节与[取代声明](docs/development/demo/MONEYAI_INTEGRATION.md)。
+
+本批改动：后端 `/api/ai/settings` + `/api/ai/chat`（未配置 409，不外发；回显不含 key）；`shared/ai.js` 新客户端；`shared/intake-extraction.js` 重写为本地优先整理——上传材料已解析指标（CSV/JSON/XLSX）带精确文件定位自动填入九组草稿，配置 API 后由 AI 补文字字段（每条必须带可核验原文引文），未命中保持未知；草稿契约支持 xlsx 来源绑定；`shared/moneyai.js` 与 `moneyai_adapter.py` 删除；三页及报告文案改为「外部 AI／本机规则」口径；上传区合并改动的悬空引用已修复。125 项 Node、16 项服务端边界测试通过。真实浏览器走查、真实 API 联调与最终视觉未验收。
+
 ## 前端替换与本机闭环（2026-08-29）
 
 用户要求把此前制作的商业第二大脑 Demo 前端替换进完整仓库。当前在本地 `codex/frontend-replacement` 分支完成三页界面迁移：侧栏/进度壳、资料与记忆双栏、并排方案、操作/复盘页签；保留路芽、原控制器、IndexedDB、Python API 与同源/外发限制，没有复制独立 Demo 的模拟状态或经营规则。

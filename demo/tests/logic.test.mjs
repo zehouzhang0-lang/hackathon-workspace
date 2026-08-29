@@ -12,7 +12,7 @@ import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput, findIntakeFieldFact } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
-import { getMoneyAIStatus, requestMoneyAIAnalysis } from '../shared/moneyai.js';
+import { getAiSettings } from '../shared/ai.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -276,7 +276,7 @@ test('shared analysis validation rejects forged funnel arithmetic and unresolved
     (a) => { a.funnel.transitions[1].conversionRate = 0.9; },
     (a) => { a.funnel.stages[1].factIds = [...a.funnel.stages[0].factIds]; },
     (a) => { a.priority.rootCauseConfirmed = true; },
-    (a) => { a.processing[0].kind = 'moneyai'; },
+    (a) => { a.processing[0].kind = 'external_ai'; },
     (a) => { a.paths[0].experiment.guardrails[0].sourceFactIds = ['missing_fact']; },
     (a) => { a.paths[0].experiment.restoreSteps = null; },
     (a) => { a.paths[0].experiment.minSampleUnit = null; },
@@ -1517,38 +1517,137 @@ test('answer saving leaves the confirmed intake intact and analysis preserves a 
   assert.equal(h.state.analysis.inputSnapshot.intake.draft.currentProblem, draft.currentProblem);
 });
 
-test('unready or unapproved extraction preserves the editable draft and never POSTs the transcript', async () => {
+const unconfiguredResponse = () => ({ ok: true, json: async () => ({ configured: false, baseUrl: null, model: null, hasKey: false }) });
+const jsonResponse = (value, ok = true) => ({ ok, status: ok ? 200 : 500, json: async () => value });
+
+function addMaterial(h, name, mime, sha256) {
+  h.send('MATERIAL_ADD', {}, { preparedMaterial: { name, mime, size: 20, sha256, file: null } });
+  return h.state.input.materials.at(-1);
+}
+function setFacts(h, facts) {
+  h.send('ORGANIZATION_SET', { roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
+    focus: null, facts, constraints: [], unknowns: [] });
+}
+function fileFact(material, key, value, options = {}) {
+  return { id: options.id ?? 'test_fact_' + key + '_' + String(value), key, value, availability: 'known',
+    unit: options.unit ?? null, subject: options.subject ?? null,
+    window: options.window ?? { start: null, end: null }, channel: null, cohort: null,
+    source: { kind: 'file_extract', materialId: material.id, materialVersion: material.version,
+      locator: options.locator ?? { type: 'csv', recordIndex: 1, lineStart: 2, lineEnd: 2, column: 'value' }, note: '' },
+    verification: 'unreviewed' };
+}
+const extractionRequest = (h, draft, description = '整理测试') =>
+  ({ state: h.state, draft, transcript: draft.transcript, description, sources: draft.sources });
+
+test('local extraction fills metrics from parsed facts with file bindings and never sends content', async () => {
   const h = harness('one_sentence_v1');
-  const draft = createMerchantIntakeDraft({ sources: ['voice'], transcript: '要保留的语音原文', productName: '用户已填的商品' });
-  const request = { state: h.state, draft, transcript: draft.transcript, description: '编辑文字', sources: draft.sources };
+  const csv = addMaterial(h, 'data.csv', 'text/csv', 'local_extract_csv');
+  const xlsx = addMaterial(h, 'export.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'local_extract_xlsx');
+  setFacts(h, [
+    fileFact(csv, 'video_views', 1234, { unit: '次', window: { start: '2026-08-01', end: '2026-08-07' } }),
+    fileFact(csv, 'paid_orders', 3, { unit: '笔', id: 'test_fact_paid', locator: { type: 'csv', recordIndex: 2, lineStart: 3, lineEnd: 3, column: 'value' } }),
+    fileFact(xlsx, 'product_clicks', 56, { unit: '次', locator: { type: 'xlsx', sheet: '作品数据', cell: 'C2' } })
+  ]);
+  const draft = createMerchantIntakeDraft({ sources: ['csv', 'xlsx'], transcript: '原话' });
   const calls = [];
-  const fetchImpl = async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({ extractionReady: false }) }; };
-  const result = await requestIntakeExtraction(request, { fetchImpl });
-  assert.equal(result.ok, false);
-  assert.equal(result.code, 'intake_unavailable');
-  assert.equal(result.sentToMoneyAI, false);
-  assert.deepEqual(result.draft, draft);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, '/api/moneyai/status');
-  assert.equal(calls[0].options.body, undefined);
-  const withoutConsent = await requestIntakeExtraction(request, { fetchImpl: async () => ({ ok: true, json: async () => ({ extractionReady: true }) }) });
-  assert.equal(withoutConsent.code, 'external_consent_required');
-  assert.equal(withoutConsent.sentToMoneyAI, false);
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), {
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return unconfiguredResponse(); } });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'local');
+  assert.equal(result.sentToExternal, false);
+  assert.equal(result.draft.metrics.videoViews, 1234);
+  assert.equal(result.draft.metrics.paidOrders, 3);
+  assert.equal(result.draft.metrics.productClicks, 56);
+  assert.equal(result.draft.metrics.windowStart, '2026-08-01');
+  assert.equal(result.draft.metrics.windowEnd, '2026-08-07');
+  const clickBinding = result.sourceBindings.find((binding) => binding.field === 'metrics.productClicks');
+  assert.equal(clickBinding.source, 'xlsx');
+  assert.equal(clickBinding.materialId, xlsx.id);
+  assert(!calls.some((call) => call.url === '/api/ai/chat'));
 });
 
-test('a lost extraction response is not called unsent, and invalid output never replaces the draft', async () => {
+test('local extraction keeps conflicting values empty and reports them instead of guessing', async () => {
   const h = harness('one_sentence_v1');
-  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '原文保持' });
-  const request = { state: h.state, draft, transcript: draft.transcript, description: '可编辑内容', sources: draft.sources };
-  const status = { ok: true, json: async () => ({ extractionReady: true }) };
-  const lost = await requestIntakeExtraction(request, { consentToExternalProcessing: true,
-    fetchImpl: async (url) => { if (url.endsWith('/status')) return status; throw new Error('lost-response'); } });
-  assert.equal(lost.sentToMoneyAI, null);
-  assert.deepEqual(lost.draft, draft);
-  const invalid = await requestIntakeExtraction(request, { consentToExternalProcessing: true,
-    fetchImpl: async (url) => url.endsWith('/status') ? status : { ok: true, json: async () => ({ ok: true, draft: { ...draft, price: 9 }, sentToMoneyAI: true, mode: 'moneyai' }) } });
-  assert.equal(invalid.code, 'invalid_response');
-  assert.deepEqual(invalid.draft, draft);
+  const csv = addMaterial(h, 'conflict.csv', 'text/csv', 'local_extract_conflict');
+  setFacts(h, [
+    fileFact(csv, 'video_views', 100, { unit: '次', id: 'test_fact_a' }),
+    fileFact(csv, 'video_views', 200, { unit: '次', id: 'test_fact_b', locator: { type: 'csv', recordIndex: 2, lineStart: 3, lineEnd: 3, column: 'value' } })
+  ]);
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '原话' });
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl: async () => unconfiguredResponse() });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'local');
+  assert.equal(result.draft.metrics.videoViews, null);
+  assert(result.notes.some((note) => note.includes('多个不同取值')));
+});
+
+test('configured API fills empty text fields with verified quotes and reports the external send', async () => {
+  const h = harness('one_sentence_v1');
+  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '我家卖便携榨汁杯，最近视频有播放但不出单。' });
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com', model: 'test-model', hasKey: true });
+    return jsonResponse({ ok: true, content: JSON.stringify({ fields: {
+      productName: { value: '便携榨汁杯', quote: '便携榨汁杯' },
+      currentProblem: { value: '编造的问题', quote: '这段引文在原文中不存在' } } }) });
+  };
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'api');
+  assert.equal(result.sentToExternal, true);
+  assert.equal(result.draft.productName, '便携榨汁杯');
+  assert.equal(result.draft.currentProblem, null); // unverifiable quote dropped
+  const chat = calls.find((call) => call.url === '/api/ai/chat');
+  assert(chat, 'expected a chat call');
+  const body = JSON.parse(chat.options.body);
+  assert(body.messages.some((message) => message.content.includes('便携榨汁杯')));
+  const binding = result.sourceBindings.find((entry) => entry.field === 'productName');
+  assert.equal(binding.source, 'manual');
+  assert.equal(binding.locator.quote, '便携榨汁杯');
+});
+
+test('a failed AI reply never replaces the local extraction result', async () => {
+  const h = harness('one_sentence_v1');
+  const csv = addMaterial(h, 'fallback.csv', 'text/csv', 'local_extract_fallback');
+  setFacts(h, [fileFact(csv, 'paid_orders', 2, { unit: '笔' })]);
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '原话' });
+  const fetchImpl = async (url) => url === '/api/ai/settings'
+    ? jsonResponse({ configured: true, baseUrl: 'https://api.example.com', model: 'm', hasKey: true })
+    : { ok: false, status: 409, json: async () => ({ ok: false, code: 'ai_not_configured', message: '尚未配置 AI。' }) };
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'local');
+  assert.equal(result.sentToExternal, false);
+  assert.equal(result.draft.metrics.paidOrders, 2);
+  assert(result.notes.some((note) => note.includes('AI')));
+});
+
+test('ai client defaults to globalThis.fetch when no fetchImpl is passed', async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => jsonResponse({ configured: false, baseUrl: null, model: null, hasKey: false });
+    const result = await getAiSettings();
+    assert.equal(result.ok, true);
+    assert.equal(result.configured, false);
+  } finally { globalThis.fetch = original; }
+});
+
+test('ai settings status client exposes only validated fields and never a key', async () => {
+  for (const value of [null, [], {}, { configured: 'yes' }, { configured: true },
+    { configured: true, baseUrl: 'x', model: 1 }, { configured: true, baseUrl: 'x', model: 'm', apiKey: 'SECRET' }]) {
+    const result = await getAiSettings({ fetchImpl: async () => jsonResponse(value) });
+    if (value && value.configured === true && value.model === 'm' && value.apiKey) {
+      // key material must not be forwarded to the client surface
+      assert.equal(result.ok, true);
+      assert.equal(result.apiKey, undefined);
+      continue;
+    }
+    assert.equal(result.ok, false);
+  }
+  const result = await getAiSettings({ fetchImpl: async () => jsonResponse({ configured: true, baseUrl: 'https://api.example.com', model: 'm', hasKey: true }) });
+  assert.equal(result.ok, true);
+  assert.equal(result.model, 'm');
 });
 
 test('intake accepts a contiguous unsaved correction chain from the persisted current value', () => {
@@ -1655,141 +1754,22 @@ test('intake and fact corrections invalidate transitive derived values while pre
   }
 });
 
-test('extraction response file sources must be in this request, not merely in the saved session', async () => {
+test('local parser facts must match the current material version before they can fill the draft', async () => {
   const h = harness('one_sentence_v1');
-  for (const name of ['a.json', 'b.json']) h.send('MATERIAL_ADD', {}, { preparedMaterial: {
-    name, mime: 'application/json', size: 20, sha256: 'unique_' + name, file: null } });
-  const [a, b] = h.state.input.materials;
-  const draft = createMerchantIntakeDraft({ sources: ['json'] });
-  const request = { state: h.state, draft, transcript: '', description: '只整理A', sources: draft.sources,
-    materials: [{ materialId: a.id, materialVersion: a.version, mime: a.mime, text: '{"metrics":[]}' }] };
-  const answer = (material) => ({ ok: true, mode: 'moneyai', sentToMoneyAI: true,
-    roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
-    draft: { ...draft, metrics: { ...draft.metrics, paidOrders: 0 } },
-    sourceBindings: [{ field: 'metrics.paidOrders', source: 'json', materialId: material.id,
-      materialVersion: material.version, locator: { type: 'json', pointer: '/metrics/0/value' } }] });
-  const simulate = (material) => async (url) => ({ ok: true, json: async () =>
-    url.endsWith('/status') ? { extractionReady: true } : answer(material) });
-  const rejected = await requestIntakeExtraction(request, { consentToExternalProcessing: true, fetchImpl: simulate(b) });
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.code, 'invalid_response');
-  assert.deepEqual(rejected.draft, draft);
-  assert.equal(rejected.sentToMoneyAI, true);
-  const accepted = await requestIntakeExtraction(request, { consentToExternalProcessing: true, fetchImpl: simulate(a) });
-  assert.equal(accepted.ok, true);
-  assert.equal(accepted.draft.metrics.paidOrders, 0);
-});
-
-function syntheticMoneyAIStatus(overrides = {}) {
-  return { provider: 'moneyai', configured: true, serviceReachable: true, analysisReady: true,
-    historyWriteReady: false, historyReadVerified: false, extractionReady: false,
-    reason: '合成状态，仅用于客户端边界测试', ...overrides };
-}
-const jsonResponse = (value, ok = true) => ({ ok, json: async () => value });
-
-test('MoneyAI status rejects malformed flags and exposes only validated status fields', async () => {
-  for (const value of [null, [], {}, syntheticMoneyAIStatus({ serviceReachable: 'false' }),
-    syntheticMoneyAIStatus({ analysisReady: 1 }), syntheticMoneyAIStatus({ configured: false })]) {
-    const result = await getMoneyAIStatus({ fetchImpl: async () => jsonResponse(value) });
-    assert.equal(result.ok, false);
-    assert.equal(result.status, undefined);
-  }
-  const expected = syntheticMoneyAIStatus({ analysisReady: false });
-  const result = await getMoneyAIStatus({ fetchImpl: async (_url, options) => {
-    assert.equal(options.redirect, 'error');
-    return jsonResponse({ ...expected, unrelatedPersonalData: 'must not be forwarded' });
-  } });
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.status, expected);
-});
-
-test('MoneyAI analysis needs explicit send consent and readiness without posting a draft', async () => {
-  let calls = [];
-  const fetchImpl = async (url, options) => { calls.push({ url, options });
-    return jsonResponse(syntheticMoneyAIStatus({ analysisReady: false })); };
-  const request = { summary: '合成且尚未同意发送的摘要' };
-  const denied = await requestMoneyAIAnalysis(request, { fetchImpl });
-  assert.equal(denied.code, 'external_consent_required');
-  assert.equal(denied.sentToMoneyAI, false);
-  assert.equal(calls.length, 0);
-  const unready = await requestMoneyAIAnalysis(request, { fetchImpl, consentToExternalProcessing: true });
-  assert.equal(unready.code, 'analysis_unavailable');
-  assert.equal(unready.sentToMoneyAI, false);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].options.body, undefined);
-});
-
-test('MoneyAI transport rejects implicit conversions and oversized JSON without reading getters', async () => {
-  let reads = 0, calls = 0;
-  const getter = Object.defineProperty({}, 'summary', { enumerable: true, get() { reads++; return 'private'; } });
-  const cyclic = {}; cyclic.self = cyclic;
-  for (const request of [getter, cyclic, { value: NaN }, { value: undefined }, { value: 1n },
-    { when: new Date() }, { value: new Blob(['synthetic']) }, { sparse: [, 1] },
-    { toJSON() { reads++; return {}; } }, { summary: '字'.repeat(90000) }]) {
-    const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
-      fetchImpl: async () => { calls++; throw new Error('must not fetch'); } });
-    assert.equal(result.code, 'invalid_payload');
-    assert.equal(result.sentToMoneyAI, false);
-  }
-  assert.equal(reads, 0);
-  assert.equal(calls, 0);
-});
-
-test('MoneyAI analysis freezes request bytes before capability lookup and preserves a no-send receipt', async () => {
-  const request = { roundId: 'synthetic_round', inputVersion: 1, summary: '确认的合成摘要' };
-  const expected = JSON.stringify(request);
-  let posted;
-  const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
-    fetchImpl: async (url, options) => {
-      assert.equal(options.redirect, 'error');
-      if (url.endsWith('/status')) {
-        request.inputVersion = 2; request.summary = '晚到修改不得混入旧请求';
-        return jsonResponse(syntheticMoneyAIStatus());
-      }
-      posted = options.body;
-      return jsonResponse({ ok: false, code: 'moneyai_project_session_required', sentToMoneyAI: false }, false);
-    } });
-  assert.equal(posted, expected);
+  const csv = addMaterial(h, 'stale.csv', 'text/csv', 'local_extract_stale');
+  setFacts(h, [fileFact(csv, 'video_views', 9, { unit: '次', id: 'test_fact_stale' })]);
+  // Simulate the parser fact pointing at a superseded material version.
+  const staleFact = { ...h.state.input.facts[0],
+    source: { ...h.state.input.facts[0].source, materialVersion: csv.version + 1 } };
+  setFacts(h, [staleFact]);
+  const draft = createMerchantIntakeDraft({ sources: ['csv'], transcript: '原话' });
+  const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl: async () => unconfiguredResponse() });
   assert.equal(result.ok, false);
-  assert.equal(result.sentToMoneyAI, false);
+  assert.equal(result.code, 'invalid_intake');
+  assert.equal(result.editable, true);
+  assert.equal(result.draft.metrics.videoViews, 9);
+  assert.equal(result.sentToExternal, false);
 });
-
-test('MoneyAI HTTP failure or unvalidated success cannot become a usable analysis', async () => {
-  for (const [reply, code, sent] of [
-    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }, false), 'analysis_failed', true],
-    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }), 'analysis_validation_unavailable', true],
-    [() => { throw new Error('lost response'); }, 'backend_unavailable', null],
-    [() => ({ ok: true, json: async () => { throw new Error('broken JSON'); } }), 'backend_unavailable', null]
-  ]) {
-    const result = await requestMoneyAIAnalysis({ synthetic: true }, { consentToExternalProcessing: true,
-      fetchImpl: async (url) => url.endsWith('/status') ? jsonResponse(syntheticMoneyAIStatus()) : reply() });
-    assert.equal(result.ok, false);
-    assert.equal(result.code, code);
-    assert.equal(result.sentToMoneyAI, sent);
-    assert.equal(result.analysis, undefined);
-  }
-});
-
-test('MoneyAI cancellation and timeout distinguish never posted from an uncertain send', async () => {
-  const stopped = new AbortController(); stopped.abort();
-  const cancelled = await requestMoneyAIAnalysis({ synthetic: true }, { signal: stopped.signal,
-    consentToExternalProcessing: true, fetchImpl: async () => { throw new Error('must not fetch'); } });
-  assert.equal(cancelled.code, 'cancelled');
-  assert.equal(cancelled.sentToMoneyAI, false);
-  for (const waitAt of ['status', 'analysis']) {
-    const result = await requestMoneyAIAnalysis({ synthetic: true }, { timeoutMs: 5, consentToExternalProcessing: true,
-      fetchImpl: async (url, options) => {
-        if (!url.endsWith('/' + waitAt)) return jsonResponse(syntheticMoneyAIStatus());
-        return new Promise((_resolve, reject) => {
-          if (options.signal.aborted) reject(new Error('aborted'));
-          else options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-        });
-      } });
-    assert.equal(result.code, 'timeout');
-    assert.equal(result.sentToMoneyAI, waitAt === 'status' ? false : null);
-  }
-});
-
 
 test('PRD V1 seed keeps four sourced product facts and the target audience as a hypothesis', () => {
   const h = harness('juicer_cup_v1');
@@ -2382,7 +2362,7 @@ test('P3 conclusion presentation follows shared decisions and never infers succe
   const presentation = describeExperimentReview(review);
   assert.ok(presentation.title.length > 0);
   assert.ok(presentation.treatment.length > 0);
-  assert.match(presentation.source, /未调用 MoneyAI/);
+  assert.match(presentation.source, /未调用外部 AI/);
   assert.throws(() => describeExperimentReview(null));
 });
 

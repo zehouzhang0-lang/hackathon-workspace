@@ -1,5 +1,13 @@
 # 统筹接续记录
 
+## 2026-08-29 用户决定：三页取消 MoneyAI，改为用户自配置 API
+
+用户当轮明确要求：三页全部取消 MoneyAI 接入；AI 能力改为「用户直接配置 API」的方式，让 AI 直接进行数据处理和结构化内容。本决定取代 REQ-17 的 MoneyAI 核心工作流定位及[集成记录](MONEYAI_INTEGRATION.md)中的接通计划，未冲突的隐私与外发授权边界继续有效。
+
+已落地（本批统筹实施，工作区未提交）：后端删除 `moneyai_adapter.py` 与 `/api/moneyai/*`、`/api/intake/extract`，新增 `GET/POST /api/ai/settings`（key 存 `server/ai-settings.json`，不回显、已入 .gitignore）与 `POST /api/ai/chat`（OpenAI 兼容，未配置返回 409，不发任何内容）；共享层新增 `demo/shared/ai.js`，重写 `demo/shared/intake-extraction.js` 为两层本地优先整理（本机已解析指标带文件定位填入 + 已配置 API 补文字字段、逐条引文核验），草稿契约增加 `xlsx` 文件来源；`demo/shared/moneyai.js` 删除；三页 MoneyAI 文案改为「外部 AI／本机规则」口径；底部新增「AI 设置」对话框。第一页今天 10:31-11:02 的合并上传区改动由首页任务并行收尾（悬空引用已清除）。
+
+验证：`node --test demo/tests/logic.test.mjs demo/tests/table-parse.test.mjs` 125/125 通过；`python -m unittest discover -s server` 16/16 通过；`verify_demo_content.py` 与 `git diff --check` 通过。浏览器实机走查与真实 API 联调仍待验收；第二页分析仍为本机规则，未接外部模型。
+
 ## 当前覆盖：REQ-30 四图功能已获准实施
 
 现任统筹及唯一公共／Git归属不变。用户最新明确要求所有页面Agent严格按四张草稿的对应功能开发，详见[功能锁定与实际派发状态](WIREFRAME_FUNCTION_LOCK.md)。这是新的实施授权，不再停留于前次首页定点修复或待讨论布局；仅四图功能获准，不自动接受此前会议全文。

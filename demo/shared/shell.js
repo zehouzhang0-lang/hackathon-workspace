@@ -1,6 +1,6 @@
 import { dispatch, loadSession, subscribeSession } from './state.js';
 import { navigateTo, resolveDrafts } from './navigation.js';
-import { getMoneyAIStatus } from './moneyai.js';
+import { getAiSettings, saveAiSettings, requestAiChat } from './ai.js';
 import { workspaceFeedbackSource, workspaceMemory, workspaceRounds } from './workspace-view.js';
 
 const PAGES = [
@@ -159,7 +159,7 @@ export function mountShell(pageId) {
       unknowns.append(list); dialogBody.append(unknowns);
     }
     if (memory.stale) dialogBody.append(el('p', '资料已有变更，当前理解需要回到资料页重新核对。', 'status'));
-    dialogBody.append(el('p', (memory.synthetic ? '含合成案例资料。' : '') + '这里是本机已保存资料的只读汇总；商家自述和假设不等于平台核验，不代表 MoneyAI 已建立跨轮记忆。', 'workspace-dialog-note'));
+    dialogBody.append(el('p', (memory.synthetic ? '含合成案例资料。' : '') + '这里是本机已保存资料的只读汇总；商家自述和假设不等于平台核验，不代表任何外部服务已建立跨轮记忆。', 'workspace-dialog-note'));
     dialogBody.append(button('查看活动档案 →', 'button button--secondary', () => openWorkspace('archive')));
   }
   function archiveContent(state) {
@@ -196,7 +196,7 @@ export function mountShell(pageId) {
       }
       details.append(body); card.append(details); list.append(card);
     }
-    dialogBody.append(list, el('p', '原记录保留各自的资料、方案与稿件版本。选择、取用、执行与效果分别记录；本机档案不等于 MoneyAI 历史。', 'workspace-dialog-note'));
+    dialogBody.append(list, el('p', '原记录保留各自的资料、方案与稿件版本。选择、取用、执行与效果分别记录；本机档案只保存在当前浏览器。', 'workspace-dialog-note'));
   }
   function guideContent() {
     const steps = el('ol', undefined, 'workspace-guide-list');
@@ -225,7 +225,7 @@ export function mountShell(pageId) {
       } finally { load.disabled = false; }
     });
     controls.append(select, load); dialogBody.append(controls);
-    dialogBody.append(el('p', '示例会在你确认后替换当前会话。当前为本地规则演示，MoneyAI 的项目分析与历史通路尚未接通；不会自动外发材料。', 'workspace-dialog-note'));
+    dialogBody.append(el('p', '示例会在你确认后替换当前会话。当前为本地规则演示；AI 整理可在底部「AI 设置」配置你自己的 API 后使用，未配置前不会外发任何材料。', 'workspace-dialog-note'));
     const reset = button('清空本次演示', 'button button--quiet workspace-reset', async () => {
       if (!window.confirm('清空本会话的资料、原件与历史？已导出的文件不能撤回。')) return;
       if (!(await resolveDrafts({ notify: show }))) return;
@@ -257,15 +257,98 @@ export function mountShell(pageId) {
   }
 
   const bar = el('div', undefined, 'shared-footer');
-  const provenance = el('p', '本地规则演示 · 项目分析与历史通路尚未接通');
+  const provenance = el('p', '本地规则演示 · 资料与记录保存在当前浏览器');
   const saved = el('span', '正在读取本机记录…');
-  bar.append(provenance, saved); footer.append(bar);
-  getMoneyAIStatus().then((result) => {
-    provenance.textContent = result.ok && result.status.serviceReachable
-      ? '本地规则演示 · MoneyAI 服务已响应，项目分析与历史通路尚未接通'
-      : '本地规则演示 · 资料与记录保存在当前浏览器，项目分析通路尚未接通';
-    window.dispatchEvent(new CustomEvent('demo:moneyai-status', { detail: result }));
-  });
+  const aiSettingsButton = el('span');
+  aiSettingsButton.append(button('AI 设置', 'shared-footer-link', () => openAiSettings()));
+  bar.append(provenance, saved, aiSettingsButton); footer.append(bar);
+
+  // 「AI 设置」dialog: the only external path is the API the user saves here.
+  // The key stays in the local backend (server/ai-settings.json), never in the browser.
+  const aiDialog = el('dialog', undefined, 'workspace-dialog');
+  aiDialog.setAttribute('aria-labelledby', 'ai-settings-title');
+  const aiHeader = el('div', undefined, 'workspace-dialog-header');
+  const aiHeading = el('div');
+  const aiTitle = el('h2', 'AI 设置'); aiTitle.id = 'ai-settings-title';
+  const aiSubtitle = el('p', '配置你自己的 OpenAI 兼容 API 后，「整理」会把原文发送到你设置的地址，由 AI 辅助提取结构化内容；未配置时不外发任何内容。');
+  aiHeading.append(aiTitle, aiSubtitle);
+  const aiClose = button('', 'button button--quiet workspace-dialog-close', () => aiDialog.close(), 'close');
+  aiClose.setAttribute('aria-label', '关闭窗口');
+  aiHeader.append(aiHeading, aiClose);
+  const aiBody = el('div', undefined, 'workspace-dialog-body');
+  aiDialog.append(aiHeader, aiBody); footer.append(aiDialog);
+
+  function aiField(labelText, input) {
+    const wrap = el('label', undefined, 'ai-settings-field');
+    wrap.append(el('span', labelText), input);
+    return wrap;
+  }
+  function aiStatus(text, isError) {
+    let node = aiBody.querySelector('.workspace-dialog-status');
+    if (!node) { node = el('p', undefined, 'workspace-dialog-status status'); node.setAttribute('role', 'status'); aiBody.append(node); }
+    node.textContent = text;
+    node.classList.toggle('status--error', !!isError);
+  }
+  async function openAiSettings() {
+    aiBody.replaceChildren();
+    const settings = await getAiSettings();
+    const baseUrl = el('input'); baseUrl.type = 'url'; baseUrl.setAttribute('aria-label', 'API 地址'); baseUrl.className = 'field';
+    baseUrl.placeholder = 'https://api.example.com/v1';
+    const apiKey = el('input'); apiKey.type = 'password'; apiKey.setAttribute('aria-label', 'API Key'); apiKey.className = 'field';
+    apiKey.autocomplete = 'off'; apiKey.placeholder = 'sk-…';
+    const model = el('input'); model.type = 'text'; model.setAttribute('aria-label', '模型名'); model.className = 'field';
+    model.placeholder = '例如 glm-4 / deepseek-chat';
+    if (settings.ok && settings.configured) {
+      baseUrl.value = settings.baseUrl || '';
+      model.value = settings.model || '';
+      if (settings.hasKey) apiKey.placeholder = '已保存在本机；重新输入可更换';
+    }
+    const actions = el('div', undefined, 'shared-fixtures');
+    const save = button('保存', 'button', async () => {
+      save.disabled = true;
+      try {
+        const payload = { baseUrl: baseUrl.value.trim(), model: model.value.trim() };
+        if (apiKey.value) payload.apiKey = apiKey.value;
+        const result = await saveAiSettings(payload);
+        if (!result.ok) { aiStatus(result.message || '保存失败，请核对填写内容。', true); return; }
+        apiKey.value = '';
+        if (result.hasKey) apiKey.placeholder = '已保存在本机；重新输入可更换';
+        aiStatus('已保存。');
+        await refreshAiProvenance();
+      } finally { save.disabled = false; }
+    });
+    const test = button('测试连接', 'button button--quiet', async () => {
+      test.disabled = true;
+      try {
+        const result = await requestAiChat({ messages: [{ role: 'user', content: '只回复两个字：正常' }], maxTokens: 512 });
+        aiStatus(result.ok ? '连接成功，模型已回复。' : (result.message || '连接失败。'), !result.ok);
+      } finally { test.disabled = false; }
+    });
+    const clear = button('清除配置', 'button button--quiet', async () => {
+      if (!window.confirm('清除已保存的 AI 配置？之后不会向任何外部服务发送内容。')) return;
+      const result = await saveAiSettings({ clear: true });
+      if (result.ok) {
+        baseUrl.value = ''; apiKey.value = ''; model.value = '';
+        apiKey.placeholder = 'sk-…';
+        aiStatus('已清除。');
+        await refreshAiProvenance();
+      } else aiStatus(result.message || '清除失败。', true);
+    });
+    actions.append(save, test, clear);
+    aiBody.append(aiField('API 地址（OpenAI 兼容，/chat/completions）', baseUrl),
+      aiField('API Key（只保存在本机后端，不会进入浏览器）', apiKey),
+      aiField('模型名', model), actions,
+      el('p', '发送范围：第一页「整理」时的描述与转写原文；每条提取值都必须带原文引文，你可以逐项核对。', 'workspace-dialog-note'));
+    if (!(settings.ok && settings.configured)) aiStatus('尚未配置；当前为纯本地演示，不会外发任何内容。');
+    aiDialog.showModal();
+  }
+  async function refreshAiProvenance() {
+    const result = await getAiSettings();
+    provenance.textContent = result.ok && result.configured
+      ? `AI 已配置（${result.model}）· 原文只发送到你设置的地址 · 资料与记录保存在当前浏览器`
+      : '本地规则演示 · 可在「AI 设置」配置你自己的 API · 资料与记录保存在当前浏览器';
+  }
+  refreshAiProvenance();
   function renderSave(result) {
     if (!result.ok) { saved.textContent = '本地记录读取失败'; show(result.message); return; }
     const state = result.state;

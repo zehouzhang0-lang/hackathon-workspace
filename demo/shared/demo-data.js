@@ -29,9 +29,9 @@ export function buildDemoAnalysis(state) {
       && routing.stage === 'click_cart' && product.capacity && product.charging && product.shipping && product.cleaning;
     const review = latestAnalysisReview(state);
     const reviewPolicy = analysisReviewPolicy(state);
-    const limitations = ['本结果由本地规则生成，不是MoneyAI或真实模型分析。', '观察到的订单变化不能直接归因于建议。'];
+    const limitations = ['本结果由本地规则生成，不是外部 AI 或真实模型分析。', '观察到的订单变化不能直接归因于建议。'];
     if (!comparable && funnel.status !== 'comparable') limitations.push('数据缺少可比口径，不能计算成交漏斗或确定根因。');
-    if (state.fixtureId === 'juicer_cup_v1') limitations.push('榨汁杯为显式合成首次资料；A/B仅为本机待验证方案，未调用专家Skill、真实模型或MoneyAI。');
+    if (state.fixtureId === 'juicer_cup_v1') limitations.push('榨汁杯为显式合成首次资料；A/B仅为本机待验证方案，未调用专家Skill、真实模型或外部 AI。');
     if (state.input.materials.some((material) => material.status !== 'parsed')) limitations.push('有材料尚未提取或核对，当前路径不能代表已经读懂全部附件。');
     if (state.input.unknowns.length) limitations.push('仍有' + state.input.unknowns.length + '项重要信息未知。');
     const condition = (text, factIds = [], assumptionIds = []) => ({ text, sourceFactIds: factIds, assumptionIds });
@@ -161,7 +161,7 @@ export function buildDemoAnalysis(state) {
           summary: '当前合成资料已确认容量、USB-C、全国包邮与清洗以说明书为准；未做平台或第三方核验。', calculation: null },
         { id: id(), kind: 'inference', factIds: ownerHypothesis ? [ownerHypothesis.id] : [],
           sourceIds: ownerHypothesis ? ['fact:' + ownerHypothesis.id] : ['input:focus'],
-          summary: hypothesis + ' 本机规则未调用专家Skill或MoneyAI。', calculation: null }
+          summary: hypothesis + ' 本机规则未调用专家Skill或外部 AI。', calculation: null }
       ];
       result.counterEvidence = [{ id: id(), kind: 'inference', factIds: [], sourceIds: ['input:description'],
         summary: '价格、竞争力与流量质量仍可能影响加购；目标人群是假设，真实顾客问题及频次尚待核对。', calculation: null }];
@@ -225,7 +225,7 @@ export function buildDemoAnalysis(state) {
     if (review) summary += review.stance === 'agree' ? ' 商家认可当前感受，不代表根因已被证实。'
       : review.stance === 'uncertain' ? ' 商家表示不确定，事实和假设保持分开。'
         : review.stance === 'disagree' ? ' 已按异议撤回原假设，重新判断仍需要资料。' : ' 已排除明确做不了的方案，未记录为执行失败。';
-    if (lastFeedback) summary += ' 本轮读取了已保存的本地反馈；执行与观察仍按原自述保留，不代表MoneyAI已读取历史。';
+    if (lastFeedback) summary += ' 本轮读取了已保存的本地反馈；执行与观察仍按原自述保留，不代表外部服务已读取历史。';
     return { ok: true, analysis: { id: null, savedAt: null, roundId: state.round.id, inputVersion: state.round.inputVersion,
       status: paths.length && (completeDemo || priorityActive) ? 'ready' : 'limited', mode, summary, paths, limitations,
       prdVersion: '1.0', analysisSource: 'local_fallback', routing, dataQuality,
@@ -248,7 +248,7 @@ export function buildDemoArtifact(state) {
   if (!path || state.selection.analysisId !== analysis.id || state.selection.inputVersion !== state.round.inputVersion
     || analysis.roundId !== state.round.id || analysis.inputVersion !== state.round.inputVersion) return errorResult('stale_input', '所选路径已更新。');
   const sourceFactIds = [...new Set(path.evidenceRefs.flatMap((entry) => entry.factIds))];
-  const limitations = ['以下为本地参考稿，不是MoneyAI生成结果；发布前请核对实际规格与履约。'];
+  const limitations = ['以下为本地参考稿，不是外部 AI 生成结果；发布前请核对实际规格与履约。'];
   const sourceInput = analysis.inputSnapshot ?? state.input;
   const value = (key) => availableFact({ input: sourceInput }, key)?.value;
   function artifact(kind, title, body, placement, options = {}) {
@@ -298,7 +298,7 @@ export function buildDemoArtifact(state) {
     ];
     const risks = ['容量350ml不等于一次实际处理量；打冰能力、续航次数和未提供售后权益不能承诺。',
       '人群与使用场景仍是假设；没有视频实测数据不能伪造测试成功。',
-      '这是本机执行参考，不是MoneyAI生成、发布或已执行记录。'];
+      '这是本机执行参考，不是外部 AI 生成、发布或已执行记录。'];
     if (fullProductFacts) {
       const body = memoryFaq ? [
         name + '｜下单前先回答真实问题', '',

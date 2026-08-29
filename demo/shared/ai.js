@@ -97,3 +97,86 @@ export async function requestAiChat({ messages, temperature, maxTokens = 2048 },
   }
   return { ok: true, content: result.payload.content };
 }
+
+const INSIGHT_INSTRUCTION = '只输出一个JSON对象，不要输出其他文字或代码块外的内容。'
+  + 'JSON精确字段为：mode固定"real_model"；status只能是"ready"、"limited"或"insufficient"；'
+  + 'summary为不超过2000字的总结；limitations为最多20条、每条不超过500字的字符串数组；'
+  + 'paths为1至2条，每条精确只有title（不超过160字）与action（不超过1200字）两个非空字符串。'
+  + '只依据摘要中的焦点、事实、限制与未知；不得把未知补成0或事实；不得声称根因已确认；'
+  + '不得编造缺失数据、概率、收入或效果；总结必须说明结论仍需商家核对。';
+
+const clampText = (value, limit) => typeof value === 'string' && value.trim() ? value.trim().slice(0, limit) : null;
+
+/** 解析模型返回的小型提议JSON；不符合结构时返回null，由调用方降级为原文展示。 */
+function parseProposalText(content) {
+  const text = String(content ?? '').trim();
+  const start = text.indexOf('{'), end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  let parsed;
+  try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  if (!record(parsed) || parsed.mode !== 'real_model'
+    || !['ready', 'limited', 'insufficient'].includes(parsed.status)
+    || !clampText(parsed.summary, 2000)
+    || !Array.isArray(parsed.limitations) || !parsed.limitations.length
+    || !Array.isArray(parsed.paths) || !parsed.paths.length) return null;
+  const limitations = parsed.limitations.map((item) => clampText(item, 500)).filter(Boolean).slice(0, 20);
+  const paths = parsed.paths.map((path) => record(path) ? {
+    title: clampText(path.title, 160), action: clampText(path.action, 1200),
+  } : null).filter(Boolean).slice(0, 2);
+  if (!limitations.length || !paths.length || paths.some((path) => !path.title || !path.action)) return null;
+  return {
+    mode: 'real_model', status: parsed.status,
+    summary: clampText(parsed.summary, 2000), limitations, paths,
+  };
+}
+
+/** 直连AI解读（参考块）：把已确认摘要发给「AI 设置」配置的模型。
+ * 结果仅作参考，不代表MoneyAI通路，不写入保存记录；输出必须由人工核对。
+ * 返回{ok:true, proposal|raw}；未配置API时failed('ai_not_configured')且不发送。 */
+export async function requestAiInsight(summary, options = {}) {
+  const settings = await getAiSettings(options);
+  if (!settings.ok) return settings;
+  if (!settings.configured) {
+    return failed('ai_not_configured', '尚未在「AI 设置」配置 API；未发送任何内容。');
+  }
+  const result = await requestAiChat({
+    maxTokens: 2048,
+    messages: [
+      { role: 'system', content: '你是路芽项目的受限分析助手。禁止调用工具、文件、网络或个人历史；只使用用户提供的已确认摘要。'
+        + '不得把未知补成0或事实；不得声称根因已确认；不得编造缺失数据、概率、收入或效果。' + INSIGHT_INSTRUCTION },
+      { role: 'user', content: '已确认摘要（JSON）：' + JSON.stringify(summary) },
+    ],
+  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  if (!result.ok) return result;
+  const proposal = parseProposalText(result.content);
+  return proposal ? { ok: true, proposal, model: settings.model } : { ok: true, raw: result.content, model: settings.model };
+}
+
+/** 直连AI正式分析提议：与MoneyAI通路相同的小型提议结构，由「AI 设置」配置的模型生成。
+ * 只做传输与结构解析；身份回执、结构重建与保存校验仍由共享层（moneyai.js/model.js）完成。
+ * 一旦摘要已发出，后续失败返回sentToProvider:true，不能断言资料未发送。 */
+export async function requestProviderAnalysisProposal(envelope, options = {}) {
+  const settings = await getAiSettings(options);
+  if (!settings.ok) return { ...settings, sentToProvider: false };
+  if (!settings.configured) {
+    return { ...failed('ai_not_configured', '尚未在「AI 设置」配置 API；未发送任何内容。'), sentToProvider: false };
+  }
+  const result = await requestAiChat({
+    maxTokens: 2048,
+    messages: [
+      { role: 'system', content: '你是路芽项目的受限JSON处理器。禁止调用工具、文件、网络或个人历史；只使用下列获准摘要。'
+        + '必须原样回显身份；不得把未知补成0或事实。' + INSIGHT_INSTRUCTION },
+      { role: 'user', content: '请求：' + JSON.stringify({
+        contractVersion: envelope.contractVersion, operation: envelope.operation,
+        operationId: envelope.operationId, scope: envelope.scope, payload: envelope.payload,
+      }) },
+    ],
+  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  if (!result.ok) return { ...result, sentToProvider: true, model: settings.model };
+  const proposal = parseProposalText(result.content);
+  if (!proposal) {
+    return { ...failed('provider_response_invalid', '直连AI返回未通过提议结构校验；不会保存，不会替换当前分析。'),
+      sentToProvider: true, model: settings.model };
+  }
+  return { ok: true, proposal, sentToProvider: true, model: settings.model };
+}

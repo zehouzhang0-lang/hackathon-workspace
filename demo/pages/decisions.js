@@ -285,9 +285,11 @@ export function buildMoneyAIAnalysisSummary(snapshot) {
 }
 
 export function moneyAIResultMessage(result) {
-  const sent = result?.sentToMoneyAI;
-  const delivery = sent === true ? '服务确认已发送到 MoneyAI。'
-    : sent === false ? '服务确认未发送到 MoneyAI。'
+  const fromProvider = result?.sentToMoneyAI === undefined && result?.sentToProvider !== undefined;
+  const sent = result?.sentToMoneyAI ?? result?.sentToProvider;
+  const channel = fromProvider ? '「AI 设置」所配置的模型' : 'MoneyAI';
+  const delivery = sent === true ? '服务确认已发送到 ' + channel + '。'
+    : sent === false ? '服务确认未发送到 ' + channel + '。'
       : '是否发送尚未确认，请勿立即重复提交。';
   return { delivery, kind: result?.ok ? 'success' : result?.code === 'cancelled' ? 'info' : 'error',
     message: typeof result?.message === 'string' && result.message.trim()
@@ -356,6 +358,55 @@ let moneyAIRequestBusy = false;
 let moneyAIPreview = null;
 let moneyAIPreviewToken = '';
 let moneyAIOperation = null;
+// 真实分析通路：'moneyai'（本机MoneyAI应用）或 'provider'（AI 设置所配模型直连）。
+let moneyAIPanelMode = 'moneyai';
+let providerSettings = null;
+let providerSettingsBusy = false;
+let insightBusy = false;
+const moneyAIChannelName = () => moneyAIPanelMode === 'provider' ? '直连 AI（AI 设置）' : 'MoneyAI';
+const analysisReadyForMode = () => moneyAIPanelMode === 'provider'
+  ? providerSettings?.configured === true
+  : moneyAIStatus?.analysisReady === true;
+
+const MONEYAI_MODE_BRANDING = {
+  moneyai: {
+    title: '让 MoneyAI 重新分析当前确认摘要',
+    consent: '我已核对上方摘要，并仅同意这一次发送到本机 MoneyAI 所配置的模型；可能产生 API 调用。此同意不包含材料原件、凭据或个人历史。',
+    checkLabel: '检查分析能力', sendLabel: '发送摘要并请求真实分析',
+  },
+  provider: {
+    title: '让「AI 设置」的模型重新分析当前确认摘要',
+    consent: '我已核对上方摘要，并仅同意这一次发送到「AI 设置」所配置的模型；可能产生 API 调用。此同意不包含材料原件、凭据或个人历史。',
+    checkLabel: '检查 AI 设置', sendLabel: '发送摘要并请求直连 AI 分析',
+  },
+};
+
+function renderMoneyAIMode() {
+  const branding = MONEYAI_MODE_BRANDING[moneyAIPanelMode];
+  if (!branding) return;
+  byId('moneyai-title').textContent = branding.title;
+  byId('moneyai-consent-text').textContent = branding.consent;
+  byId('moneyai-request-analysis').textContent = branding.sendLabel;
+  byId('moneyai-check-status').textContent = branding.checkLabel;
+  const moneyaiButton = byId('moneyai-mode-moneyai');
+  const providerButton = byId('moneyai-mode-provider');
+  moneyaiButton.setAttribute('aria-pressed', String(moneyAIPanelMode === 'moneyai'));
+  providerButton.setAttribute('aria-pressed', String(moneyAIPanelMode === 'provider'));
+  moneyaiButton.classList.toggle('button--secondary', moneyAIPanelMode !== 'moneyai');
+  providerButton.classList.toggle('button--secondary', moneyAIPanelMode !== 'provider');
+}
+
+function setMoneyAIPanelMode(mode) {
+  if (!MONEYAI_MODE_BRANDING[mode] || moneyAIPanelMode === mode) return;
+  moneyAIPanelMode = mode;
+  byId('moneyai-consent').checked = false;
+  renderMoneyAIMode();
+  renderMoneyAICapability();
+  renderProviderInsightControls();
+  syncMoneyAIControls();
+  if (mode === 'provider' && !providerSettings) void refreshProviderSettings();
+  moneyAIStatusText('已切换到「' + moneyAIChannelName() + '」通路；尚未发送任何内容。');
+}
 
 function moneyAIStatusText(value, kind = 'info') {
   const node = byId('moneyai-request-status');
@@ -366,6 +417,23 @@ function moneyAIStatusText(value, kind = 'info') {
 function renderMoneyAICapability() {
   const tag = byId('moneyai-capability-tag');
   const status = byId('moneyai-capability-status');
+  if (moneyAIPanelMode === 'provider') {
+    if (providerSettingsBusy) {
+      tag.textContent = '正在核对'; tag.dataset.state = 'checking';
+      status.textContent = '正在读取「AI 设置」；尚未发送分析摘要。';
+    } else if (!providerSettings) {
+      tag.textContent = '设置待核对'; tag.dataset.state = 'unknown';
+      status.textContent = '尚未读取「AI 设置」状态。';
+    } else if (providerSettings.configured) {
+      tag.textContent = '直连 AI 可请求'; tag.dataset.state = 'ready';
+      status.textContent = '「AI 设置」已配置（模型：' + (providerSettings.model || '未知')
+        + '）；仍须逐次同意，结果经共享校验后才可保存。';
+    } else {
+      tag.textContent = '直连 AI 未配置'; tag.dataset.state = 'unavailable';
+      status.textContent = '尚未在「AI 设置」保存 API；不会发送任何内容。';
+    }
+    return;
+  }
   if (moneyAIStatusBusy) {
     tag.textContent = '正在核对'; tag.dataset.state = 'checking';
     status.textContent = '正在读取项目后端状态；尚未发送分析摘要。';
@@ -388,9 +456,10 @@ function syncMoneyAIControls() {
   const consent = byId('moneyai-consent');
   const requestLocked = moneyAIRequestPreparing || moneyAIRequestBusy;
   consent.disabled = requestLocked || !eligibility.ok;
-  byId('moneyai-check-status').disabled = moneyAIStatusBusy || requestLocked || !api;
-  byId('moneyai-request-analysis').disabled = requestLocked || moneyAIStatusBusy
-    || moneyAIStatus?.analysisReady !== true || !eligibility.ok || !previewCurrent || !consent.checked;
+  byId('moneyai-check-status').disabled = (moneyAIPanelMode === 'provider' ? providerSettingsBusy : moneyAIStatusBusy)
+    || requestLocked || !api;
+  byId('moneyai-request-analysis').disabled = requestLocked || moneyAIStatusBusy || providerSettingsBusy
+    || analysisReadyForMode() !== true || !eligibility.ok || !previewCurrent || !consent.checked;
   byId('moneyai-cancel-analysis').hidden = !requestLocked || !moneyAIOperation;
   byId('moneyai-cancel-analysis').disabled = !requestLocked || moneyAIOperation?.cancelRequested;
 }
@@ -433,11 +502,15 @@ function prepareMoneyAIPreview(snapshot) {
 function renderMoneyAIPanel() {
   const mode = state?.analysis?.mode;
   byId('moneyai-analysis-source').textContent = mode === 'real_model'
-    ? '当前已保存分析标记为 MoneyAI 真实模型结果；仍以保存的来源、请求与版本回执为准。'
+    ? (state?.analysis?.analysisSource === 'ai_settings'
+      ? '当前已保存分析标记为直连 AI（AI 设置）真实模型结果；仍以保存的来源、请求与版本回执为准。'
+      : '当前已保存分析标记为 MoneyAI 真实模型结果；仍以保存的来源、请求与版本回执为准。')
     : mode === 'demo_fixture' ? '当前已保存的是合成资料的本机规则分析，不是 MoneyAI 结果。请求失败不会替换它。'
       : mode === 'local_limited' ? '当前已保存的是本机有限分析，不是 MoneyAI 结果。请求失败不会替换它。'
         : '当前没有已保存的有效分析；不会用自然语言回包或 HTTP 成功冒充分析结果。';
+  renderMoneyAIMode();
   renderMoneyAICapability();
+  renderProviderInsightControls();
   prepareMoneyAIPreview(state);
   syncMoneyAIControls();
 }
@@ -468,7 +541,7 @@ function invalidateMoneyAIRequest(next) {
 }
 
 async function requestMoneyAIFromPage() {
-  if (!api || moneyAIRequestPreparing || moneyAIRequestBusy || moneyAIStatus?.analysisReady !== true) return;
+  if (!api || moneyAIRequestPreparing || moneyAIRequestBusy || analysisReadyForMode() !== true) return;
   if (!byId('moneyai-consent').checked) {
     moneyAIStatusText('请先展开并核对摘要，再为这一次请求明确同意。', 'error');
     return;
@@ -550,13 +623,17 @@ async function requestMoneyAIFromPage() {
   operation.frozenState = prepared.frozenState;
   moneyAIRequestBusy = true;
   byId('moneyai-send-status').textContent = '请求已开始；是否发送仍待服务回执。';
-  moneyAIStatusText('正在等待项目 MoneyAI 分析回执；当前本地分析尚未改变。');
+  moneyAIStatusText('正在等待' + moneyAIChannelName() + '的分析回执；当前本地分析尚未改变。');
   syncMoneyAIControls();
   let result;
   try {
-    result = await api.requestMoneyAIAnalysis(operation.request, {
-      state: operation.frozenState, signal: controller.signal, consentToExternalProcessing: true,
-    });
+    result = moneyAIPanelMode === 'provider'
+      ? await api.requestProviderAnalysis(operation.request, {
+          state: operation.frozenState, signal: controller.signal, consentToExternalProcessing: true,
+        })
+      : await api.requestMoneyAIAnalysis(operation.request, {
+          state: operation.frozenState, signal: controller.signal, consentToExternalProcessing: true,
+        });
   } catch {
     result = { ok: false, code: 'backend_unavailable',
       message: '共享分析调用异常；未取得完整回执。', sentToMoneyAI: null };
@@ -572,9 +649,9 @@ async function requestMoneyAIFromPage() {
     try {
       api.validateRealModelAnalysisDraft(result.analysis, operation.frozenState, operation.request.scope);
       if (!sameMoneyAIRequestOrigin(state, operation.origin)) {
-        throw reviewError('MoneyAI回执到达时本机revision已变化，未保存旧分析。');
+        throw reviewError('真实分析回执到达时本机revision已变化，未保存旧分析。');
       }
-      moneyAIStatusText('MoneyAI回执已通过共享结构和身份校验；正在保存，当前本机分析尚未改变。');
+      moneyAIStatusText(moneyAIChannelName() + '回执已通过共享结构和身份校验；正在保存，当前本机分析尚未改变。');
       // From here the reducer's exact expectedRevision is the sole commit
       // authority. Hide cancellation so our successful revision is not
       // mistaken for a late network response by the request guard.
@@ -588,9 +665,9 @@ async function requestMoneyAIFromPage() {
         || saved.analysis.providerReceipt?.inputFingerprint !== operation.origin.inputFingerprint) {
         throw reviewError('真实分析保存回执与本次MoneyAI身份不一致。', 'read_failed');
       }
-      moneyAIStatusText('MoneyAI真实分析已通过共享校验并保存；请重新比较当前最多两条路径。', 'success');
+      moneyAIStatusText(moneyAIChannelName() + '真实分析已通过共享校验并保存；请重新比较当前最多两条路径。', 'success');
     } catch (error) {
-      moneyAIStatusText('MoneyAI回执未能安全保存：' + (error?.message || '共享校验或版本回执不完整。')
+      moneyAIStatusText(moneyAIChannelName() + '回执未能安全保存：' + (error?.message || '共享校验或版本回执不完整。')
         + ' 当前已保存分析保持不变或以最新共享状态为准。', 'error');
     }
   }
@@ -608,6 +685,102 @@ function cancelMoneyAIRequest() {
     ? '已取消本机发送前复核；尚未调用共享分析请求。'
     : '正在取消本次等待；若请求已送达，是否发送仍以最终回执为准。');
   syncMoneyAIControls();
+}
+
+// —— 直连 AI（AI 设置）设置状态与「AI 解读」参考块 ——
+
+async function refreshProviderSettings() {
+  if (!api || providerSettingsBusy) return;
+  providerSettingsBusy = true;
+  if (moneyAIPanelMode === 'provider') { renderMoneyAICapability(); syncMoneyAIControls(); }
+  const result = await api.getAiSettings();
+  providerSettingsBusy = false;
+  providerSettings = result?.ok
+    ? { configured: result.configured, model: result.model, hasKey: result.hasKey } : null;
+  renderMoneyAICapability();
+  renderProviderInsightControls();
+  syncMoneyAIControls();
+}
+
+function renderProviderInsightControls() {
+  const tag = byId('provider-insight-tag');
+  const request = byId('provider-insight-request');
+  if (!tag || !request) return;
+  if (insightBusy) {
+    tag.textContent = '正在请求'; tag.dataset.state = 'checking';
+    request.disabled = true;
+    return;
+  }
+  if (!providerSettings) {
+    tag.textContent = '设置待核对'; tag.dataset.state = 'unknown';
+    request.disabled = !api;
+    return;
+  }
+  if (providerSettings.configured) {
+    tag.textContent = 'AI 已配置'; tag.dataset.state = 'ready';
+    tag.title = '模型：' + (providerSettings.model || '未知');
+    request.disabled = !api;
+  } else {
+    tag.textContent = 'AI 未配置'; tag.dataset.state = 'unavailable';
+    tag.title = '先在「AI 设置」保存 base URL、API Key 与模型名';
+    request.disabled = true;
+  }
+}
+
+function renderInsightResult(node, proposal) {
+  const wrap = document.createElement('div');
+  const head = element('p', 'moneyai-source',
+    '以下为「AI 设置」模型输出（未验证，未保存）：状态 ' + proposal.status + '。');
+  wrap.append(head);
+  wrap.append(element('p', '', proposal.summary));
+  const paths = element('ul');
+  for (const path of proposal.paths) paths.append(element('li', '', path.title + '：' + path.action));
+  wrap.append(paths);
+  if (proposal.limitations.length) {
+    wrap.append(element('p', 'muted', '限制与未知：' + proposal.limitations.join('；')));
+  }
+  node.replaceChildren(wrap);
+}
+
+async function requestProviderInsightFromPage() {
+  if (!api || insightBusy) return;
+  const status = byId('provider-insight-status');
+  const resultNode = byId('provider-insight-result');
+  if (!state) return;
+  insightBusy = true;
+  renderProviderInsightControls();
+  status.dataset.kind = 'info';
+  try {
+    const summaryResult = buildMoneyAIAnalysisSummary(state);
+    if (!summaryResult.ok) {
+      status.textContent = summaryResult.message + ' 未发送任何内容。';
+      status.dataset.kind = 'error';
+      return;
+    }
+    status.textContent = '已按摘要范围发送到「AI 设置」所配置的模型；正在等待解读，当前本机分析不变……';
+    const result = await api.requestAiInsight(summaryResult.summary, { timeoutMs: 120000 });
+    if (result?.ok && result.proposal) {
+      status.textContent = '解读已返回；以下为模型输出，未经核验，仅供对比参考，未写入保存记录。';
+      status.dataset.kind = 'success';
+      resultNode.hidden = false;
+      renderInsightResult(resultNode, result.proposal);
+    } else if (result?.ok && typeof result.raw === 'string') {
+      status.textContent = '解读已返回，但未能解析为建议结构；以下为模型原文，未经核验，未保存。';
+      status.dataset.kind = 'success';
+      resultNode.hidden = false;
+      resultNode.replaceChildren(element('p', 'moneyai-source', '模型原文（未验证）：'), element('pre', '', result.raw));
+    } else {
+      status.textContent = (result?.message || '未取得解读结果。') + ' 未保存任何内容。';
+      status.dataset.kind = 'error';
+      resultNode.hidden = true;
+    }
+  } catch (error) {
+    status.textContent = '解读请求异常：' + (error?.message || '未知错误') + ' 未保存任何内容。';
+    status.dataset.kind = 'error';
+  } finally {
+    insightBusy = false;
+    renderProviderInsightControls();
+  }
 }
 
 
@@ -1470,7 +1643,8 @@ function renderScope() {
   const mode = state.analysis?.mode;
   addDefinition(meta, '分析来源', mode === 'demo_fixture' ? '合成演示 · 本机规则，非真实模型'
     : mode === 'local_limited' ? '本机有限分析 · 非真实模型'
-      : mode === 'real_model' ? 'MoneyAI真实模型 · 以保存回执为准' : '尚未生成');
+      : mode === 'real_model' ? (state.analysis?.analysisSource === 'ai_settings'
+        ? '直连AI真实模型（AI 设置） · 以保存回执为准' : 'MoneyAI真实模型 · 以保存回执为准') : '尚未生成');
   addDefinition(meta, '当前全部缺口', gaps.join('；') || '未登记，不代表没有未知');
 }
 
@@ -1958,17 +2132,17 @@ async function boot() {
   booting = true;
   try {
     if (!['http:', 'https:'].includes(window.location.protocol)) throw new Error('请使用统筹提供的同源本地 HTTP 地址，不能通过 file:// 运行共享会话。');
-    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model] = await Promise.all([
+    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model, ai] = await Promise.all([
       import('../shared/state.js'), import('../shared/navigation.js'), import('../shared/shell.js'),
       import('../shared/demo-data.js'), import('./report.js'), import('../shared/moneyai.js'),
-      import('../shared/moneyai-contract.js'), import('../shared/model.js'),
+      import('../shared/moneyai-contract.js'), import('../shared/model.js'), import('../shared/ai.js'),
     ]);
-    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai,
+    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai, ...ai,
       computeMoneyAIInputFingerprint: moneyaiContract.computeMoneyAIInputFingerprint,
       createMoneyAIEnvelope: moneyaiContract.createMoneyAIEnvelope,
       validateRealModelAnalysisDraft: model.validateRealModelAnalysisDraft,
       MONEYAI_OPERATIONS: moneyaiContract.MONEYAI_OPERATIONS };
-    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft']) {
+    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft', 'getAiSettings', 'requestAiInsight', 'requestProviderAnalysis']) {
       if (typeof api[name] !== 'function') throw new Error(`共享或报告模块缺少 ${name}，未创建替代实现。`);
     }
     if (api.MONEYAI_OPERATIONS?.analysis !== 'analysis.run') throw new Error('MoneyAI分析操作契约不兼容。');
@@ -1977,6 +2151,7 @@ async function boot() {
     subscribe();
     await refreshSession();
     void refreshMoneyAIStatus();
+    void refreshProviderSettings();
   } catch (error) {
     api = null;
     showStart('第二页暂时无法启动', '共享模块或本地服务还未准备好。不会载入假案例，也没有改写已保存的资料。', { goBack: false });
@@ -1992,7 +2167,13 @@ bindReviewControls();
 document.querySelectorAll('[data-action="return"]').forEach((button) => button.addEventListener('click', () => goTo('intake')));
 byId('retry-load').addEventListener('click', () => api ? refreshSession() : window.location.reload());
 byId('refresh-analysis').addEventListener('click', () => operate(generateAnalysis));
-byId('moneyai-check-status').addEventListener('click', () => void refreshMoneyAIStatus());
+byId('moneyai-check-status').addEventListener('click', () => {
+  if (moneyAIPanelMode === 'provider') void refreshProviderSettings();
+  else void refreshMoneyAIStatus();
+});
+byId('moneyai-mode-moneyai').addEventListener('click', () => setMoneyAIPanelMode('moneyai'));
+byId('moneyai-mode-provider').addEventListener('click', () => setMoneyAIPanelMode('provider'));
+byId('provider-insight-request').addEventListener('click', () => void requestProviderInsightFromPage());
 byId('moneyai-consent').addEventListener('change', () => syncMoneyAIControls());
 byId('moneyai-request-analysis').addEventListener('click', () => void requestMoneyAIFromPage());
 byId('moneyai-cancel-analysis').addEventListener('click', cancelMoneyAIRequest);

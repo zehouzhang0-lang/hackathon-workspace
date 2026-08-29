@@ -2841,3 +2841,60 @@ test('compact MoneyAI proposal becomes a valid P2 analysis and P3 decision for n
   assert.equal(record.decision.title, proposal.paths[0].title);
   assert.match(record.context.focus, /香型/);
 });
+
+test('直连AI（AI 设置）提议可重建为可保存的 real_model 分析，且回执身份不可伪造', async () => {
+  const { requestProviderAnalysis } = await import('../shared/moneyai.js');
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
+    inputVersion: h.state.round.inputVersion, operationId: 'provider_analysis_1', attemptId: 'provider_attempt_1' },
+  analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns }));
+  const proposal = { mode: 'real_model', status: 'ready', summary: '先核对当前问题与已确认指标。',
+    limitations: ['仅基于已确认摘要。'], paths: [{ title: '先核对现状', action: '保持价格与投流不变，记录一周加购与订单变化后复核。' }] };
+  const chatBodies = [];
+  const result = await requestProviderAnalysis(request, { state: h.state, consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+      chatBodies.push(JSON.parse(options.body));
+      return jsonResponse({ ok: true, content: '```json\n' + JSON.stringify(proposal) + '\n```' });
+    } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.analysis.analysisSource, 'ai_settings');
+  assert.equal(result.analysis.providerReceipt.provider, 'ai-settings');
+  assert.equal(result.analysis.providerReceipt.sentToProvider, true);
+  assert.equal(result.analysis.providerReceipt.model, 'test-model');
+  assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
+  assert.equal(h.state.analysis.analysisSource, 'ai_settings');
+  const forged = structuredClone(result.analysis);
+  forged.providerReceipt.sentToProvider = false;
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: forged }), { code: 'invalid_structure' });
+  const branded = structuredClone(result.analysis);
+  branded.analysisSource = 'moneyai';
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: branded }), { code: 'invalid_structure' });
+  assert.equal(chatBodies.length, 1);
+  assert(!('temperature' in chatBodies[0]));
+  assert(chatBodies[0].messages.some((m) => m.content.includes('"focus"')));
+  assert(chatBodies[0].messages.some((m) => m.content.includes('provider_analysis_1')));
+});
+
+test('requestAiInsight 未配置不发送；已配置时解析提议且聊天不携带temperature', async () => {
+  const { requestAiInsight } = await import('../shared/ai.js');
+  const calls = [];
+  const unconfigured = await requestAiInsight({ focus: 'f', facts: [], constraints: [], unknowns: [] },
+    { fetchImpl: async (url) => { calls.push({ url }); return jsonResponse({ configured: false, baseUrl: null, model: null, hasKey: false }); } });
+  assert.equal(unconfigured.ok, false);
+  assert.equal(unconfigured.code, 'ai_not_configured');
+  assert.equal(calls.filter((call) => call.url === '/api/ai/chat').length, 0);
+  const result = await requestAiInsight({ focus: 'f', facts: [], constraints: [], unknowns: [] },
+    { fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+      calls.push({ url, body: JSON.parse(options.body) });
+      return jsonResponse({ ok: true, content: '前缀{"mode":"real_model","status":"limited","summary":"总结","limitations":["x"],"paths":[{"title":"t","action":"a"}]}后缀' });
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.proposal.paths[0].title, 't');
+  const chat = calls.find((call) => call.url === '/api/ai/chat');
+  assert(!('temperature' in chat.body));
+  assert(chat.body.messages.some((message) => message.content.includes('"focus":"f"')));
+});

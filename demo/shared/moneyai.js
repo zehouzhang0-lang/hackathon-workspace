@@ -2,6 +2,7 @@ import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, freezeMoneyAIRequest,
   validateMoneyAIResponse } from './moneyai-contract.js';
 import { validateRealModelAnalysisDraft } from './model.js';
 import { buildDemoAnalysis } from './demo-data.js';
+import { requestProviderAnalysisProposal } from './ai.js';
 
 // Only the project backend is reachable here, never MoneyAI management ports.
 const STATUS_FLAGS = ['configured', 'serviceReachable', 'analysisReady', 'historyWriteReady', 'historyReadVerified', 'extractionReady'];
@@ -153,12 +154,30 @@ export async function requestMoneyAIAnalysis(request, options = {}) {
 const proposalText = (value, limit) => typeof value === 'string' && value.trim()
   ? value.trim().slice(0, limit) : null;
 
+// 直连AI与MoneyAI共用同一小型提议结构与安全执行重建，仅来源标识不同。
+const ANALYSIS_SOURCES = {
+  moneyai: {
+    analysisSource: 'moneyai', processingName: 'MoneyAI项目分析', processingKind: 'moneyai',
+    evidenceNote: 'MoneyAI依据本次已确认摘要提出该行动；来源仍以本条引用的当前事实和原输入为准。',
+    summaryFallback: 'MoneyAI已基于当前确认资料给出待核对行动。',
+    tailNote: 'MoneyAI建议已嵌入本机安全执行结构；仍需商家核对，不能据此确认根因或承诺效果。',
+  },
+  ai_settings: {
+    analysisSource: 'ai_settings', processingName: '直连AI分析（AI 设置）', processingKind: 'provider_ai',
+    evidenceNote: '直连AI依据本次已确认摘要提出该行动；来源仍以本条引用的当前事实和原输入为准。',
+    summaryFallback: '直连AI已基于当前确认资料给出待核对行动。',
+    tailNote: '直连AI建议已嵌入本机安全执行结构；仍需商家核对，不能据此确认根因或承诺效果。',
+  },
+};
+
 // MoneyAI only needs to return a small, provider-friendly proposal. The browser
 // rebuilds the complex execution/experiment/tree structure from the current
 // confirmed state, then applies the model's bounded summary and actions. This
 // keeps arbitrary merchant input usable without asking every provider to emit
 // the entire internal demo.v1 state schema.
-export function normalizeMoneyAIAnalysisProposal(proposal, state) {
+export function normalizeMoneyAIAnalysisProposal(proposal, state, source = 'moneyai') {
+  const branding = ANALYSIS_SOURCES[source];
+  if (!branding) return null;
   if (!record(proposal) || proposal.mode !== 'real_model'
     || !['ready', 'limited', 'insufficient'].includes(proposal.status)
     || !Array.isArray(proposal.paths) || !proposal.paths.length || proposal.paths.length > 2
@@ -175,7 +194,7 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state) {
     const suggestion = suggestions[index];
     const evidenceRefs = Array.isArray(base.evidenceRefs) ? base.evidenceRefs.map((entry) => ({
       ...entry,
-      summary: 'MoneyAI依据本次已确认摘要提出该行动；来源仍以本条引用的当前事实和原输入为准。'
+      summary: branding.evidenceNote,
     })) : [];
     const path = {
       ...base, title: suggestion.title, action: suggestion.action, evidenceRefs,
@@ -189,17 +208,59 @@ export function normalizeMoneyAIAnalysisProposal(proposal, state) {
   const limitations = [...new Set([
     ...proposal.limitations.map((item) => proposalText(item, 500)),
     ...localLimitations,
-    'MoneyAI建议已嵌入本机安全执行结构；仍需商家核对，不能据此确认根因或承诺效果。'
+    branding.tailNote,
   ])].slice(0, 20);
   return {
     ...generated.analysis,
     status: proposal.status,
     mode: 'real_model',
-    analysisSource: 'moneyai',
-    summary: proposalText(proposal.summary, 2000) || 'MoneyAI已基于当前确认资料给出待核对行动。',
+    analysisSource: branding.analysisSource,
+    summary: proposalText(proposal.summary, 2000) || branding.summaryFallback,
     paths,
     limitations,
   };
+}
+
+// 直连AI（AI 设置）正式分析：与MoneyAI通路同构——相同的受限摘要、相同的提议结构、
+// 相同的重建与保存校验；区别只在模型提供方与身份回执的provider标识。
+export async function requestProviderAnalysis(request, options = {}) {
+  if (options?.signal?.aborted) return failed('cancelled', '已取消请求，未发送资料。');
+  if (options?.consentToExternalProcessing !== true) {
+    return failed('external_consent_required', '本次调用前须确认发送到「AI 设置」所配置模型的数据范围与费用。');
+  }
+  let frozen;
+  try {
+    frozen = freezeMoneyAIRequest(request);
+    if (frozen.envelope.operation !== MONEYAI_OPERATIONS.analysis) throw new Error('invalid_payload');
+  } catch { return failed('invalid_payload', '请求不符合有界项目契约；未发送资料。'); }
+  const proposalResult = await requestProviderAnalysisProposal(frozen.envelope, options);
+  if (!proposalResult.ok) {
+    return { ...proposalResult, sentToProvider: proposalResult.sentToProvider === true };
+  }
+  const scope = frozen.envelope.scope;
+  const analysis = normalizeMoneyAIAnalysisProposal(proposalResult.proposal, options.state, 'ai_settings');
+  if (!analysis) {
+    return failed('invalid_analysis', '直连AI返回未通过真实分析结构重建：提议字段不完整。', true);
+  }
+  const providerReceipt = {
+    contractVersion: MONEYAI_CONTRACT_VERSION, provider: 'ai-settings', sentToProvider: true,
+    operationId: frozen.envelope.operationId, attemptId: frozen.envelope.attemptId,
+    sessionId: scope.sessionId, roundId: scope.roundId, inputVersion: scope.inputVersion,
+    inputFingerprint: scope.inputFingerprint, model: proposalResult.model,
+  };
+  const branded = {
+    ...analysis,
+    processing: [{
+      name: '直连AI分析（AI 设置）', kind: 'provider_ai', status: 'done', operationId: frozen.envelope.operationId,
+    }],
+    providerReceipt,
+  };
+  try { validateRealModelAnalysisDraft(branded, options.state, scope); }
+  catch (error) {
+    return failed('invalid_analysis', '直连AI返回未通过真实分析结构、来源和当前输入校验：'
+      + (error?.message || '未知结构错误'), true);
+  }
+  return { ok: true, analysis: branded, receipt: providerReceipt, sentToProvider: true };
 }
 
 export async function requestMoneyAIDecisionWrite(request, options = {}) {

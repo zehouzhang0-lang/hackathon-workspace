@@ -88,6 +88,10 @@
             </div>
             <span id="moneyai-capability-tag" class="tag" data-state="checking">能力待核对</span>
           </div>
+          <div class="moneyai-actions" role="group" aria-label="真实分析通路切换">
+            <button type="button" class="button button--secondary" id="moneyai-mode-moneyai" aria-pressed="true">MoneyAI 应用</button>
+            <button type="button" class="button button--secondary" id="moneyai-mode-provider" aria-pressed="false">直连 AI（AI 设置）</button>
+          </div>
           <p id="moneyai-analysis-source" class="moneyai-source"></p>
           <dl class="moneyai-status-grid">
             <div><dt>项目能力</dt><dd id="moneyai-capability-status">尚未查询</dd></div>
@@ -102,7 +106,7 @@
           </details>
           <label class="moneyai-consent" for="moneyai-consent">
             <input type="checkbox" id="moneyai-consent">
-            <span>我已核对上方摘要，并仅同意这一次发送到本机 MoneyAI 所配置的模型；可能产生 API 调用。此同意不包含材料原件、凭据或个人历史。</span>
+            <span id="moneyai-consent-text">我已核对上方摘要，并仅同意这一次发送到本机 MoneyAI 所配置的模型；可能产生 API 调用。此同意不包含材料原件、凭据或个人历史。</span>
           </label>
           <div class="decisions-actions moneyai-actions">
             <button type="button" class="button button--secondary" id="moneyai-check-status">检查分析能力</button>
@@ -110,6 +114,22 @@
             <button type="button" class="button button--quiet" id="moneyai-cancel-analysis" hidden>取消本次请求</button>
           </div>
           <p id="moneyai-request-status" class="moneyai-request-status" role="status" aria-live="polite">尚未发起真实分析；当前已保存的本机判断不会被改变。</p>
+        </section>
+
+        <section id="provider-insight" class="moneyai-analysis" aria-labelledby="provider-insight-title">
+          <div class="moneyai-heading">
+            <div>
+              <p class="moneyai-eyebrow">直连 AI 解读（可选参考）</p>
+              <h2 id="provider-insight-title">用「AI 设置」里的模型直接解读当前摘要</h2>
+            </div>
+            <span id="provider-insight-tag" class="tag" data-state="checking">设置待核对</span>
+          </div>
+          <p class="moneyai-source">与上方摘要相同的发送范围：仅已确认的焦点、事实、限制与未知；不含材料原件、凭据或个人历史。解读结果只作参考并明确标注为模型输出：不替换本机分析、不写入保存记录、不参与路径选择与保存。</p>
+          <div class="decisions-actions moneyai-actions">
+            <button type="button" class="button button--secondary" id="provider-insight-request" disabled>请求 AI 解读</button>
+          </div>
+          <p id="provider-insight-status" class="moneyai-request-status" role="status" aria-live="polite">尚未请求；不会发送任何内容。</p>
+          <div id="provider-insight-result" hidden></div>
         </section>
 
         <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>

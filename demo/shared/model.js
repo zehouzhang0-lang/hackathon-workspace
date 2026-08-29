@@ -309,13 +309,18 @@ export function validateAnalysis(analysis, state) {
   requireValue(Array.isArray(analysis.paths) && Array.isArray(analysis.limitations), '分析结构不完整。', 'invalid_structure');
   if (realModel) {
     const receipt = analysis.providerReceipt;
-    requireValue(analysis.analysisSource === 'moneyai' && analysis.paths.length <= 2
-      && receipt?.contractVersion === MONEYAI_ANALYSIS_CONTRACT_VERSION && receipt.provider === 'moneyai'
-      && receipt.sentToMoneyAI === true && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.operationId)
+    const sourceOk = analysis.analysisSource === 'moneyai'
+      ? receipt?.provider === 'moneyai' && receipt.sentToMoneyAI === true
+      : analysis.analysisSource === 'ai_settings'
+        ? receipt?.provider === 'ai-settings' && receipt.sentToProvider === true
+        : false;
+    requireValue(sourceOk && analysis.paths.length <= 2
+      && receipt?.contractVersion === MONEYAI_ANALYSIS_CONTRACT_VERSION
+      && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.operationId)
       && /^[A-Za-z0-9._:-]{1,120}$/.test(receipt.attemptId)
       && receipt.sessionId === state.sessionId && receipt.roundId === state.round.id
       && receipt.inputVersion === state.round.inputVersion && /^sha256:[a-f0-9]{64}$/.test(receipt.inputFingerprint),
-    '真实分析缺少MoneyAI项目回执、输入身份或路径上限。', 'invalid_structure');
+    '真实分析缺少提供方回执、输入身份或路径上限。', 'invalid_structure');
   }
   uniqueIds(analysis.paths);
   const reviewPolicy = analysisReviewPolicy(state);
@@ -365,8 +370,10 @@ export function validateAnalysis(analysis, state) {
   }
   if (own(analysis, 'processing')) requireValue(Array.isArray(analysis.processing)
     && analysis.processing.every((entry) => nonempty(entry.name)
-      && (realModel ? entry.kind === 'moneyai' && entry.status === 'done'
-        && entry.operationId === analysis.providerReceipt.operationId
+      && (realModel
+        ? (analysis.analysisSource === 'ai_settings' ? entry.kind === 'provider_ai' : entry.kind === 'moneyai')
+          && entry.status === 'done'
+          && entry.operationId === analysis.providerReceipt.operationId
         : entry.kind === 'local_rule' && ['done', 'not_run'].includes(entry.status))),
   '不能伪造专家或模型调用过程。', 'invalid_structure');
   const actionKeys = new Set();

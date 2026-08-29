@@ -146,7 +146,7 @@ export async function requestAiInsight(summary, options = {}) {
         + '不得把未知补成0或事实；不得声称根因已确认；不得编造缺失数据、概率、收入或效果。' + INSIGHT_INSTRUCTION },
       { role: 'user', content: '已确认摘要（JSON）：' + JSON.stringify(summary) },
     ],
-  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return result;
   const proposal = parseProposalText(result.content);
   return proposal ? { ok: true, proposal, model: settings.model } : { ok: true, raw: result.content, model: settings.model };
@@ -171,7 +171,7 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
         operationId: envelope.operationId, scope: envelope.scope, payload: envelope.payload,
       }) },
     ],
-  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return { ...result, sentToProvider: true, model: settings.model };
   const proposal = parseProposalText(result.content);
   if (!proposal) {

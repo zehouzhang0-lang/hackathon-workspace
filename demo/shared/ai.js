@@ -195,7 +195,7 @@ export async function requestAiInsight(summary, options = {}) {
       { role: 'user', content: '已确认摘要（JSON）：' + JSON.stringify(compacted.summary)
         + (compacted.note ? '\n摘要说明：' + compacted.note : '') },
     ],
-  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return result;
   const proposal = parseProposalText(result.content);
   return proposal ? { ok: true, proposal, model: settings.model } : { ok: true, raw: result.content, model: settings.model };
@@ -221,7 +221,7 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
         operationId: envelope.operationId, scope: envelope.scope, payload: compacted.summary,
       }) + (compacted.note ? '\n摘要说明：' + compacted.note : '') },
     ],
-  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  }, { ...options, timeoutMs: options.timeoutMs ?? 60000 });
   if (!result.ok) return { ...result, sentToProvider: true, model: settings.model };
   const proposal = parseProposalText(result.content);
   if (!proposal) {

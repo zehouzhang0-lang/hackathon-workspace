@@ -378,6 +378,7 @@ class AdapterTests(unittest.TestCase):
             }
             latest = iter([
                 {"latestResult": "previous"},
+                {"latestResult": "正在生成最终JSON，请稍候"},
                 {"latestResult": json.dumps(proposal, ensure_ascii=False)},
             ])
 

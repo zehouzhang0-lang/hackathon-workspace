@@ -51,7 +51,7 @@ class MoneyAIAdapter:
         extraction_enabled: bool = False,
         history_enabled: bool = False,
         history_read_verified: bool = False,
-        model_timeout: float = 7.0,
+        model_timeout: float = 60.0,
     ):
         self.base_url = self.validate_base_url(base_url) if base_url else None
         self.project_dir = self.validate_project_dir(project_dir) if project_dir else None
@@ -470,7 +470,7 @@ class MoneyAIAdapter:
                 return 502, self._outcome(False, True, code="moneyai_model_rejected", message="MoneyAI未接受本次模型请求。")
             baseline = before.get("latestResult")
             deadline = time.monotonic() + self.model_timeout
-            latest = None
+            saw_candidate = False
             while time.monotonic() < deadline:
                 time.sleep(0.2)
                 try:
@@ -479,27 +479,28 @@ class MoneyAIAdapter:
                     continue
                 value = candidate.get("latestResult")
                 if isinstance(value, str) and value and value != baseline:
-                    latest = value
-                    break
-            if latest is None:
+                    saw_candidate = True
+                    try:
+                        decoded = self._extract_json_text(value)
+                        if set(decoded) != {"contractVersion", "operation", "operationId", "result"}:
+                            raise ValueError
+                        if (
+                            decoded["contractVersion"] != CONTRACT_VERSION
+                            or decoded["operation"] != operation
+                            or decoded["operationId"] != envelope["operationId"]
+                            or not isinstance(decoded["result"], dict)
+                            or set(decoded["result"]) != result_fields
+                            or len(canonical_json(decoded["result"]).encode("utf-8")) > MAX_PROVIDER_RESPONSE
+                        ):
+                            raise ValueError
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        # MoneyAI can publish an intermediate thinking/progress value before
+                        # the provider's final JSON. Keep waiting without weakening validation.
+                        continue
+                    return 200, self._outcome(True, True, result=decoded["result"])
+            if not saw_candidate:
                 return 504, self._outcome(False, True, code="moneyai_model_timeout", message="MoneyAI已接收请求但未在时限内返回结果。")
-            try:
-                decoded = self._extract_json_text(latest)
-                if set(decoded) != {"contractVersion", "operation", "operationId", "result"}:
-                    raise ValueError
-                if (
-                    decoded["contractVersion"] != CONTRACT_VERSION
-                    or decoded["operation"] != operation
-                    or decoded["operationId"] != envelope["operationId"]
-                    or not isinstance(decoded["result"], dict)
-                    or set(decoded["result"]) != result_fields
-                ):
-                    raise ValueError
-                if len(canonical_json(decoded["result"]).encode("utf-8")) > MAX_PROVIDER_RESPONSE:
-                    raise ValueError
-            except (ValueError, TypeError, json.JSONDecodeError):
-                return 502, self._outcome(False, True, code="moneyai_model_schema_invalid", message="MoneyAI结果未通过身份与结构校验。")
-            return 200, self._outcome(True, True, result=decoded["result"])
+            return 502, self._outcome(False, True, code="moneyai_model_schema_invalid", message="MoneyAI结果未通过身份与结构校验。")
 
     def _analysis_run(self, envelope, _request_hash):
         if not (self.base_url and self.project_dir and self.analysis_enabled):

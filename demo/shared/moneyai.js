@@ -64,15 +64,15 @@ export async function getMoneyAIStatus({ signal, fetchImpl = globalThis.fetch, t
 const OPERATIONS = Object.freeze({
   [MONEYAI_OPERATIONS.analysis]: {
     endpoint: '/api/moneyai/analysis', ready: 'analysisReady', unavailable: 'analysis_unavailable',
-    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。', timeoutMs: 8000
+    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。', timeoutMs: 60000
   },
   [MONEYAI_OPERATIONS.decisionWrite]: {
     endpoint: '/api/moneyai/decisions', ready: 'historyWriteReady', unavailable: 'history_write_unavailable',
-    unavailableMessage: 'MoneyAI决策写入尚未就绪；本机保存不等于已经写入MoneyAI。', timeoutMs: 15000
+    unavailableMessage: 'MoneyAI决策写入尚未就绪；本机保存不等于已经写入MoneyAI。', timeoutMs: 60000
   },
   [MONEYAI_OPERATIONS.historyRead]: {
     endpoint: '/api/moneyai/history/read', ready: 'historyReadVerified', unavailable: 'history_read_unavailable',
-    unavailableMessage: 'MoneyAI历史读回尚未验证；不会用本机历史冒充MoneyAI记录。', timeoutMs: 15000
+    unavailableMessage: 'MoneyAI历史读回尚未验证；不会用本机历史冒充MoneyAI记录。', timeoutMs: 60000
   }
 });
 

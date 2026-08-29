@@ -169,7 +169,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
         '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n') +
         '\n\n只输出JSON，格式：{"fields":{"<字段名>":{"value":"...","quote":"..."}}}' }
     ]
-  }, { fetchImpl, signal, timeoutMs: 45000 });
+  }, { fetchImpl, signal, timeoutMs: 60000 });
   if (!reply.ok) {
     notes.push('已配置 AI 但整理请求未完成（' + reply.message + '）；已保留本机提取结果，未替换任何内容。');
     return { added: 0, configured: true, attempted: true, completed: false };

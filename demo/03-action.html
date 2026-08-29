@@ -12,6 +12,23 @@
     <script type="module" src="pages/action.js"></script>
   </head>
   <body data-page="action">
+    <script>
+      // 直接双击打开（file://）时浏览器拦截 ES modules，外壳与按钮全部失灵；
+      // 这里用经典脚本给出明确的启动指引，避免"UI 丢失"的假故障。
+      if (location.protocol === "file:") {
+        document.addEventListener("DOMContentLoaded", function () {
+          var bar = document.createElement("div");
+          bar.setAttribute("role", "alert");
+          bar.style.cssText = "position:fixed;left:16px;right:16px;bottom:16px;z-index:9999;" +
+            "background:#7a271a;color:#fff;padding:12px 16px;border-radius:10px;" +
+            "font:14px/1.7 system-ui,'Microsoft YaHei',sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.28)";
+          bar.textContent = "这是直接双击打开（file://）：浏览器已拦截页面脚本，左侧导航与执行按钮不会响应。" +
+            "请在仓库根目录运行 python -X utf8 server/app.py --port 4188 ，" +
+            "再用浏览器访问 http://127.0.0.1:4188/03-action.html";
+          document.body.appendChild(bar);
+        });
+      }
+    </script>
     <a class="action-skip-link" href="#action-main">跳到当前行动</a>
     <div id="shared-shell"></div>
 

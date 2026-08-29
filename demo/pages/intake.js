@@ -1,6 +1,7 @@
 import { enhanceFoldTitle } from "../shared/title-motion.js";
 import { findIntakeFieldFact } from "../shared/intake-draft.js";
 import { parseWorkbookFacts } from "../shared/table-facts.js";
+import { readWorkbookSheets } from "../shared/xlsx-reader.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -1415,10 +1416,11 @@ function startIntakePage() {
     };
   }
 
-  // 直连数据提取：读取文本类材料的本机内容（用户逐次勾选同意后才调用）。
+  // 直连数据提取：读取材料的本机内容（用户逐次勾选同意后才调用）。
+  // XLSX 按工作表序列化为文本；TXT/CSV/JSON 直接解码；图片等二进制不发送。
   async function collectMaterialTexts(signal) {
     const decodable = state.input.materials
-      .filter((material) => ["txt", "csv", "json"].includes(fileExtension(material.name)))
+      .filter((material) => ["txt", "csv", "json", "xlsx"].includes(fileExtension(material.name)))
       .slice(0, 4);
     const texts = [];
     for (const material of decodable) {
@@ -1426,8 +1428,27 @@ function startIntakePage() {
       try {
         const blob = await api.getMaterialBlob(material.id);
         if (!blob) continue;
-        let content = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
-        if (content.includes("\0")) continue;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let content;
+        if (fileExtension(material.name) === "xlsx") {
+          const sheets = await readWorkbookSheets(bytes);
+          const parts = [];
+          let used = 0;
+          for (const sheet of sheets) {
+            if (sheet.missing || !sheet.rows.length) continue;
+            const lines = sheet.rows.slice(0, 40).map((cells) =>
+              cells.map((cell) => String(cell ?? "").trim()).filter(Boolean).join(","));
+            const block = "【工作表:" + sheet.name + "】\n" + lines.filter(Boolean).join("\n");
+            if (used + block.length > 3800) { parts.push("…（后续工作表略）"); break; }
+            parts.push(block);
+            used += block.length;
+          }
+          content = parts.join("\n") || "";
+        } else {
+          content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          if (content.includes("\0")) continue;
+        }
+        if (!content.trim()) continue;
         if (content.length > 4000) content = content.slice(0, 4000) + "\n…（材料文本后略，仅根据以上内容整理）";
         texts.push({ name: material.name, text: content });
       } catch { /* 单份材料读取失败不影响其余材料 */ }
@@ -1482,6 +1503,11 @@ function startIntakePage() {
           : "已在本机根据材料整理出结构化内容，未发送到外部服务；请逐项核对，确认不等于外部核验。"
       : "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
     if (result.notes?.length) reviewMessage += " " + result.notes.join(" ");
+    if (includeMaterialText) {
+      reviewMessage += materialTexts && materialTexts.length
+        ? " 已随本次请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、") + "（每份仅截取前4000字）。"
+        : " 没有可发送文本的材料（直连提取仅支持TXT/CSV/JSON/XLSX的文本内容，图片不发送）。";
+    }
     organizationVisible = true; readyToAnalyze = false;
     setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
       "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");

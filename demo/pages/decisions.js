@@ -1603,9 +1603,11 @@ function renderPriority(analysis) {
   list(analysis?.processing).forEach((entry) => {
     const item = element('li');
     item.append(element('span', '', text(entry.name, '处理名称未提供')));
-    const status = element('span', 'processing-status',
-      entry.kind === 'local_rule' ? ({ done: '已完成', not_run: '未运行' })[entry.status] || '状态未知' : '类型未核对');
-    status.dataset.status = entry.kind === 'local_rule' ? entry.status : 'unknown';
+    const verified = ['moneyai', 'provider_ai'].includes(entry.kind) && entry.status === 'done';
+    const status = element('span', 'processing-status', entry.kind === 'local_rule'
+      ? ({ done: '已完成', not_run: '未运行' })[entry.status] || '状态未知'
+      : verified ? '已调用' : '类型未核对');
+    status.dataset.status = entry.kind === 'local_rule' ? entry.status : verified ? 'done' : 'unknown';
     item.append(status);
     processing.append(item);
   });

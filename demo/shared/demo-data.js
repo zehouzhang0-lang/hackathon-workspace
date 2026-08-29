@@ -256,7 +256,8 @@ export function buildDemoArtifact(state) {
       id: null, version: 0, savedAt: null, roundId: state.round.id, analysisId: analysis.id, pathId: path.id,
       inputVersion: state.round.inputVersion, status: 'current', kind, title, body,
       usage: { placement, steps: options.steps ?? ['先核对引用事实和未知项', '只使用本次选定动作需要的部分', '记录实际执行范围及之后的观察'], risks: options.risks ?? ['不能保证适配、销量或成交；未知运费与发货时间不能编写承诺。'] },
-      sourceFactIds: options.factIds ?? sourceFactIds, mode: analysis.mode, editedByUser: false
+      sourceFactIds: options.factIds ?? sourceFactIds, mode: analysis.mode,
+      skillId: path.skillId ?? null, editedByUser: false
     };
   }
   const artifacts = [];

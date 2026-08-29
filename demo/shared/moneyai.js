@@ -1,8 +1,11 @@
+import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, freezeMoneyAIRequest,
+  validateMoneyAIResponse } from './moneyai-contract.js';
+import { validateRealModelAnalysisDraft } from './model.js';
+
 // Only the project backend is reachable here, never MoneyAI management ports.
-const MAX_REQUEST_BYTES = 256 * 1024;
 const STATUS_FLAGS = ['configured', 'serviceReachable', 'analysisReady', 'historyWriteReady', 'historyReadVerified', 'extractionReady'];
-const record = (value) => value !== null && typeof value === 'object' &&
-  [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const record = (value) => value !== null && typeof value === 'object'
+  && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const failed = (code, message, sentToMoneyAI = false) => ({ ok: false, code, message, sentToMoneyAI });
 
 function requestControl(signal, timeoutMs) {
@@ -18,39 +21,6 @@ function requestControl(signal, timeoutMs) {
   } };
 }
 
-// Freeze transport bytes before an await. No getters, toJSON, binary objects,
-// implicit coercion or automatic expansion of a session into an upload.
-function requestBody(request) {
-  if (!record(request)) throw new Error('invalid_payload');
-  const ancestors = new Set();
-  let nodes = 0;
-  const copy = (value, depth = 0) => {
-    if (++nodes > 10000 || depth > 64) throw new Error('invalid_payload');
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if ((!Array.isArray(value) && !record(value)) || ancestors.has(value)) throw new Error('invalid_payload');
-    ancestors.add(value);
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const keys = Reflect.ownKeys(descriptors).filter((key) => !(Array.isArray(value) && key === 'length'));
-    if (keys.some((key) => typeof key !== 'string' || key === 'toJSON' || !descriptors[key].enumerable ||
-      !Object.hasOwn(descriptors[key], 'value'))) throw new Error('invalid_payload');
-    let result;
-    if (Array.isArray(value)) {
-      if (value.length > 10000 || keys.length !== value.length ||
-        keys.some((key) => !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error('invalid_payload');
-      result = Array.from({ length: value.length }, (_, index) => copy(descriptors[index].value, depth + 1));
-    } else {
-      result = Object.create(null);
-      for (const key of keys) result[key] = copy(descriptors[key].value, depth + 1);
-    }
-    ancestors.delete(value);
-    return result;
-  };
-  const body = JSON.stringify(copy(request));
-  if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) throw new Error('invalid_payload');
-  return body;
-}
-
 export async function getMoneyAIStatus({ signal, fetchImpl = globalThis.fetch, timeoutMs = 8000 } = {}) {
   if (signal?.aborted) return failed('cancelled', '已取消状态查询。');
   if (typeof fetchImpl !== 'function' || typeof AbortController !== 'function') {
@@ -64,59 +34,137 @@ export async function getMoneyAIStatus({ signal, fetchImpl = globalThis.fetch, t
     if (!response.ok) return failed('backend_unavailable', '未获得本项目后端的有效状态。');
     const payload = await response.json();
     if (control.signal.aborted) throw new Error('aborted');
-    if (!record(payload) || payload.provider !== 'moneyai' ||
-      STATUS_FLAGS.some((key) => typeof payload[key] !== 'boolean') ||
-      typeof payload.reason !== 'string' || payload.reason.length > 2000 ||
-      payload.analysisReady && (!payload.configured || !payload.serviceReachable)) {
+    const optionalContract = !Object.hasOwn(payload || {}, 'contractVersion')
+      || payload.contractVersion === MONEYAI_CONTRACT_VERSION;
+    const optionalProject = !Object.hasOwn(payload || {}, 'projectSpaceConfigured')
+      || typeof payload.projectSpaceConfigured === 'boolean';
+    const optionalCapabilities = !Object.hasOwn(payload || {}, 'capabilities')
+      || record(payload.capabilities) && Object.values(payload.capabilities).every((value) => typeof value === 'boolean');
+    if (!record(payload) || payload.provider !== 'moneyai' || STATUS_FLAGS.some((key) => typeof payload[key] !== 'boolean')
+      || typeof payload.reason !== 'string' || payload.reason.length > 2000 || !optionalContract || !optionalProject || !optionalCapabilities
+      || payload.analysisReady && (!payload.configured || !payload.serviceReachable)
+      || payload.extractionReady && (!payload.configured || !payload.serviceReachable)
+      || (payload.historyWriteReady || payload.historyReadVerified) && (!payload.configured || !payload.serviceReachable)) {
       return failed('invalid_status', 'MoneyAI状态返回不完整，不能据此宣称业务已接通。');
     }
-    return { ok: true, status: { provider: 'moneyai',
-      ...Object.fromEntries(STATUS_FLAGS.map((key) => [key, payload[key]])), reason: payload.reason } };
+    const status = { provider: 'moneyai',
+      ...Object.fromEntries(STATUS_FLAGS.map((key) => [key, payload[key]])), reason: payload.reason };
+    if (Object.hasOwn(payload, 'contractVersion')) status.contractVersion = payload.contractVersion;
+    if (Object.hasOwn(payload, 'projectSpaceConfigured')) status.projectSpaceConfigured = payload.projectSpaceConfigured;
+    if (Object.hasOwn(payload, 'capabilities')) status.capabilities = { ...payload.capabilities };
+    return { ok: true, status };
   } catch {
     return failed(control.timedOut ? 'timeout' : control.signal.aborted ? 'cancelled' : 'backend_unavailable',
       '未获得完整状态回执，MoneyAI业务是否可用尚未确认。');
   } finally { control.close(); }
 }
 
-export async function requestMoneyAIAnalysis(request, {
+const OPERATIONS = Object.freeze({
+  [MONEYAI_OPERATIONS.analysis]: {
+    endpoint: '/api/moneyai/analysis', ready: 'analysisReady', unavailable: 'analysis_unavailable',
+    unavailableMessage: '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。'
+  },
+  [MONEYAI_OPERATIONS.decisionWrite]: {
+    endpoint: '/api/moneyai/decisions', ready: 'historyWriteReady', unavailable: 'history_write_unavailable',
+    unavailableMessage: 'MoneyAI决策写入尚未就绪；本机保存不等于已经写入MoneyAI。'
+  },
+  [MONEYAI_OPERATIONS.historyRead]: {
+    endpoint: '/api/moneyai/history/read', ready: 'historyReadVerified', unavailable: 'history_read_unavailable',
+    unavailableMessage: 'MoneyAI历史读回尚未验证；不会用本机历史冒充MoneyAI记录。'
+  }
+});
+
+async function requestOperation(request, operation, {
   signal, consentToExternalProcessing = false, fetchImpl = globalThis.fetch, timeoutMs = 8000
 } = {}) {
-  if (signal?.aborted) return failed('cancelled', '已取消分析，未发送资料。');
+  if (signal?.aborted) return failed('cancelled', '已取消请求，未发送资料。');
   if (consentToExternalProcessing !== true) {
-    return failed('external_consent_required', '发送分析资料前须明确项目模型、费用和发送范围。');
+    return failed('external_consent_required', '本次调用前须确认发送到本机MoneyAI项目Agent的范围、数据类型，以及其配置模型与费用。');
   }
-  let body;
-  try { body = requestBody(request); }
-  catch { return failed('invalid_payload', '分析请求须是有界的纯JSON摘要；未发送资料。'); }
+  let frozen;
+  try {
+    frozen = freezeMoneyAIRequest(request);
+    if (frozen.envelope.operation !== operation) throw new Error('invalid_payload');
+  } catch { return failed('invalid_payload', 'MoneyAI请求不符合有界项目契约；未发送资料。'); }
   if (typeof fetchImpl !== 'function' || typeof AbortController !== 'function') {
-    return failed('backend_unavailable', '本项目分析入口不可用；未发送资料。');
+    return failed('backend_unavailable', '本项目MoneyAI入口不可用；未发送资料。');
   }
+  const configuration = OPERATIONS[operation];
   const control = requestControl(signal, timeoutMs);
   let posted = false;
   try {
     const readiness = await getMoneyAIStatus({ signal: control.signal, fetchImpl, timeoutMs });
     if (control.signal.aborted) throw new Error('aborted');
     if (!readiness.ok) return failed(readiness.code, readiness.message);
-    if (!readiness.status.analysisReady) {
-      return failed('analysis_unavailable', '项目分析通路尚未就绪，未发送资料；本地演示不是MoneyAI分析。');
-    }
+    if (!readiness.status[configuration.ready]) return failed(configuration.unavailable, configuration.unavailableMessage);
     posted = true;
-    const response = await fetchImpl('/api/moneyai/analysis', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+    const response = await fetchImpl(configuration.endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: frozen.body,
       redirect: 'error', signal: control.signal
     });
-    const result = await response.json();
+    const payload = await response.json();
     if (control.signal.aborted) throw new Error('aborted');
-    const sent = typeof result?.sentToMoneyAI === 'boolean' ? result.sentToMoneyAI : null;
-    if (!record(result) || !response.ok || result.ok !== true) {
-      return failed(result?.code === 'moneyai_project_session_required' ? result.code : 'analysis_failed',
-        sent === false ? '分析未完成，服务确认未向MoneyAI发送。' : '分析未获得可用结果，不能据此断言未发送。', sent);
+    const validated = validateMoneyAIResponse(payload, frozen.envelope);
+    if (!response.ok || !validated.ok) {
+      return failed(!response.ok && validated.ok ? 'http_error'
+        : validated.code === 'invalid_response' ? 'invalid_response' : validated.code,
+        validated.message || (validated.sentToMoneyAI === false
+          ? '服务确认本次资料未发送给MoneyAI。' : '未获得完整可用回执，不能断言本次资料未发送。'),
+        validated.sentToMoneyAI);
     }
-    // No verified AnalysisDraft/provider mapping exists yet. A successful HTTP
-    // body is not permission to enable real_model or dispatch ANALYSIS_SET.
-    return failed('analysis_validation_unavailable', '已收到分析回包，但真实分析结构与来源校验尚未接通；未接受为可用分析。', sent);
+    return validated;
   } catch {
     return failed(control.timedOut ? 'timeout' : control.signal.aborted ? 'cancelled' : 'backend_unavailable',
-      posted ? '未取得完整分析回执，发送结果尚未确认；不会用演示答案代替。' : '分析未完成，资料未发送。', posted ? null : false);
+      posted ? '未取得完整MoneyAI回执，发送结果尚未确认；不会用本地结果代替。' : '请求未完成，资料未发送。',
+      posted ? null : false);
   } finally { control.close(); }
+}
+
+export async function requestMoneyAIAnalysis(request, options = {}) {
+  const response = await requestOperation(request, MONEYAI_OPERATIONS.analysis, options);
+  if (!response.ok) return response;
+  const scope = response.receipt.scope;
+  const analysis = record(response.result.analysis) ? {
+    ...response.result.analysis,
+    processing: response.result.analysis.processing ?? [{
+      name: 'MoneyAI项目分析', kind: 'moneyai', status: 'done', operationId: response.receipt.operationId
+    }],
+    providerReceipt: {
+      contractVersion: MONEYAI_CONTRACT_VERSION, provider: 'moneyai', sentToMoneyAI: true,
+      operationId: response.receipt.operationId, attemptId: response.receipt.attemptId,
+      sessionId: scope.sessionId, roundId: scope.roundId,
+      inputVersion: scope.inputVersion, inputFingerprint: response.receipt.inputFingerprint
+    }
+  } : null;
+  try { validateRealModelAnalysisDraft(analysis, options.state, scope); }
+  catch { return failed('invalid_analysis', 'MoneyAI返回未通过真实分析结构、来源和当前输入校验。', true); }
+  return { ok: true, analysis, receipt: response.receipt, sentToMoneyAI: true };
+}
+
+export async function requestMoneyAIDecisionWrite(request, options = {}) {
+  const response = await requestOperation(request, MONEYAI_OPERATIONS.decisionWrite, options);
+  if (!response.ok) return response;
+  const receipt = response.result.writeReceipt;
+  if (!record(receipt) || typeof receipt.recordId !== 'string' || !receipt.recordId
+    || typeof receipt.recordKey !== 'string' || !receipt.recordKey
+    || typeof receipt.providerRecordId !== 'string' || !receipt.providerRecordId
+    || receipt.operationId !== response.receipt.operationId
+    || typeof receipt.contentHash !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(receipt.contentHash)
+    || typeof receipt.writtenAt !== 'string' || !Number.isFinite(Date.parse(receipt.writtenAt))
+    || typeof receipt.readBackVerified !== 'boolean') {
+    return failed('invalid_write_receipt', 'MoneyAI写入回执不完整，本机记录不能标为已同步。', true);
+  }
+  return { ok: true, writeReceipt: { ...receipt }, receipt: response.receipt, sentToMoneyAI: true };
+}
+
+export async function requestMoneyAIHistoryRead(request, options = {}) {
+  const response = await requestOperation(request, MONEYAI_OPERATIONS.historyRead, options);
+  if (!response.ok) return response;
+  if (!Array.isArray(response.result.records) || response.result.records.length > request.payload.query.limit
+    || response.result.records.some((entry) => !record(entry)) || !record(response.result.readReceipt)
+    || response.result.readReceipt.count !== response.result.records.length) {
+    return failed('invalid_history_response', 'MoneyAI历史读回结构不完整，不会合并到本机记录。', true);
+  }
+  return { ok: true, records: response.result.records.map((entry) => ({ ...entry })),
+    readReceipt: { ...response.result.readReceipt }, receipt: response.receipt, sentToMoneyAI: true };
 }

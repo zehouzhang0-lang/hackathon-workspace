@@ -11,6 +11,7 @@ from time import monotonic
 from urllib.parse import urlsplit
 
 from moneyai_adapter import MoneyAIAdapter
+from moneyai_contract import ContractError, validate_envelope
 
 DEMO_ROOT = Path(__file__).resolve().parent.parent / "demo"
 MAX_REQUEST_BYTES = 256 * 1024
@@ -178,7 +179,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/health":
             self.send_json(200, {"ok": True, "contractVersion": "demo.v1", "service": "local-demo-backend"})
         elif path == "/api/moneyai/status":
-            self.send_json(200, {**self.adapter.status(), "extractionReady": False})
+            self.send_json(200, self.adapter.status())
         elif path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
@@ -191,17 +192,17 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.allowed_host():
             return
         path = urlsplit(self.path).path
-        is_intake = path == "/api/intake/extract"
         operations = {
-            "/api/moneyai/analysis": "analysis",
-            "/api/moneyai/decisions": "decision_write",
-            "/api/moneyai/history/read": "history_read",
+            "/api/intake/extract": "intake.extract",
+            "/api/moneyai/analysis": "analysis.run",
+            "/api/moneyai/decisions": "decision.write",
+            "/api/moneyai/history/read": "history.read",
         }
         expected = "http://127.0.0.1:" + str(self.server.server_port)
         if self.headers.get_all("Origin", []) != [expected]:
             self.reject_json(403, "origin_not_allowed")
             return
-        if not is_intake and path not in operations:
+        if path not in operations:
             self.reject_json(404, "unknown_endpoint")
             return
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
@@ -225,21 +226,12 @@ class Handler(SimpleHTTPRequestHandler):
             )
             if not isinstance(payload, dict):
                 raise ValueError
-            if is_intake and not valid_intake_payload(payload):
-                raise ValueError
+            validate_envelope(payload, operations[path])
+        except ContractError:
+            self.reject_json(400, "invalid_contract")
+            return
         except (ValueError, UnicodeError, RecursionError):
             self.reject_json(400, "invalid_payload")
-            return
-        if is_intake:
-            # No project extraction session or send scope is authorized. Never
-            # route this text through a personal session or return invented facts.
-            self.send_json(409, {
-                "ok": False,
-                "code": "intake_unavailable",
-                "message": "本项目的资料提取会话、调用费用和发送范围尚未授权，未向MoneyAI发送内容；请保留原文并手动核对可编辑草稿。",
-                "sentToMoneyAI": False,
-                "editable": True,
-            })
             return
         status, result = self.adapter.business_request(operations[path], payload)
         self.send_json(status, result)
@@ -249,8 +241,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=4188)
     parser.add_argument("--moneyai-url", help="当前MoneyAI实例的显式本机地址；不提交配置或凭据")
+    parser.add_argument("--moneyai-project-dir", help="服务端固定的路芽项目专用MoneyAI空间；浏览器不能覆盖")
+    parser.add_argument("--moneyai-analysis-enabled", action="store_true", help="仅在真实模型与结构已验证后启用")
+    parser.add_argument("--moneyai-extraction-enabled", action="store_true", help="仅在真实提取与结构已验证后启用")
+    parser.add_argument("--moneyai-history-enabled", action="store_true", help="仅在项目写入和精确读回已验证后启用")
+    parser.add_argument("--moneyai-history-read-verified", action="store_true", help="仅在重启读回及空项目隔离均验证后启用")
     args = parser.parse_args()
-    adapter = MoneyAIAdapter(args.moneyai_url)
+    adapter = MoneyAIAdapter(
+        args.moneyai_url,
+        args.moneyai_project_dir,
+        analysis_enabled=args.moneyai_analysis_enabled,
+        extraction_enabled=args.moneyai_extraction_enabled,
+        history_enabled=args.moneyai_history_enabled,
+        history_read_verified=args.moneyai_history_read_verified,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler, adapter=adapter))
     print("Local Demo: http://127.0.0.1:" + str(args.port) + "/01-intake.html", flush=True)
     try:

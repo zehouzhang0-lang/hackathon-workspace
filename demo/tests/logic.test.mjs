@@ -12,7 +12,9 @@ import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput, findIntakeFieldFact } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
-import { getMoneyAIStatus, requestMoneyAIAnalysis } from '../shared/moneyai.js';
+import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, requestMoneyAIHistoryRead } from '../shared/moneyai.js';
+import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS, createMoneyAIEnvelope,
+  computeMoneyAIInputFingerprint } from '../shared/moneyai-contract.js';
 
 function harness(fixtureId = null) {
   let id = 0;
@@ -672,16 +674,13 @@ test('material capability lookup separates local reception, preview and restrict
   assert.equal(getMaterialCapability('table.csv').parse, 'metric_csv');
   assert.equal(getMaterialCapability('table.json').parse, 'metric_json');
   assert.equal(getMaterialCapability('notes.txt').parse, 'text_only');
-  const xlsx = getMaterialCapability('table.xlsx');
-  assert.equal(xlsx.receive, true);
-  assert.equal(xlsx.preview, null);
-  assert.equal(xlsx.parse, 'table_xlsx');
-  assert.match(xlsx.reason, /本机解析已知指标列/);
-  const xls = getMaterialCapability('table.xls');
-  assert.equal(xls.receive, true);
-  assert.equal(xls.preview, null);
-  assert.equal(xls.parse, 'none');
-  assert.match(xls.reason, /解析未支持|另存为XLSX/);
+  for (const name of ['table.xlsx', 'table.xls']) {
+    const capability = getMaterialCapability(name);
+    assert.equal(capability.receive, true);
+    assert.equal(capability.preview, null);
+    assert.equal(capability.parse, 'none');
+    assert.match(capability.reason, /解析尚未接通/);
+  }
   for (const name of ['script.svg', 'page.html', 'data.csv.exe', 'csv', null, '__proto__']) {
     assert.equal(getMaterialCapability(name), null);
   }
@@ -986,20 +985,18 @@ test('intake parser preserves missing values and physical locations and rejects 
 
 test('screenshots and Excel originals are received for review without fabricating parsed facts', async () => {
   const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  // A PK-prefixed but corrupt container must fail honestly; a well-formed XLSX
-  // with no recognizable columns stays needs_review (covered in table-parse tests).
   const xlsxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
   const xlsBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-  for (const [name, bytes, mime, expected] of [
-    ['后台截图.png', pngBytes, 'image/png', 'needs_review'],
-    ['数据表.xlsx', xlsxBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'failed'],
-    ['老报表.xls', xlsBytes, 'application/vnd.ms-excel', 'needs_review']
+  for (const [name, bytes, mime] of [
+    ['后台截图.png', pngBytes, 'image/png'],
+    ['数据表.xlsx', xlsxBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['老报表.xls', xlsBytes, 'application/vnd.ms-excel']
   ]) {
     const h = harness();
     h.send('MATERIAL_ADD', { file: null }, { preparedMaterial: { name, mime, size: bytes.length, sha256: name, file: null } });
     const material = h.state.input.materials[0];
     const parsed = await readSupportedMaterial(new Blob([bytes]), material);
-    assert.equal(parsed.status, expected);
+    assert.equal(parsed.status, 'needs_review');
     assert.deepEqual(parsed.facts, []);
     h.send('MATERIAL_RESULT_SET', { ...parsed, materialId: material.id, materialVersion: material.version, roundId: h.state.round.id, inputVersion: h.state.round.inputVersion });
     h.send('ORGANIZATION_SET', buildOrganization(h.state, '核对原件'));
@@ -1517,6 +1514,27 @@ test('answer saving leaves the confirmed intake intact and analysis preserves a 
   assert.equal(h.state.analysis.inputSnapshot.intake.draft.currentProblem, draft.currentProblem);
 });
 
+const SYNTHETIC_FINGERPRINT = 'sha256:' + 'a'.repeat(64);
+function intakeMoneyAI(state, suffix = '1') {
+  return { operationId: 'intake_operation_' + suffix, attemptId: 'intake_attempt_' + suffix,
+    inputFingerprint: SYNTHETIC_FINGERPRINT, sendScope: ['confirmed_intake'], dataClasses: ['merchant_text'] };
+}
+function syntheticMoneyAIRequest(operation, payload, scope = {}) {
+  return createMoneyAIEnvelope({ operation, operationId: scope.operationId || 'synthetic_operation',
+    attemptId: scope.attemptId || 'synthetic_attempt',
+    scope: { sessionId: scope.sessionId || 'synthetic_session', roundId: scope.roundId || 'synthetic_round',
+      inputVersion: scope.inputVersion || 1, analysisId: scope.analysisId ?? null, pathId: scope.pathId ?? null,
+      artifact: scope.artifact ?? null, feedback: scope.feedback ?? null,
+      inputFingerprint: scope.inputFingerprint || SYNTHETIC_FINGERPRINT },
+    consent: { granted: true, sendScope: scope.sendScope || ['confirmed_facts'],
+      dataClasses: scope.dataClasses || ['merchant_text'] }, payload });
+}
+function syntheticMoneyAIReply(request, result, overrides = {}) {
+  return { ok: true, contractVersion: MONEYAI_CONTRACT_VERSION, operation: request.operation,
+    operationId: request.operationId, attemptId: request.attemptId,
+    scope: structuredClone(request.scope), sentToMoneyAI: true, result, ...overrides };
+}
+
 test('unready or unapproved extraction preserves the editable draft and never POSTs the transcript', async () => {
   const h = harness('one_sentence_v1');
   const draft = createMerchantIntakeDraft({ sources: ['voice'], transcript: '要保留的语音原文', productName: '用户已填的商品' });
@@ -1539,14 +1557,18 @@ test('unready or unapproved extraction preserves the editable draft and never PO
 test('a lost extraction response is not called unsent, and invalid output never replaces the draft', async () => {
   const h = harness('one_sentence_v1');
   const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '原文保持' });
-  const request = { state: h.state, draft, transcript: draft.transcript, description: '可编辑内容', sources: draft.sources };
+  const request = { state: h.state, draft, transcript: draft.transcript, description: '可编辑内容', sources: draft.sources,
+    moneyai: intakeMoneyAI(h.state, 'lost') };
   const status = { ok: true, json: async () => ({ extractionReady: true }) };
   const lost = await requestIntakeExtraction(request, { consentToExternalProcessing: true,
     fetchImpl: async (url) => { if (url.endsWith('/status')) return status; throw new Error('lost-response'); } });
   assert.equal(lost.sentToMoneyAI, null);
   assert.deepEqual(lost.draft, draft);
   const invalid = await requestIntakeExtraction(request, { consentToExternalProcessing: true,
-    fetchImpl: async (url) => url.endsWith('/status') ? status : { ok: true, json: async () => ({ ok: true, draft: { ...draft, price: 9 }, sentToMoneyAI: true, mode: 'moneyai' }) } });
+    fetchImpl: async (url, options) => url.endsWith('/status') ? status : { ok: true, json: async () => {
+      const sent = JSON.parse(options.body);
+      return syntheticMoneyAIReply(sent, { draft: { ...draft, price: 9 }, sourceBindings: [] });
+    } } });
   assert.equal(invalid.code, 'invalid_response');
   assert.deepEqual(invalid.draft, draft);
 });
@@ -1662,14 +1684,16 @@ test('extraction response file sources must be in this request, not merely in th
   const [a, b] = h.state.input.materials;
   const draft = createMerchantIntakeDraft({ sources: ['json'] });
   const request = { state: h.state, draft, transcript: '', description: '只整理A', sources: draft.sources,
-    materials: [{ materialId: a.id, materialVersion: a.version, mime: a.mime, text: '{"metrics":[]}' }] };
-  const answer = (material) => ({ ok: true, mode: 'moneyai', sentToMoneyAI: true,
-    roundId: h.state.round.id, inputVersion: h.state.round.inputVersion,
-    draft: { ...draft, metrics: { ...draft.metrics, paidOrders: 0 } },
+    materials: [{ materialId: a.id, materialVersion: a.version, mime: a.mime, text: '{"metrics":[]}' }],
+    moneyai: intakeMoneyAI(h.state, 'binding') };
+  const answer = (material) => ({ draft: { ...draft, metrics: { ...draft.metrics, paidOrders: 0 } },
     sourceBindings: [{ field: 'metrics.paidOrders', source: 'json', materialId: material.id,
       materialVersion: material.version, locator: { type: 'json', pointer: '/metrics/0/value' } }] });
-  const simulate = (material) => async (url) => ({ ok: true, json: async () =>
-    url.endsWith('/status') ? { extractionReady: true } : answer(material) });
+  const simulate = (material) => async (url, options) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { extractionReady: true };
+    const sent = JSON.parse(options.body);
+    return syntheticMoneyAIReply(sent, answer(material));
+  } });
   const rejected = await requestIntakeExtraction(request, { consentToExternalProcessing: true, fetchImpl: simulate(b) });
   assert.equal(rejected.ok, false);
   assert.equal(rejected.code, 'invalid_response');
@@ -1686,6 +1710,10 @@ function syntheticMoneyAIStatus(overrides = {}) {
     reason: '合成状态，仅用于客户端边界测试', ...overrides };
 }
 const jsonResponse = (value, ok = true) => ({ ok, json: async () => value });
+const analysisPayload = (overrides = {}) => ({ version: 'analysis.request.v1', focus: '合成测试焦点',
+  facts: [], constraints: [], unknowns: [], ...overrides });
+const analysisRequest = (scope = {}, payload = analysisPayload()) =>
+  syntheticMoneyAIRequest(MONEYAI_OPERATIONS.analysis, payload, scope);
 
 test('MoneyAI status rejects malformed flags and exposes only validated status fields', async () => {
   for (const value of [null, [], {}, syntheticMoneyAIStatus({ serviceReachable: 'false' }),
@@ -1707,7 +1735,7 @@ test('MoneyAI analysis needs explicit send consent and readiness without posting
   let calls = [];
   const fetchImpl = async (url, options) => { calls.push({ url, options });
     return jsonResponse(syntheticMoneyAIStatus({ analysisReady: false })); };
-  const request = { summary: '合成且尚未同意发送的摘要' };
+  const request = analysisRequest();
   const denied = await requestMoneyAIAnalysis(request, { fetchImpl });
   assert.equal(denied.code, 'external_consent_required');
   assert.equal(denied.sentToMoneyAI, false);
@@ -1736,18 +1764,20 @@ test('MoneyAI transport rejects implicit conversions and oversized JSON without 
 });
 
 test('MoneyAI analysis freezes request bytes before capability lookup and preserves a no-send receipt', async () => {
-  const request = { roundId: 'synthetic_round', inputVersion: 1, summary: '确认的合成摘要' };
+  const request = analysisRequest({}, analysisPayload({ focus: '确认的合成摘要' }));
   const expected = JSON.stringify(request);
   let posted;
   const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
     fetchImpl: async (url, options) => {
       assert.equal(options.redirect, 'error');
       if (url.endsWith('/status')) {
-        request.inputVersion = 2; request.summary = '晚到修改不得混入旧请求';
+        request.scope.inputVersion = 2; request.payload.focus = '晚到修改不得混入旧请求';
         return jsonResponse(syntheticMoneyAIStatus());
       }
       posted = options.body;
-      return jsonResponse({ ok: false, code: 'moneyai_project_session_required', sentToMoneyAI: false }, false);
+      const sent = JSON.parse(options.body);
+      return jsonResponse(syntheticMoneyAIReply(sent, {}, {
+        ok: false, code: 'moneyai_project_session_required', sentToMoneyAI: false }), false);
     } });
   assert.equal(posted, expected);
   assert.equal(result.ok, false);
@@ -1756,13 +1786,15 @@ test('MoneyAI analysis freezes request bytes before capability lookup and preser
 
 test('MoneyAI HTTP failure or unvalidated success cannot become a usable analysis', async () => {
   for (const [reply, code, sent] of [
-    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }, false), 'analysis_failed', true],
-    [() => jsonResponse({ ok: true, sentToMoneyAI: true, analysis: { fake: true } }), 'analysis_validation_unavailable', true],
+    [(request) => jsonResponse(syntheticMoneyAIReply(request, {}, {
+      ok: false, code: 'analysis_failed', sentToMoneyAI: false }), false), 'analysis_failed', false],
+    [(request) => jsonResponse(syntheticMoneyAIReply(request, { analysis: { fake: true } })), 'invalid_analysis', true],
     [() => { throw new Error('lost response'); }, 'backend_unavailable', null],
     [() => ({ ok: true, json: async () => { throw new Error('broken JSON'); } }), 'backend_unavailable', null]
   ]) {
-    const result = await requestMoneyAIAnalysis({ synthetic: true }, { consentToExternalProcessing: true,
-      fetchImpl: async (url) => url.endsWith('/status') ? jsonResponse(syntheticMoneyAIStatus()) : reply() });
+    const request = analysisRequest();
+    const result = await requestMoneyAIAnalysis(request, { consentToExternalProcessing: true,
+      fetchImpl: async (url) => url.endsWith('/status') ? jsonResponse(syntheticMoneyAIStatus()) : reply(request) });
     assert.equal(result.ok, false);
     assert.equal(result.code, code);
     assert.equal(result.sentToMoneyAI, sent);
@@ -1772,12 +1804,12 @@ test('MoneyAI HTTP failure or unvalidated success cannot become a usable analysi
 
 test('MoneyAI cancellation and timeout distinguish never posted from an uncertain send', async () => {
   const stopped = new AbortController(); stopped.abort();
-  const cancelled = await requestMoneyAIAnalysis({ synthetic: true }, { signal: stopped.signal,
+  const cancelled = await requestMoneyAIAnalysis(analysisRequest(), { signal: stopped.signal,
     consentToExternalProcessing: true, fetchImpl: async () => { throw new Error('must not fetch'); } });
   assert.equal(cancelled.code, 'cancelled');
   assert.equal(cancelled.sentToMoneyAI, false);
   for (const waitAt of ['status', 'analysis']) {
-    const result = await requestMoneyAIAnalysis({ synthetic: true }, { timeoutMs: 5, consentToExternalProcessing: true,
+    const result = await requestMoneyAIAnalysis(analysisRequest(), { timeoutMs: 5, consentToExternalProcessing: true,
       fetchImpl: async (url, options) => {
         if (!url.endsWith('/' + waitAt)) return jsonResponse(syntheticMoneyAIStatus());
         return new Promise((_resolve, reject) => {
@@ -1788,6 +1820,67 @@ test('MoneyAI cancellation and timeout distinguish never posted from an uncertai
     assert.equal(result.code, 'timeout');
     assert.equal(result.sentToMoneyAI, waitAt === 'status' ? false : null);
   }
+});
+
+test('luya MoneyAI envelope fingerprints bounded JSON and decision/history use separate verified receipts', async () => {
+  const fingerprint = await computeMoneyAIInputFingerprint({ roundId: 'synthetic_round', facts: [] });
+  assert.match(fingerprint, /^sha256:[a-f0-9]{64}$/);
+  const decision = syntheticMoneyAIRequest(MONEYAI_OPERATIONS.decisionWrite,
+    { version: 'decision.record.v1', record: { localRecordId: 'record_1', execution: 'unknown' } },
+    { inputFingerprint: fingerprint, sendScope: ['decision_record'], dataClasses: ['decision_record'] });
+  const decisionResult = await requestMoneyAIDecisionWrite(decision, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return jsonResponse(syntheticMoneyAIStatus({ historyWriteReady: true }));
+      assert.equal(url, '/api/moneyai/decisions');
+      const sent = JSON.parse(options.body);
+      return jsonResponse(syntheticMoneyAIReply(sent, { writeReceipt: {
+        recordId: 'moneyai_record_1', recordKey: 'moneyai:moneyai_record_1', providerRecordId: 'provider_1',
+        operationId: sent.operationId, contentHash: 'sha256:' + 'b'.repeat(64),
+        writtenAt: '2026-08-29T03:00:00.000Z', readBackVerified: true } }));
+    } });
+  assert.equal(decisionResult.ok, true);
+  assert.equal(decisionResult.writeReceipt.recordId, 'moneyai_record_1');
+
+  const history = syntheticMoneyAIRequest(MONEYAI_OPERATIONS.historyRead,
+    { version: 'history.query.v1', query: { limit: 20, cursor: null, recordIds: ['moneyai_record_1'] } },
+    { inputFingerprint: fingerprint, sendScope: ['history_query'], dataClasses: ['decision_record'] });
+  const historyResult = await requestMoneyAIHistoryRead(history, { consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return jsonResponse(syntheticMoneyAIStatus({ historyReadVerified: true }));
+      assert.equal(url, '/api/moneyai/history/read');
+      const sent = JSON.parse(options.body);
+      return jsonResponse(syntheticMoneyAIReply(sent,
+        { records: [{ recordId: 'moneyai_record_1' }], readReceipt: { count: 1 } }));
+    } });
+  assert.equal(historyResult.ok, true);
+  assert.deepEqual(historyResult.records, [{ recordId: 'moneyai_record_1' }]);
+});
+
+test('a verified MoneyAI real_model draft is isolated from local modes and remains reducer-valid', async () => {
+  const h = harness('juicer_cup_v1');
+  h.send('FOCUS_CONFIRM', { inputVersion: h.state.round.inputVersion });
+  const local = buildDemoAnalysis(h.state).analysis;
+  const { processing: _processing, ...base } = local;
+  const draft = { ...base, mode: 'real_model', analysisSource: 'moneyai',
+    paths: base.paths.map(({ actionKey: _actionKey, ...path }) => path) };
+  const request = analysisRequest({ sessionId: h.state.sessionId, roundId: h.state.round.id,
+    inputVersion: h.state.round.inputVersion, operationId: 'real_analysis_1', attemptId: 'real_attempt_1' },
+  analysisPayload({ focus: h.state.input.focus || '核对当前问题', facts: h.state.input.facts,
+    constraints: h.state.input.constraints, unknowns: h.state.input.unknowns }));
+  const result = await requestMoneyAIAnalysis(request, { state: h.state, consentToExternalProcessing: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/status')) return jsonResponse(syntheticMoneyAIStatus());
+      const sent = JSON.parse(options.body);
+      return jsonResponse(syntheticMoneyAIReply(sent, { analysis: draft }));
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.analysis.mode, 'real_model');
+  assert.equal(result.analysis.providerReceipt.operationId, 'real_analysis_1');
+  assert.doesNotThrow(() => h.send('ANALYSIS_SET', { analysis: result.analysis }));
+  assert.equal(h.state.analysis.mode, 'real_model');
+  const forged = structuredClone(result.analysis);
+  forged.providerReceipt.sessionId = 'another_session';
+  assert.throws(() => h.send('ANALYSIS_SET', { analysis: forged }), { code: 'invalid_structure' });
 });
 
 
@@ -2329,193 +2422,4 @@ test('C8 saved review matches recomputed business content while view-event revis
   }
 });
 
-}
-
-// Workspace projections and acceptance regressions; payload built with the merged page's command factory.
-import { makeExperimentAcceptanceCommand, describeExperimentReview } from '../pages/action.js';
-import { workspaceFeedbackSource, workspaceRounds, workspaceMemory } from '../shared/workspace-view.js';
-
-function acceptancePayloadFor(state, review) {
-  return makeExperimentAcceptanceCommand(state, review, 'test-accept-p3').payload;
-}
-
-{
-function p3Review(draft = {}) {
-  const h = harness('juicer_cup_v1');
-  analyze(h);
-  selectAndSave(h, h.state.analysis.paths.findIndex((path) => path.optionLabel === 'A'));
-  const artifact = currentArtifacts(h.state).find((item) => item.kind === 'copy');
-  const plan = activeSelection(h.state).path.experiment;
-  const payload = makeFeedbackPayload(artifact, {
-    adoption: 'adopted', execution: 'done', scope: '只替换详情页首屏文字层', executedAt: '2026-08-28',
-    observation: 'unchanged', rawText: '首屏已调整，自述没有明显变化，商品标题不能修改。',
-    sampleSize: String(plan.minSample), guardrailStatus: 'clear', constraintsText: '商品标题不能修改', ...draft,
-  }, { detailsVersion: FEEDBACK_DETAILS_VERSION });
-  h.send('FEEDBACK_SAVE', payload);
-  const feedbackId = h.state.feedbackRecords.at(-1).id;
-  const result = buildExperimentReviewForC8(h.state, feedbackId);
-  assert.equal(result.ok, true, result.message);
-  return { h, artifact, review: result.review, feedbackPayload: payload };
-}
-
-test('P3 acceptance payload carries exactly four fields and does not mutate the shared review', () => {
-  const { h, review } = p3Review();
-  const before = structuredClone(review);
-  const payload = acceptancePayloadFor(h.state, review);
-  assert.deepEqual(payload, { feedbackId: review.sourceFeedbackId, reviewFingerprint: review.fingerprint,
-    roundId: review.roundId, inputVersion: review.inputVersion });
-  assert.deepEqual(Object.keys(payload).sort(), ['feedbackId', 'inputVersion', 'reviewFingerprint', 'roundId']);
-  payload.roundId = 'changed_only_in_projection';
-  assert.deepEqual(review, before);
-  for (const value of [null, {}, { ...review, decision: 'pause' }, { ...review, nextAction: null },
-    { ...review, roundId: 'changed-round' }, { ...review, fingerprint: 'not-a-saved-fingerprint' }]) {
-    assert.throws(() => makeExperimentAcceptanceCommand(h.state, value, 'test-accept-p3'));
-  }
-});
-
-test('P3 conclusion presentation follows shared decisions and never infers success from missing data', () => {
-  const { h, review } = p3Review({ execution: 'unknown', sampleSize: '', guardrailStatus: 'unknown' });
-  assert.equal(review.decision, 'needs_information');
-  assert.equal(review.observation.sampleSize, null);
-  assert.equal(review.observation.guardrailStatus, 'unknown');
-  assert.throws(() => makeExperimentAcceptanceCommand(h.state, review, 'test-accept-p3'));
-  const presentation = describeExperimentReview(review);
-  assert.ok(presentation.title.length > 0);
-  assert.ok(presentation.treatment.length > 0);
-  assert.match(presentation.source, /未调用 MoneyAI/);
-  assert.throws(() => describeExperimentReview(null));
-});
-
-test('P3 exact projected payload accepts once, reads a complete round and is safe to retry', () => {
-  const { h, review } = p3Review();
-  const payload = acceptancePayloadFor(h.state, review);
-  const before = structuredClone(h.state);
-  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
-  const receipt = getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint);
-  assert.equal(receipt.ok, true, receipt.message);
-  assert.equal(receipt.source.sourceRoundId, payload.roundId);
-  assert.equal(receipt.source.sourceInputVersion, payload.inputVersion);
-  assert.equal(h.state.round.index, 2);
-  assert.deepEqual(h.state.executionRecords, before.executionRecords);
-  assert.deepEqual(h.state.feedbackRecords, before.feedbackRecords);
-  const accepted = structuredClone(h.state);
-  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, false);
-  assert.deepEqual(h.state, accepted);
-  assert.equal(h.state.history.filter((entry) => entry.type === 'experiment_acceptance').length, 1);
-});
-
-test('P3 previously displayed payload cannot accept after a newer related feedback record exists', () => {
-  const { h, review, feedbackPayload } = p3Review();
-  const payload = acceptancePayloadFor(h.state, review);
-  h.send('FEEDBACK_SAVE', { ...feedbackPayload, feedbackRecord: {
-    ...feedbackPayload.feedbackRecord, observation: 'worse', rawText: '后来发现观察变差，先核对。',
-  } });
-  const before = structuredClone(h.state);
-  assert.throws(() => h.send('EXPERIMENT_ACCEPT', payload), /已有相关反馈|执行自述已更新/);
-  assert.deepEqual(h.state, before);
-  assert.equal(h.state.round.index, 1);
-  assert.equal(getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint).ok, false);
-});
-
-test('workspace empty session has no invented archive, merchant, materials or business memory', () => {
-  const h = harness();
-  const before = structuredClone(h.state);
-  assert.deepEqual(workspaceRounds(h.state), []);
-  const memory = workspaceMemory(h.state);
-  assert.equal(memory.merchant, null);
-  assert.equal(memory.product, null);
-  assert.equal(memory.problem, null);
-  assert.equal(memory.materialCount, 0);
-  assert.equal(memory.knownFactCount, 0);
-  assert.equal(memory.archivedRoundCount, 0);
-  assert.equal(memory.synthetic, false);
-  assert.deepEqual(h.state, before);
-});
-
-test('workspace corrected unknown product does not restore old intake draft or hide synthetic provenance', () => {
-  const h = harness('juicer_cup_v1');
-  analyze(h);
-  const product = findIntakeFieldFact(h.state, 'productName');
-  assert.ok(product);
-  const oldName = h.state.input.intake.draft.productName;
-  assert.equal(workspaceMemory(h.state).product, oldName);
-  h.send('FACT_PATCH', { inputVersion: h.state.round.inputVersion,
-    fact: { ...product, value: null, availability: 'unknown' }, reason: '商品身份需重新核对，明确改为未知' });
-  assert.equal(h.state.fixtureId, null);
-  assert.equal(h.state.input.intake.draft.productName, oldName, 'old draft stays as history, not current fact');
-  const before = structuredClone(h.state);
-  const memory = workspaceMemory(h.state);
-  assert.equal(memory.product, null);
-  assert.equal(memory.stale, true);
-  assert.equal(memory.synthetic, true);
-  assert.equal(workspaceRounds(h.state)[0].status, '资料已更新，待重新分析');
-  assert.deepEqual(h.state, before);
-});
-
-test('workspace feedback on A never labels a later B selection as already having feedback', () => {
-  const { h, review } = p3Review();
-  assert.equal(workspaceRounds(h.state)[0].status, '反馈已保存');
-  const pathB = h.state.analysis.paths.find((path) => path.optionLabel === 'B');
-  h.send('PATH_SELECT', { analysisId: h.state.analysis.id, pathId: pathB.id, inputVersion: h.state.round.inputVersion });
-  const before = structuredClone(h.state);
-  const current = workspaceRounds(h.state).find((entry) => !entry.archived);
-  assert.equal(current.path.id, pathB.id);
-  assert.equal(current.status, '已选择方案');
-  assert.ok(current.feedbacks.some((record) => record.pathId === review.pathId));
-  assert.equal(current.feedbacks.some((record) => record.pathId === pathB.id), false);
-  assert.equal(current.executions.some((record) => record.pathId === pathB.id), false);
-  const feedback = current.feedbacks.find((record) => record.pathId === review.pathId);
-  const source = workspaceFeedbackSource(h.state, feedback);
-  assert.equal(source.path.id, review.pathId, 'archive labels the original A, never the current B');
-  assert.equal(source.artifact.id, feedback.artifactId);
-  assert.equal(source.artifact.version, feedback.artifactVersion);
-  assert.equal(source.execution.pathId, review.pathId);
-  const missingVersion = workspaceFeedbackSource(h.state, { ...feedback, artifactVersion: feedback.artifactVersion + 1 });
-  assert.equal(missingVersion.artifact, null, 'never borrow a different saved version');
-  assert.equal(missingVersion.execution, null);
-  assert.deepEqual(h.state, before);
-});
-
-test('workspace real acceptance groups original materials, selection and feedback by their saved round', () => {
-  const { h, review } = p3Review();
-  const original = structuredClone(h.state);
-  const payload = acceptancePayloadFor(h.state, review);
-  assert.equal(h.send('EXPERIMENT_ACCEPT', payload).changed, true);
-  assert.equal(getAcceptedExperimentRoundForC8(h.state, payload.feedbackId, payload.reviewFingerprint).ok, true);
-  const beforeProjection = structuredClone(h.state);
-  const rounds = workspaceRounds(h.state);
-  assert.deepEqual(rounds.map((entry) => entry.round.index), [2, 1]);
-  const [current, archived] = rounds;
-  assert.equal(archived.archived, true);
-  assert.equal(archived.status, '已归档');
-  assert.equal(archived.round.id, original.round.id);
-  assert.deepEqual(archived.selection, original.selection);
-  assert.deepEqual(archived.input.materials, original.input.materials);
-  assert.deepEqual(archived.feedbacks, original.feedbackRecords);
-  assert.deepEqual(archived.executions, original.executionRecords);
-  assert.equal(archived.path.id, review.pathId);
-  assert.equal(workspaceFeedbackSource(h.state, archived.feedbacks[0]).path.id, review.pathId);
-  assert.equal(current.archived, false);
-  assert.equal(current.path.actionKey, 'juicer_faq');
-  assert.notEqual(current.path.id, archived.path.id);
-  assert.deepEqual(current.feedbacks, []);
-  assert.deepEqual(current.executions, []);
-  assert.deepEqual(current.artifacts, []);
-  assert.equal(current.status, '已选择方案');
-  assert.equal(workspaceMemory(h.state).archivedRoundCount, 1);
-  assert.equal(workspaceMemory(h.state).synthetic, true);
-  assert.deepEqual(h.state, beforeProjection);
-
-  // Add a real reducer material in R2: it must not appear retroactively in R1's input snapshot.
-  h.send('MATERIAL_ADD', {}, { preparedMaterial: {
-    name: '第二轮待核对问题.txt', mime: 'text/plain', size: 16, sha256: 'workspace-r2-material', file: null,
-  } });
-  const updated = workspaceRounds(h.state);
-  assert.equal(updated[0].input.materials.length, 1);
-  assert.deepEqual(updated[1].input.materials, original.input.materials);
-  assert.deepEqual(updated[1].selection, original.selection);
-  assert.deepEqual(updated[1].feedbacks, original.feedbackRecords);
-  assert.deepEqual(updated[0].feedbacks, []);
-  assert.equal(updated[0].path, null, 'new input invalidates selection instead of borrowing the old round path');
-});
 }

@@ -162,7 +162,7 @@ export function createDecisionReviewRunner(adapter) {
 // B-DECISION-DISPLAY-START
 // Display existing shared paths only; never synthesize a missing A or B.
 export function visibleDecisionPaths(paths) {
-  return Array.isArray(paths) ? paths.slice() : [];
+  return Array.isArray(paths) ? paths.slice(0, 2) : [];
 }
 
 export function decisionMetricText(path) {
@@ -209,6 +209,149 @@ export function decisionTraceRows(analysis) {
   ];
 }
 // B-DECISION-DISPLAY-END
+
+// MONEYAI-PAGE-BOUNDARY-START
+// This page sends only a deliberately small synthetic fixture summary. It does
+// not serialize the session, materials, blobs, transcripts or personal history.
+const MONEYAI_SYNTHETIC_FIXTURE = 'juicer_cup_v1';
+const MONEYAI_SYNTHETIC_DESCRIPTION = '【合成演示，不代表真实商家效果】轻活电器旗舰店的350ml便携榨汁杯，69.9元，USB-C充电，全国包邮，清洗方式以商品说明书为准。'
+  + '2026-08-21至2026-08-27的合成嵌套事件链：播放58000、商品点击1450、加购96、创建订单54、支付42。'
+  + '老板假设租房上班族、宿舍学生和轻食人群可能购买，尚未验证。可能是商品价值与信任说明不够清楚，尚未证实。'
+  + '不能降价、不能编造性能、不能复杂重拍；缺少投流来源、退款、投诉及真实顾客问题频次。';
+const MONEYAI_SYNTHETIC_FOCUS = '可能是商品介绍和信任说明不够清楚，想先验证点击后的加购问题。';
+const MONEYAI_SYNTHETIC_WINDOW = Object.freeze({ start: '2026-08-21', end: '2026-08-27' });
+const MONEYAI_SYNTHETIC_CHANNEL = '抖音短视频（合成；投流来源未拆分）';
+const MONEYAI_SYNTHETIC_COHORT = '合成演示的同一商品、同窗嵌套事件链；逐阶段次数，不代表独立用户数';
+const MONEYAI_SYNTHETIC_FACTS = Object.freeze([
+  ['product_name', '350ml便携榨汁杯', 'confirmed_fact', null],
+  ['category', '家居小电器', 'confirmed_fact', null],
+  ['price', '69.9元', 'confirmed_fact', null],
+  ['specifications', '容量350ml；USB-C充电', 'confirmed_fact', null],
+  ['platform', '抖音', 'confirmed_fact', null],
+  ['desired_action', '先验证商品点击后的加购问题', 'confirmed_fact', null],
+  ['target_customer_hypothesis', '租房上班族、宿舍学生、轻食人群', 'owner_hypothesis', null],
+  ['hypothesis_current_problem', MONEYAI_SYNTHETIC_FOCUS, 'owner_hypothesis', null],
+  ['video_views', 58000, 'confirmed_fact', '次播放', MONEYAI_SYNTHETIC_WINDOW, MONEYAI_SYNTHETIC_CHANNEL, MONEYAI_SYNTHETIC_COHORT],
+  ['product_clicks', 1450, 'confirmed_fact', '次商品点击', MONEYAI_SYNTHETIC_WINDOW, MONEYAI_SYNTHETIC_CHANNEL, MONEYAI_SYNTHETIC_COHORT],
+  ['add_to_carts', 96, 'confirmed_fact', '次加购', MONEYAI_SYNTHETIC_WINDOW, MONEYAI_SYNTHETIC_CHANNEL, MONEYAI_SYNTHETIC_COHORT],
+  ['created_orders', 54, 'confirmed_fact', '笔创建订单', MONEYAI_SYNTHETIC_WINDOW, MONEYAI_SYNTHETIC_CHANNEL, MONEYAI_SYNTHETIC_COHORT],
+  ['paid_orders', 42, 'confirmed_fact', '笔支付订单', MONEYAI_SYNTHETIC_WINDOW, MONEYAI_SYNTHETIC_CHANNEL, MONEYAI_SYNTHETIC_COHORT],
+]);
+const MONEYAI_SYNTHETIC_CONSTRAINTS = Object.freeze([
+  ['round_constraint_intake_0', '不能降价'],
+  ['round_constraint_intake_1', '不能编造性能'],
+  ['round_constraint_intake_2', '不能复杂重拍'],
+]);
+const MONEYAI_SYNTHETIC_UNKNOWNS = Object.freeze([
+  '加购少是否真的是信任问题，尚未证实', '投流来源与投流花费未提供', '退款和投诉数据未提供',
+  '能否打冰块、续航次数与具体清洗步骤未确认', '真实售后规则未提供',
+  '真实顾客问题及出现频次未提供', '之前做过哪些经营动作未提供',
+]);
+const MONEYAI_SYNTHETIC_STATE_FACTS = new Map([
+  ...MONEYAI_SYNTHETIC_FACTS.map(([key, value, evidenceStatus, unit, window, channel, cohort]) =>
+    [key, { value, evidenceStatus, unit, window: window ?? null, channel: channel ?? null, cohort: cohort ?? null }]),
+  ...MONEYAI_SYNTHETIC_CONSTRAINTS.map(([key, value]) =>
+    [key, { value, evidenceStatus: 'confirmed_fact', unit: null, window: null, channel: null, cohort: null }]),
+  ['merchant_name', { value: '轻活电器旗舰店', evidenceStatus: 'confirmed_fact' }],
+  ['intake_window_start', { value: '2026-08-21', evidenceStatus: 'confirmed_fact' }],
+  ['intake_window_end', { value: '2026-08-27', evidenceStatus: 'confirmed_fact' }],
+  ['intake_product_fact_0', { value: '容量为350ml', evidenceStatus: 'confirmed_fact' }],
+  ['intake_product_fact_1', { value: '充电接口为USB-C', evidenceStatus: 'confirmed_fact' }],
+  ['intake_product_fact_2', { value: '全国包邮', evidenceStatus: 'confirmed_fact' }],
+  ['intake_product_fact_3', { value: '清洗方式以商品说明书为准', evidenceStatus: 'confirmed_fact' }],
+  ...MONEYAI_SYNTHETIC_UNKNOWNS.map((_, index) =>
+    ['intake_unknown_' + index, { value: null, evidenceStatus: 'unknown' }]),
+]);
+
+function unchangedSyntheticFixture(snapshot) {
+  const input = snapshot.input;
+  if (input.description !== MONEYAI_SYNTHETIC_DESCRIPTION || input.focus !== MONEYAI_SYNTHETIC_FOCUS
+    || input.intake?.status !== 'current' || input.intake?.roundId !== snapshot.round.id
+    || input.intake?.inputVersion !== snapshot.round.inputVersion || input.intake?.draft?.transcript !== ''
+    || !Array.isArray(input.intake?.sourceBindings) || input.intake.sourceBindings.length !== 0) return false;
+  const actualFacts = Array.isArray(input.facts) ? input.facts : [];
+  if (actualFacts.length !== MONEYAI_SYNTHETIC_STATE_FACTS.size
+    || new Set(actualFacts.map((fact) => fact?.key)).size !== actualFacts.length) return false;
+  for (const fact of actualFacts) {
+    const expected = MONEYAI_SYNTHETIC_STATE_FACTS.get(fact?.key);
+    if (!expected || !Object.is(fact.value, expected.value)
+      || fact.availability !== (expected.value === null ? 'unknown' : 'known')
+      || fact.evidenceStatus !== expected.evidenceStatus || fact.verification !== 'unreviewed'
+      || fact.subject !== '350ml便携榨汁杯' || fact.source?.kind !== 'merchant_statement'
+      || fact.source?.materialId != null || fact.source?.materialVersion != null) return false;
+    if (Object.hasOwn(expected, 'unit') && (fact.unit ?? null) !== expected.unit) return false;
+    if (expected.window && (fact.window?.start !== expected.window.start || fact.window?.end !== expected.window.end)) return false;
+    if (expected.channel != null && fact.channel !== expected.channel) return false;
+    if (expected.cohort != null && fact.cohort !== expected.cohort) return false;
+  }
+  const constraints = (Array.isArray(input.constraints) ? input.constraints : [])
+    .map((item) => [item?.description, item?.value ?? null, item?.unit ?? null, item?.scope]);
+  const expectedConstraints = MONEYAI_SYNTHETIC_CONSTRAINTS.map(([, description]) => [description, null, null, 'round']);
+  const unknowns = (Array.isArray(input.unknowns) ? input.unknowns : []).map((item) => [item?.description, item?.reason]);
+  return JSON.stringify(constraints) === JSON.stringify(expectedConstraints)
+    && JSON.stringify(unknowns) === JSON.stringify(MONEYAI_SYNTHETIC_UNKNOWNS.map((value) => [value, 'unknown']));
+}
+
+export function moneyAIRequestOrigin(snapshot) {
+  return { sessionId: snapshot?.sessionId, roundId: snapshot?.round?.id,
+    inputVersion: snapshot?.round?.inputVersion, revision: snapshot?.revision };
+}
+
+export function sameMoneyAIRequestOrigin(snapshot, origin) {
+  return Boolean(snapshot && origin && snapshot.sessionId === origin.sessionId
+    && snapshot.round?.id === origin.roundId && snapshot.round?.inputVersion === origin.inputVersion
+    && snapshot.revision === origin.revision);
+}
+
+export function buildMoneyAIAnalysisSummary(snapshot) {
+  if (snapshot?.contractVersion !== 'demo.v1' || !snapshot?.round || !snapshot?.input
+    || snapshot.input.confirmedVersion !== snapshot.round.inputVersion) {
+    return { ok: false, code: 'unconfirmed_input', message: '请先确认当前轮次和输入，尚未准备发送摘要。' };
+  }
+  if (snapshot.fixtureId !== MONEYAI_SYNTHETIC_FIXTURE) {
+    return { ok: false, code: 'scope_not_allowed',
+      message: '首轮真实分析只开放给显式载入且未修改的合成榨汁杯摘要；真实商家资料不会默认外发。' };
+  }
+  if (!Array.isArray(snapshot.input.materials) || snapshot.input.materials.length > 0) {
+    return { ok: false, code: 'material_scope_not_allowed',
+      message: '当前轮次含材料原件；首轮通路不会发送附件、图片、表格、录音或其摘要。' };
+  }
+  if (!unchangedSyntheticFixture(snapshot)) {
+    return { ok: false, code: 'synthetic_scope_changed',
+      message: '当前整理内容已不同于固定合成榨汁杯种子；为避免把新增文字当作合成资料外发，真实分析入口保持关闭。' };
+  }
+  const factsByKey = new Map(snapshot.input.facts.map((fact) => [fact.key, fact]));
+  return { ok: true, summary: {
+    version: 'analysis.request.v1',
+    focus: MONEYAI_SYNTHETIC_FOCUS,
+    facts: MONEYAI_SYNTHETIC_FACTS.map(([key, value, evidenceKind, unit, window, channel, cohort]) => ({
+      id: factsByKey.get(key).id, key, value, availability: 'known', evidenceStatus: evidenceKind,
+      unit: unit ?? null, subject: '350ml便携榨汁杯',
+      window: window ? { start: window.start, end: window.end } : null,
+      channel: channel ?? null, cohort: cohort ?? null,
+      sourceKind: 'merchant_statement', dataOrigin: 'synthetic_seed', verification: 'unreviewed',
+    })),
+    constraints: MONEYAI_SYNTHETIC_CONSTRAINTS.map(([key, description], index) => ({
+      id: snapshot.input.constraints[index].id, description, value: null, unit: null, scope: 'round',
+      sourceFactIds: [factsByKey.get(key).id], dataOrigin: 'synthetic_seed',
+    })),
+    unknowns: snapshot.input.unknowns.map((item) => ({
+      id: item.id, description: item.description, reason: 'unknown', sourceId: item.sourceId,
+      dataOrigin: 'synthetic_seed',
+    })),
+  } };
+}
+
+export function moneyAIResultMessage(result) {
+  const sent = result?.sentToMoneyAI;
+  const delivery = sent === true ? '服务确认已发送到 MoneyAI。'
+    : sent === false ? '服务确认未发送到 MoneyAI。'
+      : '是否发送尚未确认，请勿立即重复提交。';
+  return { delivery, kind: result?.ok ? 'success' : result?.code === 'cancelled' ? 'info' : 'error',
+    message: typeof result?.message === 'string' && result.message.trim()
+      ? result.message : result?.ok ? '已收到回执。' : '未取得可用分析回执。' };
+}
+// MONEYAI-PAGE-BOUNDARY-END
 
 // Page-local view state only. All persisted data goes through shared/state.js.
 const byId = (id) => document.getElementById(id);
@@ -262,6 +405,266 @@ const reviewRunner = createDecisionReviewRunner({
     syncReviewControls();
   },
 });
+
+let moneyAIStatus = null;
+let moneyAIStatusBusy = false;
+let moneyAIRequestPreparing = false;
+let moneyAIRequestBusy = false;
+let moneyAIPreview = null;
+let moneyAIPreviewToken = '';
+let moneyAIOperation = null;
+
+function moneyAIStatusText(value, kind = 'info') {
+  const node = byId('moneyai-request-status');
+  node.textContent = value;
+  node.dataset.kind = kind;
+}
+
+function renderMoneyAICapability() {
+  const tag = byId('moneyai-capability-tag');
+  const status = byId('moneyai-capability-status');
+  if (moneyAIStatusBusy) {
+    tag.textContent = '正在核对'; tag.dataset.state = 'checking';
+    status.textContent = '正在读取项目后端状态；尚未发送分析摘要。';
+  } else if (!moneyAIStatus) {
+    tag.textContent = '能力待核对'; tag.dataset.state = 'unknown';
+    status.textContent = '尚未取得完整能力回执。';
+  } else if (moneyAIStatus.analysisReady) {
+    tag.textContent = '真实分析可请求'; tag.dataset.state = 'ready';
+    status.textContent = '项目通路声明分析已就绪；仍须逐次同意并核对业务回执。' + (moneyAIStatus.reason ? ' ' + moneyAIStatus.reason : '');
+  } else {
+    tag.textContent = '真实分析未就绪'; tag.dataset.state = 'unavailable';
+    status.textContent = '项目后端可报告状态，但分析能力尚未开放。' + (moneyAIStatus.reason ? ' ' + moneyAIStatus.reason : '');
+  }
+}
+
+function syncMoneyAIControls() {
+  const eligibility = state ? buildMoneyAIAnalysisSummary(state) : { ok: false };
+  const previewCurrent = Boolean(moneyAIPreview && state
+    && sameMoneyAIRequestOrigin(state, moneyAIPreview.origin));
+  const consent = byId('moneyai-consent');
+  const requestLocked = moneyAIRequestPreparing || moneyAIRequestBusy;
+  consent.disabled = requestLocked || !eligibility.ok;
+  byId('moneyai-check-status').disabled = moneyAIStatusBusy || requestLocked || !api;
+  byId('moneyai-request-analysis').disabled = requestLocked || moneyAIStatusBusy
+    || moneyAIStatus?.analysisReady !== true || !eligibility.ok || !previewCurrent || !consent.checked;
+  byId('moneyai-cancel-analysis').hidden = !requestLocked || !moneyAIOperation;
+  byId('moneyai-cancel-analysis').disabled = !requestLocked || moneyAIOperation?.cancelRequested;
+}
+
+function prepareMoneyAIPreview(snapshot) {
+  const result = buildMoneyAIAnalysisSummary(snapshot);
+  const preview = byId('moneyai-summary-preview');
+  const fingerprint = byId('moneyai-summary-fingerprint');
+  const token = JSON.stringify(moneyAIRequestOrigin(snapshot));
+  const scopeChanged = moneyAIPreviewToken !== token;
+  moneyAIPreviewToken = token;
+  moneyAIPreview = null;
+  if (scopeChanged) byId('moneyai-consent').checked = false;
+  if (!result.ok) {
+    preview.textContent = result.message;
+    fingerprint.textContent = '摘要指纹：未生成';
+    byId('moneyai-consent').checked = false;
+    syncMoneyAIControls();
+    return;
+  }
+  preview.textContent = JSON.stringify(result.summary, null, 2);
+  fingerprint.textContent = '摘要指纹：正在本机计算……';
+  if (typeof api?.computeMoneyAIInputFingerprint !== 'function') {
+    fingerprint.textContent = '共享指纹契约尚未载入；真实分析入口保持关闭。';
+    syncMoneyAIControls();
+    return;
+  }
+  void api.computeMoneyAIInputFingerprint(result.summary).then((value) => {
+    if (!state || moneyAIPreviewToken !== token || !sameMoneyAIRequestOrigin(state, moneyAIRequestOrigin(snapshot))) return;
+    moneyAIPreview = { origin: moneyAIRequestOrigin(snapshot), summary: result.summary, inputFingerprint: value };
+    fingerprint.textContent = '摘要指纹：' + value;
+    syncMoneyAIControls();
+  }).catch(() => {
+    if (moneyAIPreviewToken !== token) return;
+    fingerprint.textContent = '摘要指纹计算失败；真实分析入口保持关闭。';
+    syncMoneyAIControls();
+  });
+}
+
+function renderMoneyAIPanel() {
+  const mode = state?.analysis?.mode;
+  byId('moneyai-analysis-source').textContent = mode === 'real_model'
+    ? '当前已保存分析标记为 MoneyAI 真实模型结果；仍以保存的来源、请求与版本回执为准。'
+    : mode === 'demo_fixture' ? '当前已保存的是合成资料的本机规则分析，不是 MoneyAI 结果。请求失败不会替换它。'
+      : mode === 'local_limited' ? '当前已保存的是本机有限分析，不是 MoneyAI 结果。请求失败不会替换它。'
+        : '当前没有已保存的有效分析；不会用自然语言回包或 HTTP 成功冒充分析结果。';
+  renderMoneyAICapability();
+  prepareMoneyAIPreview(state);
+  syncMoneyAIControls();
+}
+
+async function refreshMoneyAIStatus() {
+  if (!api || moneyAIStatusBusy || moneyAIRequestPreparing || moneyAIRequestBusy) return;
+  moneyAIStatusBusy = true;
+  renderMoneyAICapability(); syncMoneyAIControls();
+  const result = await api.getMoneyAIStatus();
+  moneyAIStatusBusy = false;
+  if (result?.ok) {
+    moneyAIStatus = result.status;
+    moneyAIStatusText(result.status.analysisReady
+      ? '能力已就绪；核对发送摘要并逐次同意后，才可发起请求。'
+      : '真实分析目前不可用；当前本机判断保持不变。', result.status.analysisReady ? 'success' : 'info');
+  } else {
+    moneyAIStatus = null;
+    moneyAIStatusText(result?.message || '未取得完整能力回执；没有发送分析摘要。', 'error');
+  }
+  renderMoneyAICapability(); syncMoneyAIControls();
+}
+
+function invalidateMoneyAIRequest(next) {
+  if (!moneyAIOperation || sameMoneyAIRequestOrigin(next, moneyAIOperation.origin)) return;
+  moneyAIOperation.stale = true;
+  moneyAIOperation.controller.abort();
+  moneyAIStatusText('请求期间会话、轮次、输入版本或revision已变化；已取消等待，迟到回执不会保存。', 'error');
+}
+
+async function requestMoneyAIFromPage() {
+  if (!api || moneyAIRequestPreparing || moneyAIRequestBusy || moneyAIStatus?.analysisReady !== true) return;
+  if (!byId('moneyai-consent').checked) {
+    moneyAIStatusText('请先展开并核对摘要，再为这一次请求明确同意。', 'error');
+    return;
+  }
+  if (!moneyAIPreview || !sameMoneyAIRequestOrigin(state, moneyAIPreview.origin)) {
+    byId('moneyai-consent').checked = false;
+    moneyAIStatusText('当前预览已经过期；未发送，请重新核对摘要并逐次同意。', 'error');
+    syncMoneyAIControls();
+    return;
+  }
+  // Consume consent and freeze the exact preview before the first await. The
+  // preflight lock prevents one checkbox action from starting two requests.
+  const frozenPreview = structuredClone(moneyAIPreview);
+  const controller = new AbortController();
+  const operation = { origin: frozenPreview.origin, request: null, controller,
+    cancelRequested: false, stale: false };
+  moneyAIOperation = operation;
+  moneyAIRequestPreparing = true;
+  byId('moneyai-consent').checked = false;
+  moneyAIStatusText('正在本机复核摘要和指纹，尚未发送。');
+  syncMoneyAIControls();
+  let prepared = null;
+  try {
+    const snapshot = await readState();
+    if (controller.signal.aborted || operation.stale
+      || !sameMoneyAIRequestOrigin(snapshot, frozenPreview.origin)
+      || !sameMoneyAIRequestOrigin(state, frozenPreview.origin)) {
+      throw new Error('发送前会话或revision已变化，或本次请求已取消；未发送，请重新核对摘要。');
+    }
+    const summaryResult = buildMoneyAIAnalysisSummary(snapshot);
+    if (!summaryResult.ok) throw new Error(summaryResult.message);
+    if (JSON.stringify(summaryResult.summary) !== JSON.stringify(frozenPreview.summary)) {
+      throw new Error('发送摘要与已预览内容不一致；未发送，请重新核对。');
+    }
+    let inputFingerprint;
+    try { inputFingerprint = await api.computeMoneyAIInputFingerprint(summaryResult.summary); }
+    catch { throw new Error('摘要指纹计算失败，未发送。'); }
+    if (controller.signal.aborted || operation.stale
+      || !sameMoneyAIRequestOrigin(state, frozenPreview.origin)
+      || frozenPreview.inputFingerprint !== inputFingerprint) {
+      throw new Error('请求已取消、身份已变化或指纹不一致；未发送，请重新核对并逐次同意。');
+    }
+    const operationId = 'analysis:' + crypto.randomUUID();
+    const attemptId = 'attempt:' + crypto.randomUUID();
+    const request = api.createMoneyAIEnvelope({
+      operation: api.MONEYAI_OPERATIONS.analysis, operationId, attemptId,
+      scope: {
+        sessionId: snapshot.sessionId, roundId: snapshot.round.id,
+        inputVersion: snapshot.round.inputVersion, analysisId: null, pathId: null,
+        artifact: null, feedback: null, inputFingerprint,
+      },
+      consent: {
+        granted: true, sendScope: ['analysis_input'],
+        dataClasses: ['synthetic_focus', 'synthetic_facts', 'synthetic_constraints', 'synthetic_unknowns'],
+      },
+      payload: frozenPreview.summary,
+    });
+    prepared = { origin: { ...moneyAIRequestOrigin(snapshot), operationId, attemptId, inputFingerprint },
+      request, frozenState: structuredClone(snapshot) };
+    if (!sameMoneyAIRequestOrigin(state, prepared.origin)) {
+      throw new Error('发送前会话或revision已变化；未发送，请重新核对摘要。');
+    }
+  } catch (error) {
+    if (!operation.cancelRequested && !operation.stale) {
+      moneyAIStatusText(error?.message || '当前会话未能读回，未发送摘要。', 'error');
+    }
+    prepared = null;
+  } finally {
+    moneyAIRequestPreparing = false;
+    if (!prepared || controller.signal.aborted) {
+      if (moneyAIOperation === operation) moneyAIOperation = null;
+      syncMoneyAIControls();
+    }
+  }
+  if (!prepared || controller.signal.aborted || operation.stale) return;
+  operation.origin = prepared.origin;
+  operation.request = prepared.request;
+  operation.frozenState = prepared.frozenState;
+  moneyAIRequestBusy = true;
+  byId('moneyai-send-status').textContent = '请求已开始；是否发送仍待服务回执。';
+  moneyAIStatusText('正在等待项目 MoneyAI 分析回执；当前本地分析尚未改变。');
+  syncMoneyAIControls();
+  let result;
+  try {
+    result = await api.requestMoneyAIAnalysis(operation.request, {
+      state: operation.frozenState, signal: controller.signal, consentToExternalProcessing: true,
+    });
+  } catch {
+    result = { ok: false, code: 'backend_unavailable',
+      message: '共享分析调用异常；未取得完整回执。', sentToMoneyAI: null };
+  }
+  if (moneyAIOperation !== operation) return;
+  const described = moneyAIResultMessage(result);
+  byId('moneyai-send-status').textContent = described.delivery;
+  if (operation.stale || !sameMoneyAIRequestOrigin(state, operation.origin)) {
+    moneyAIStatusText('收到迟到回执，但请求身份已过期；未保存、未替换当前分析。' + described.delivery, 'error');
+  } else if (!result?.ok) {
+    moneyAIStatusText(described.message + ' ' + described.delivery + ' 当前已保存分析保持不变。', described.kind);
+  } else {
+    try {
+      api.validateRealModelAnalysisDraft(result.analysis, operation.frozenState, operation.request.scope);
+      if (!sameMoneyAIRequestOrigin(state, operation.origin)) {
+        throw reviewError('MoneyAI回执到达时本机revision已变化，未保存旧分析。');
+      }
+      moneyAIStatusText('MoneyAI回执已通过共享结构和身份校验；正在保存，当前本机分析尚未改变。');
+      // From here the reducer's exact expectedRevision is the sole commit
+      // authority. Hide cancellation so our successful revision is not
+      // mistaken for a late network response by the request guard.
+      moneyAIOperation = null;
+      syncMoneyAIControls();
+      const saved = await dispatchIntent('moneyai-analysis:' + operation.origin.operationId,
+        'ANALYSIS_SET', { analysis: result.analysis }, operation.frozenState,
+        { exactRevision: true, scope: operation.origin });
+      if (saved.analysis?.mode !== 'real_model'
+        || saved.analysis.providerReceipt?.operationId !== result.receipt?.operationId
+        || saved.analysis.providerReceipt?.inputFingerprint !== operation.origin.inputFingerprint) {
+        throw reviewError('真实分析保存回执与本次MoneyAI身份不一致。', 'read_failed');
+      }
+      moneyAIStatusText('MoneyAI真实分析已通过共享校验并保存；请重新比较当前最多两条路径。', 'success');
+    } catch (error) {
+      moneyAIStatusText('MoneyAI回执未能安全保存：' + (error?.message || '共享校验或版本回执不完整。')
+        + ' 当前已保存分析保持不变或以最新共享状态为准。', 'error');
+    }
+  }
+  moneyAIRequestBusy = false;
+  if (moneyAIOperation === operation) moneyAIOperation = null;
+  prepareMoneyAIPreview(state);
+  syncMoneyAIControls();
+}
+
+function cancelMoneyAIRequest() {
+  if (!moneyAIOperation || !moneyAIRequestPreparing && !moneyAIRequestBusy) return;
+  moneyAIOperation.cancelRequested = true;
+  moneyAIOperation.controller.abort();
+  moneyAIStatusText(moneyAIRequestPreparing
+    ? '已取消本机发送前复核；尚未调用共享分析请求。'
+    : '正在取消本次等待；若请求已送达，是否发送仍以最终回执为准。');
+  syncMoneyAIControls();
+}
 
 
 function revisionRecoveryEntry() {
@@ -590,6 +993,7 @@ function setBusy(value) {
   });
   byId('path-detail').setAttribute('aria-busy', String(busy));
   syncReviewControls();
+  syncMoneyAIControls();
 }
 
 function serialize(work) {
@@ -642,6 +1046,7 @@ function applyState(next) {
   }
   // A late load/dispatch response must not undo a newer subscription snapshot.
   if (state?.sessionId === next.sessionId && next.revision < state.revision) return true;
+  invalidateMoneyAIRequest(next);
   const signature = JSON.stringify([next.sessionId, next.round.id, next.round.inputVersion,
     next.input.confirmedVersion, next.fixtureId, next.analysis?.id, next.analysis?.status, latestDecisionReview(next)?.id,
     next.selection?.analysisId, next.selection?.pathId, next.savedAt === null]);
@@ -652,7 +1057,7 @@ function applyState(next) {
     byId('decision-differences').hidden = true;
     byId('report-consent').checked = false;
     renderState();
-  }
+  } else prepareMoneyAIPreview(state);
   setBusy(busy);
   return true;
 }
@@ -1120,7 +1525,8 @@ function renderScope() {
   addDefinition(meta, '输入版本', '第 ' + (state.round.index ?? '未知') + ' 轮 · v' + state.round.inputVersion);
   const mode = state.analysis?.mode;
   addDefinition(meta, '分析来源', mode === 'demo_fixture' ? '合成演示 · 本机规则，非真实模型'
-    : mode === 'local_limited' ? '本机有限分析 · 非真实模型' : '尚未生成');
+    : mode === 'local_limited' ? '本机有限分析 · 非真实模型'
+      : mode === 'real_model' ? 'MoneyAI真实模型 · 以保存回执为准' : '尚未生成');
   addDefinition(meta, '当前全部缺口', gaps.join('；') || '未登记，不代表没有未知');
 }
 
@@ -1147,6 +1553,7 @@ function renderState() {
   list(analysis?.limitations).forEach((value) => limitations.append(element('li', '', text(value))));
   renderFunnel(analysis);
   renderPriority(analysis);
+  renderMoneyAIPanel();
   if (analysis && !Array.isArray(analysis.paths)) {
     pathInvalid = true;
     message('分析的路径结构不完整，无法继续。请更新判断或返回核对。', 'error');
@@ -1198,8 +1605,9 @@ function viewPath(pathId, openDetails = false) {
 }
 
 function renderPathList(paths) {
+  const total = list(paths).length;
   paths = visibleDecisionPaths(paths);
-  byId('paths-availability-note').textContent = paths.length < 2 ? '当前仅有' + paths.length + '条有依据的方案，不补造第二条。' : '当前' + paths.length + '条方案均需由你明确选择；按钮不会自动执行平台操作。';
+  byId('paths-availability-note').textContent = paths.length < 2 ? '当前仅有' + paths.length + '条有依据的方案，不补造第二条。' : total > 2 ? '本轮只显示当前保存的前两条方案；其他旧方案未自动采用。' : '两条方案均需由你明确选择；按钮不会自动执行平台操作。';
   const container = byId('path-list');
   container.replaceChildren();
   container.dataset.count = String(paths.length);
@@ -1216,41 +1624,14 @@ function renderPathList(paths) {
     if (path.actionKey) card.dataset.actionKey = path.actionKey;
     card.dataset.viewed = String(isViewed);
     card.dataset.selected = String(isSelected);
-    // The existing A/B contract determines emphasis; unlabeled paths get no invented recommendation.
-    card.dataset.recommended = String(path.optionLabel === 'A');
-    const topline = element('div', 'path-card-topline');
-    topline.append(element('span', 'path-option-label', path.optionLabel ? '方案 ' + path.optionLabel : '可选方案'));
-    if (path.optionLabel === 'A' || path.optionLabel === 'B') {
-      topline.append(element('span', path.optionLabel === 'A' ? 'path-recommend-label' : 'path-alternative-label',
-        path.optionLabel === 'A' ? '主推荐' : '备选路径'));
-    }
-    card.append(topline);
     const heading = element('header', 'path-card-heading');
+    if (text(path.optionLabel, '')) heading.append(element('span', 'path-option-label', path.optionLabel));
     const title = element('h3', '', text(path.title, '未命名行动'));
     title.id = 'path-card-' + path.id;
     card.setAttribute('aria-labelledby', title.id);
     heading.append(title);
     card.append(heading);
     card.append(element('p', 'path-card-status', [isViewed ? '当前查看' : '', isSelected ? '本轮已选' : '尚未选择'].filter(Boolean).join(' · ')));
-    const resources = element('div', 'path-card-resources');
-    for (const [label, value] of [['资金投入', costText(path.cost?.money, '元')], ['准备时间', costText(path.cost?.time, '分钟')]]) {
-      const resource = element('div');
-      resource.append(element('span', '', label), element('strong', '', value));
-      resources.append(resource);
-    }
-    card.append(resources);
-    const costNotes = [path.cost?.time?.note, path.cost?.money?.note].filter((value) => typeof value === 'string' && value.trim());
-    if (costNotes.length) card.append(element('p', 'path-card-cost-note', costNotes.join('；')));
-
-    const actionSection = element('section', 'path-card-section');
-    actionSection.append(element('h4', '', '具体会做什么'));
-    const steps = element('ol', 'path-card-steps');
-    // Split only existing clauses for readability; do not invent tasks or execution records.
-    text(path.action, '具体动作尚未提供').split('；').filter((value) => value.trim())
-      .forEach((value) => steps.append(element('li', '', value.trim())));
-    actionSection.append(steps);
-    card.append(actionSection);
-
     const content = element('dl', 'path-card-content');
     const addRow = (label, value) => {
       const group = element('div');
@@ -1263,48 +1644,30 @@ function renderPathList(paths) {
       content.append(group);
       return dd;
     };
+    addRow('具体做什么', text(path.action, '具体动作尚未提供'));
+    const cost = addRow('成本', costText(path.cost?.money, '元') + '；' + costText(path.cost?.time, '分钟'));
+    const costNotes = [path.cost?.time?.note, path.cost?.money?.note].filter((value) => typeof value === 'string' && value.trim());
+    if (costNotes.length) cost.append(element('span', 'path-card-cost-note', costNotes.join('；')));
+    addRow('风险', list(path.risk).map((entry) => text(entry.description, '风险待核对')));
     addRow('验证指标', decisionMetricText(path));
-    const risk = addRow('选择前先看风险', list(path.risk).map((entry) => text(entry.description, '风险待核对')));
-    risk.parentElement.classList.add('path-card-risk');
+    addRow('本轮保持不变', list(path.experiment?.keepFixed).join('；') || '尚未提供，执行前需核对');
     card.append(content);
-
-    const more = element('details', 'path-card-more');
-    more.append(element('summary', '', '查看依据、前提与观察计划'));
-    const moreContent = element('div', 'path-card-more-content');
-    if (text(path.experiment?.hypothesis, '')) {
-      moreContent.append(element('h4', '', '待验证假设'));
-      appendParagraph(moreContent, path.experiment.hypothesis);
-    }
-    moreContent.append(element('h4', '', '来自现有资料'));
-    appendList(moreContent, list(path.evidenceRefs).map((entry) => text(entry.summary)), '尚未提供依据，不能当作已经验证。');
-    moreContent.append(element('h4', '', '行动前先核对'));
-    appendList(moreContent, list(path.prerequisites).map((entry) =>
-      (({ met: '条件具备', unmet: '尚不具备', unknown: '待核对' })[entry.status] || '待核对') + '：' + text(entry.text)), '执行条件尚未提供。');
-    moreContent.append(element('h4', '', '本轮保持不变'));
-    appendList(moreContent, path.experiment?.keepFixed, '尚未提供，执行前需核对。');
-    moreContent.append(element('h4', '', '观察计划'));
-    appendParagraph(moreContent, text(path.experiment?.window?.description, '观察期尚未提供，不能编造固定门槛。'));
-    moreContent.append(element('h4', '', '何时先停下来'));
-    appendList(moreContent, list(path.experiment?.stopConditions).map((entry) => text(entry.text)), '停止条件尚待核对。');
-    more.append(moreContent);
-    card.append(more);
-
     const actions = element('div', 'path-card-actions');
-    const view = element('button', 'button button--quiet path-choice', '完整依据与报告');
+    const view = element('button', 'button button--quiet path-choice', '查看完整依据');
     view.type = 'button';
     view.dataset.pathId = path.id;
     view.setAttribute('aria-pressed', String(isViewed));
     view.setAttribute('aria-controls', 'path-detail-disclosure');
     view.setAttribute('aria-label', '查看' + optionText(path) + '：' + text(path.title));
     view.addEventListener('click', () => viewPath(path.id, true));
-    const select = element('button', 'button' + (path.optionLabel === 'B' && !isSelected ? ' button--secondary' : '') + ' path-select', decisionSelectionLabel(path, isSelected));
+    const select = element('button', 'button path-select', decisionSelectionLabel(path, isSelected));
     select.type = 'button';
     select.dataset.pathId = path.id;
     select.disabled = busy || hasPendingReview() || !currentAnalysis(state) || subscriptionFailed;
     select.addEventListener('click', () => {
       if (viewPath(path.id)) void choosePath();
     });
-    actions.append(select, view);
+    actions.append(view, select);
     card.append(actions);
     container.append(card);
   });
@@ -1607,18 +1970,25 @@ async function boot() {
   booting = true;
   try {
     if (!['http:', 'https:'].includes(window.location.protocol)) throw new Error('请使用统筹提供的同源本地 HTTP 地址，不能通过 file:// 运行共享会话。');
-    const [storage, navigation, shell, data, report] = await Promise.all([
+    const [storage, navigation, shell, data, report, moneyai, moneyaiContract, model] = await Promise.all([
       import('../shared/state.js'), import('../shared/navigation.js'), import('../shared/shell.js'),
-      import('../shared/demo-data.js'), import('./report.js'),
+      import('../shared/demo-data.js'), import('./report.js'), import('../shared/moneyai.js'),
+      import('../shared/moneyai-contract.js'), import('../shared/model.js'),
     ]);
-    api = { ...storage, ...navigation, ...shell, ...data, ...report };
-    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree']) {
+    api = { ...storage, ...navigation, ...shell, ...data, ...report, ...moneyai,
+      computeMoneyAIInputFingerprint: moneyaiContract.computeMoneyAIInputFingerprint,
+      createMoneyAIEnvelope: moneyaiContract.createMoneyAIEnvelope,
+      validateRealModelAnalysisDraft: model.validateRealModelAnalysisDraft,
+      MONEYAI_OPERATIONS: moneyaiContract.MONEYAI_OPERATIONS };
+    for (const name of ['loadSession', 'dispatch', 'subscribeSession', 'navigateTo', 'registerNavigationGuard', 'mountShell', 'buildDemoAnalysis', 'buildPathReport', 'validateDecisionTree', 'getMoneyAIStatus', 'requestMoneyAIAnalysis', 'computeMoneyAIInputFingerprint', 'createMoneyAIEnvelope', 'validateRealModelAnalysisDraft']) {
       if (typeof api[name] !== 'function') throw new Error(`共享或报告模块缺少 ${name}，未创建替代实现。`);
     }
+    if (api.MONEYAI_OPERATIONS?.analysis !== 'analysis.run') throw new Error('MoneyAI分析操作契约不兼容。');
     await api.mountShell('decisions');
     registerReviewNavigationGuard();
     subscribe();
     await refreshSession();
+    void refreshMoneyAIStatus();
   } catch (error) {
     api = null;
     showStart('第二页暂时无法启动', '共享模块或本地服务还未准备好。不会载入假案例，也没有改写已保存的资料。', { goBack: false });
@@ -1633,6 +2003,10 @@ bindReviewControls();
 document.querySelectorAll('[data-action="return"]').forEach((button) => button.addEventListener('click', () => goTo('intake')));
 byId('retry-load').addEventListener('click', () => api ? refreshSession() : window.location.reload());
 byId('refresh-analysis').addEventListener('click', () => operate(generateAnalysis));
+byId('moneyai-check-status').addEventListener('click', () => void refreshMoneyAIStatus());
+byId('moneyai-consent').addEventListener('change', () => syncMoneyAIControls());
+byId('moneyai-request-analysis').addEventListener('click', () => void requestMoneyAIFromPage());
+byId('moneyai-cancel-analysis').addEventListener('click', cancelMoneyAIRequest);
 byId('choose-path').addEventListener('click', choosePath);
 byId('download-report').addEventListener('click', downloadReport);
 byId('calculation-return').addEventListener('click', () => {
@@ -1658,7 +2032,10 @@ for (const id of ['evidence-disclosure', 'experiment-disclosure', 'tree-disclosu
     }
   });
 }
-window.addEventListener('pagehide', () => { unsubscribe?.(); unsubscribe = null; unregisterReviewGuard?.(); unregisterReviewGuard = null; });
+window.addEventListener('pagehide', () => {
+  if (moneyAIOperation) { moneyAIOperation.stale = true; moneyAIOperation.controller.abort(); }
+  unsubscribe?.(); unsubscribe = null; unregisterReviewGuard?.(); unregisterReviewGuard = null;
+});
 window.addEventListener('pageshow', (event) => { if (event.persisted && api) { registerReviewNavigationGuard(); subscribe(); void refreshSession(false); } });
 // Cosmetic only: a missing or late title enhancement cannot block shared state.
 void import('../shared/title-motion.js')

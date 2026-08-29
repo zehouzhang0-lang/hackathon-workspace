@@ -1,6 +1,7 @@
 import { enhanceFoldTitle } from "../shared/title-motion.js";
 import { findIntakeFieldFact } from "../shared/intake-draft.js";
-import { parseWorkbookFacts } from "../shared/table-facts.js";
+import { MONEYAI_CONTRACT_VERSION, MONEYAI_OPERATIONS,
+  computeMoneyAIInputFingerprint } from "../shared/moneyai-contract.js";
 
 let titleMotionController = null;
 export function getIntakeTitleMotionState() {
@@ -13,14 +14,11 @@ const METRIC_FIELDS = [
 const TEXT_FIELDS = METRIC_FIELDS.filter((field) => field !== "value");
 const METRIC_LABELS = {
   paid_orders: "支付订单", detail_visitors: "商品详情访客", product_visitors: "商品访客",
-  views: "观看次数", inquiries: "咨询数", price: "价格",
-  video_views: "视频播放量", product_clicks: "商品点击数", add_to_carts: "加购数", created_orders: "创建订单数",
-  followers: "粉丝总量", followers_growth: "粉丝增量", total_likes: "获赞总量",
-  live_sessions: "直播场次", avg_live_viewers: "场均场观", avg_products_per_session: "场均带货数",
-  estimated_settlement: "预估结算金额", live_viewers: "单场观看人次", live_product_count: "直播货盘商品数",
-  sales_estimate: "销量（平台估算）", likes: "点赞量", comments: "评论量", collects: "收藏量", shares: "分享量"
+  views: "观看次数", inquiries: "咨询数", price: "价格"
 };
-const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+const MATERIAL_CATEGORY_LABELS = { unknown: "未标注", content: "内容", product: "商品", transactions: "成交", ads: "投流" };
+const isImageMaterial = (material) => material?.mime?.startsWith("image/") === true;
+const BLENDER_FIXTURE_ID = "juicer_cup_v1";
 const NO_METRICS = "暂无可核对的业务指标；本次仅按描述和材料状态整理。";
 const NO_DESCRIPTION = "本轮具体问题尚未描述，可先核对手头材料。";
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -136,16 +134,6 @@ function metricFact(record, material, locator, id, warnings, origin) {
   };
 }
 
-// XLSX materials saved before the shared parser existed carry needs_review with
-// no extracted facts; they are re-read with the current parser on the next
-// 整理 instead of staying stuck with the outdated "解析尚未接通" result.
-export function materialsNeedingRead(state) {
-  return (state?.input?.materials || []).filter((item) => item.status === "received" ||
-    (fileExtension(item.name) === "xlsx" && ["needs_review", "failed"].includes(item.status) &&
-      !(state?.input?.facts || []).some((fact) => fact.source?.materialId === item.id &&
-        fact.source?.materialVersion === item.version && fact.source?.locator?.type === "xlsx")));
-}
-
 // This is a page-local parser, not a second session or persistence layer.
 export function parseMetricText(rawText, material) {
   const text = rawText.replace(/^\uFEFF/, "");
@@ -218,20 +206,15 @@ export function parseMetricText(rawText, material) {
 }
 
 export async function readSupportedMaterial(blob, material) {
-  if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
+  if (isImageMaterial(material)) {
     return { status: "needs_review", facts: [], error: "图片已接收，内容待核对；未进行文字识别。" };
   }
-  if (fileExtension(material.name) === "xlsx") {
-    // XLSX在本机解析；解析只读已知指标列，不执行公式、宏或外部链接。
-    try {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      return await parseWorkbookFacts(bytes, material);
-    } catch {
-      return { status: "failed", facts: [], error: "Excel读取过程失败，未保存部分结果；原件已保留，可重试或另存为XLSX。" };
-    }
+  const extension = fileExtension(material?.name);
+  if (extension === "xlsx") {
+    return { status: "needs_review", facts: [], error: "XLSX原件已接收；当前共享能力未提供可调用的本机解析出口，内容仍待核对，可先导出UTF-8 CSV。" };
   }
-  if (fileExtension(material.name) === "xls") {
-    return { status: "needs_review", facts: [], error: "XLS旧格式仅接收保存；解析未支持，可另存为XLSX或导出UTF-8 CSV后重新上传以自动读取指标。" };
+  if (extension === "xls") {
+    return { status: "needs_review", facts: [], error: "XLS旧格式原件已接收；当前不解析，内容仍待核对，可另存为XLSX或导出UTF-8 CSV。" };
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
@@ -283,12 +266,8 @@ export function buildOrganization(snapshot, focusText, ownedUnknowns = new Map()
     if (!fact.window?.start || !fact.window?.end) missing.push("时间范围");
     if (!fact.channel) missing.push("渠道");
     if (!fact.cohort) missing.push("群体口径");
-    if (missing.length) {
-      // 同一指标在同口径下缺同一维度的行（例如整份导出都无时间范围）合并为一条
-      // 缺口，按指标聚合展示；逐行事实的取值仍保留在“已读取数据”可核对。
-      add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
-        "not_provided", "input:focus");
-    }
+    if (missing.length) add("指标“" + labelFor(fact.key) + "”缺少" + missing.join("、") + "，保留未知。",
+      "not_provided", "fact:" + fact.id);
     if (fact.window?.start && fact.window?.end && fact.window.start > fact.window.end) {
       add("指标“" + labelFor(fact.key) + "”的起止日期存在冲突，未调换原值。",
         "conflicting", "fact:" + fact.id);
@@ -398,8 +377,8 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
     { id: "gaps", title: "数据缺口", empty: "没有额外登记的缺口，不等于资料已全部核实。" }
   ].map((group) => ({ ...group, items: [] }));
   const byId = Object.fromEntries(groups.map((group) => [group.id, group]));
-  const sourceNames = { voice: "语音自述", manual: "商家填写", paste: "粘贴文字",
-    txt: "TXT提取", csv: "CSV提取", json: "JSON提取", xlsx: "Excel提取" };
+  const sourceNames = { voice: "语音自述", manual: state?.fixtureId ? "合成演示资料" : "商家填写", paste: "粘贴文字",
+    txt: "TXT提取", csv: "CSV提取", json: "JSON提取" };
   const add = (id, item) => {
     if (!byId[id].items.some((entry) => entry.text === item.text && entry.note === item.note &&
       entry.factId === item.factId && entry.materialId === item.materialId && entry.field === item.field)) byId[id].items.push(item);
@@ -418,6 +397,7 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
     const material = (state?.input?.materials || []).find((entry) => entry.id === fileSource?.materialId &&
       entry.version === fileSource?.materialVersion);
     const provenance = fact.verification === "conflicting" ? "来源或口径冲突，待核对" :
+      state?.fixtureId ? "合成演示资料，未外部核验" :
       fact.verification === "user_corrected" ? (fileSource ?
       "商家更正；原文件未改写" : "商家明确更正，未外部核验") :
       fact.source?.kind === "file_extract" ? "文件提取，待核对" :
@@ -427,7 +407,7 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
       (fact.window.start || "起日未知") + "至" + (fact.window.end || "止日未知") : null;
     const note = [provenance, material ? material.name + " v" + material.version :
       fileSource ? "原文件来源见明细" : null, fact.subject, fact.channel, fact.cohort, window].filter(Boolean).join(" · ");
-    return { text: label + "：" + value, note, factId: fact.id, conflicting: fact.verification === "conflicting" };
+    return { field: fact.intakeField, text: label + "：" + value, note, factId: fact.id, conflicting: fact.verification === "conflicting" };
   };
   for (const item of getIntakeReviewGroups(draft, projection).flatMap((group) => group.items)) {
     const row = { field: item.field, conflicting: item.conflicting, text: item.label + "：" +
@@ -435,8 +415,10 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
       note: item.hypothesis ? "商家判断，尚未证实" :
         item.conflicting ? "来源不一致，按未知保留" :
           item.sources.map((source) => sourceNames[source] || source).join(" · ") || "当前填写，来源待核对" };
-    if (item.hypothesis) add("judgment", row);
-    else if (item.field.startsWith("metrics.")) {
+    if (item.hypothesis) {
+      add("judgment", row);
+      add("unconfirmed", { ...row, note: "老板判断仍待验证，未作为已证实原因或顾客咨询。" });
+    } else if (item.field.startsWith("metrics.")) {
       const fact = state ? findIntakeFieldFact(state, item.path, sourceBindings) : null;
       if (fact && ((!item.conflicting && Object.is(fact.value, item.value)) ||
         conflicts.some((entry) => entry.field === item.path && entry.factId === fact.id && entry.canRecover))) {
@@ -475,9 +457,17 @@ export function getIntakeSummaryGroups(draft, state = null, projection = null, s
       "：" + String(constraint.value) + (constraint.unit || "")), note: "本轮已登记限制" });
   }
   for (const unknown of [...(projection?.unknowns || []), ...(state?.input?.unknowns || [])]) {
+    const existing = byId.gaps.items.find((item) => item.field === "unknowns" &&
+      item.text === INTAKE_FIELD_LABELS.unknowns + "：" + unknown.description);
+    if (existing) {
+      if (unknown.reason === "conflicting") { existing.conflicting = true; existing.note = "来源或口径冲突，仍待核对"; }
+      continue;
+    }
     add("gaps", { text: unknown.description, conflicting: unknown.reason === "conflicting",
       note: unknown.reason === "conflicting" ? "来源或口径冲突" : "保留未知" });
   }
+  const backgroundOrder = new Map(["productName", "price", "specifications"].map((field, index) => [field, index]));
+  byId.background.items.sort((left, right) => (backgroundOrder.get(left.field) ?? 3) - (backgroundOrder.get(right.field) ?? 3));
   return groups;
 }
 
@@ -600,8 +590,10 @@ export function editIntakeField(draft, sourceBindings, field, rawText, baselineF
     // Deleted array entries survive in correction history, not as live ledger paths.
     if (Array.isArray(value) && Number(entry.field.split(".").at(-1)) >= value.length) continue;
     const unknown = entry.after === null || field === "unknowns";
+    const hypothesis = field.endsWith("Hypothesis") || draft.evidenceLedger.some((item) =>
+      item.field === entry.field && item.status === "owner_hypothesis");
     next.evidenceLedger.push({ field: entry.field, value: unknown ? null : entry.after,
-      status: unknown ? "unknown" : field.endsWith("Hypothesis") ? "owner_hypothesis" : "confirmed_fact",
+      status: unknown ? "unknown" : hypothesis ? "owner_hypothesis" : "confirmed_fact",
       source: "manual" });
   }
   // A newly chosen file can differ from the currently saved association. Keep
@@ -866,31 +858,256 @@ export function createVoiceSession({
   return { start, stop, cancel, checkScope, destroy, snapshot, getDrafts: () => drafts.map(copy) };
 }
 
-async function validateFile(file, replacing = false) {
-  const extension = fileExtension(file.name);
-  const family = Object.hasOwn(IMAGE_TYPES, extension) ? "image" :
-    ["xlsx", "xls"].includes(extension) ? "sheet" :
-    ["txt", "csv", "json"].includes(extension) ? "text" : null;
-  if (!family) {
-    throw errorWithCode("本轮支持 PNG/JPEG/WebP 截图、XLSX/XLS/CSV/TXT/JSON，或直接粘贴文字。", "unsupported_type");
+// UI preflight uses the shared declaration; dispatch validates actual bytes and quotas.
+export function validateMaterialSelection(file, materialApi) {
+  if (!materialApi?.getMaterialCapability || !materialApi.MATERIAL_LIMITS) {
+    throw errorWithCode("共享材料能力尚未加载，请稍后重新选择；原有材料不变。", "unsupported_type");
   }
-  if (file.size > 10_000_000) throw errorWithCode("单份材料不能超过 10,000,000 字节。", "file_limit");
-  const generic = ["", "application/octet-stream"];
-  const accepted = family === "image" ? Object.values(IMAGE_TYPES) :
-    family === "sheet" ? (extension === "xlsx" ?
-      ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/x-zip-compressed"] :
-      ["application/vnd.ms-excel"]) :
-    extension === "csv" ? ["text/csv", "text/plain", "application/vnd.ms-excel"] :
-      extension === "json" ? ["application/json", "text/plain"] : ["text/plain"];
-  if (!generic.includes(file.type) && !accepted.includes(file.type)) {
-    throw errorWithCode("文件类型与扩展名不一致，请选择原始文件。", "unsupported_type");
+  const capability = materialApi.getMaterialCapability(file?.name);
+  if (!capability?.receive) {
+    throw errorWithCode(capability?.reason || "不支持此文件格式，请选择页面列出的材料类型；原有材料不变。", "unsupported_type");
   }
-  if (replacing && family === "text") {
-    try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
-      if (text.includes("\0")) throw new Error("binary");
-    } catch { throw errorWithCode("新文件无法按 UTF-8 解码，原有材料未替换。", "unsupported_type"); }
+  const { maxFileBytes } = materialApi.MATERIAL_LIMITS;
+  if (!Number.isFinite(file.size) || file.size <= 0 || file.size > maxFileBytes) {
+    throw errorWithCode("文件不能为空，单份最多 " + maxFileBytes.toLocaleString("zh-CN") + " 字节；原有材料不变。", "file_limit");
   }
+  return capability;
+}
+
+export async function prepareBlenderFixtureLoad(api, { origin, commandId, confirmReplacement, notify }) {
+  if (!confirmReplacement()) return null;
+  if (!(await api.resolveDrafts({ notify }))) return null;
+  const loaded = await api.loadSession();
+  if (!loaded.ok) throw errorWithCode(loaded.message || "本机记录读取失败，尚未载入案例。", loaded.code || "read_failed");
+  const current = loaded.state;
+  if (current.sessionId !== origin.sessionId || current.round.id !== origin.roundId) {
+    throw errorWithCode("处理草稿期间已切换轮次，未替换新轮资料；请重新确认。", "stale_round");
+  }
+  return {
+    state: current,
+    origin: { sessionId: current.sessionId, roundId: current.round.id, inputVersion: current.round.inputVersion },
+    command: Object.freeze({
+      type: "LOAD_FIXTURE", payload: Object.freeze({ fixtureId: BLENDER_FIXTURE_ID }),
+      expectedRevision: current.revision, commandId
+    })
+  };
+}
+
+export function canAdoptFixtureSnapshot(observed, snapshot, origin, allowNewRound = false) {
+  if (!observed || !snapshot || observed.sessionId !== origin.sessionId || snapshot.sessionId !== origin.sessionId ||
+    observed.revision > snapshot.revision) return false;
+  if (!allowNewRound && (observed.round.id !== origin.roundId || snapshot.round.id !== origin.roundId)) return false;
+  return observed.revision !== snapshot.revision || observed.round.id === snapshot.round.id &&
+    observed.round.inputVersion === snapshot.round.inputVersion;
+}
+
+export function isFreshBlenderFixtureReceipt(current, operation) {
+  const stored = current?.input?.intake;
+  return current?.sessionId === operation.origin.sessionId && current.round.id !== operation.origin.roundId &&
+    current.round.inputVersion === operation.origin.inputVersion + 1 &&
+    current.revision === operation.command.expectedRevision + 1 && current.fixtureId === BLENDER_FIXTURE_ID &&
+    stored?.status === "current" && stored.roundId === current.round.id && stored.inputVersion === current.round.inputVersion &&
+    !!stored.draft && current.input.confirmedVersion === null && current.input.materials.length === 0 &&
+    current.analysis === null && current.selection === null && current.artifacts.length === 0 &&
+    current.executionRecords.length === 0 && current.feedbackRecords.length === 0;
+}
+
+export function canReviewSavedFixture(state, draft, description, sourceBindings) {
+  const stored = state?.input?.intake;
+  return !!state?.fixtureId && stored?.status === "current" && stored.roundId === state.round.id &&
+    stored.inputVersion === state.round.inputVersion && description === state.input.description &&
+    JSON.stringify(draft) === JSON.stringify(stored.draft) &&
+    JSON.stringify(sourceBindings) === JSON.stringify(stored.sourceBindings);
+}
+
+
+const MONEYAI_FIXTURE_ID = "juicer_cup_v1";
+const MONEYAI_SUMMARY_MAX_BYTES = 12000;
+const MONEYAI_SEND_SCOPE = Object.freeze(["synthetic_juicer_six_group_summary"]);
+const MONEYAI_DATA_CLASSES = Object.freeze(["synthetic_text_summary"]);
+
+function freezeMoneyAIValue(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) freezeMoneyAIValue(item);
+  }
+  return value;
+}
+
+async function moneyAITextSha256(value) {
+  if (!globalThis.crypto?.subtle || typeof TextEncoder !== "function") {
+    throw errorWithCode("当前环境无法核对发送文字的SHA256，未开放MoneyAI发送。", "hash_unavailable");
+  }
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, "0")).join("");
+}
+
+export function buildMoneyAIFixtureSummary(draft, state, projection = null, sourceBindings = null) {
+  if (state?.fixtureId !== MONEYAI_FIXTURE_ID || !draft) {
+    throw errorWithCode("首轮MoneyAI验证只使用合成榨汁杯摘要，真实商家资料未选择也不会发送。", "demo_scope_only");
+  }
+  const groups = getIntakeSummaryGroups(draft, state, projection, sourceBindings);
+  const lines = [
+    "【合成演示摘要，不代表真实商家效果】",
+    "用途：本次仅验证MoneyAI资料提取通路；所有返回内容仍须人工核对。"
+  ];
+  for (const group of groups) {
+    lines.push("", "## " + group.title);
+    if (!group.items.length) lines.push("- " + group.empty);
+    for (const item of group.items) {
+      lines.push("- " + item.text + (item.note ? "｜标注：" + item.note : ""));
+    }
+  }
+  const summary = lines.join("\n");
+  const bytes = new TextEncoder().encode(summary).byteLength;
+  if (!summary.trim() || bytes > MONEYAI_SUMMARY_MAX_BYTES || summary.includes("\0")) {
+    throw errorWithCode("合成摘要为空或超过12000字节，未开放发送；不会静默截断。", "invalid_scope");
+  }
+  return summary;
+}
+
+export async function createMoneyAIFixtureOperation(
+  state, draft, sourceBindings = [], projection = null, identity = {}
+) {
+  if (!state || state.fixtureId !== MONEYAI_FIXTURE_ID || state.input.materials.length !== 0 ||
+    !canReviewSavedFixture(state, draft, state.input.description, sourceBindings)) {
+    throw errorWithCode("首轮只允许当前、未混入原件的合成榨汁杯摘要；请重新载入并整理案例。", "demo_scope_only");
+  }
+  const summary = buildMoneyAIFixtureSummary(draft, state, projection, sourceBindings);
+  const materialRefs = state.input.materials.map((material) => ({
+    materialId: material.id, materialVersion: material.version, originalSha256: material.sha256
+  }));
+  const origin = { sessionId: state.sessionId, roundId: state.round.id, inputVersion: state.round.inputVersion };
+  const originalTextSha256 = await moneyAITextSha256(summary);
+  const inputFingerprint = await computeMoneyAIInputFingerprint({
+    contractVersion: MONEYAI_CONTRACT_VERSION,
+    operation: MONEYAI_OPERATIONS.intake,
+    origin,
+    textFingerprint: "sha256:" + originalTextSha256,
+    materialRefs
+  });
+  const operation = {
+    origin,
+    materialRefs,
+    originalTextSha256,
+    textBytes: new TextEncoder().encode(summary).byteLength,
+    summary,
+    moneyai: {
+      operationId: identity.operationId || "p1_intake_" + crypto.randomUUID(),
+      inputFingerprint,
+      sendScope: [...MONEYAI_SEND_SCOPE],
+      dataClasses: [...MONEYAI_DATA_CLASSES]
+    },
+    request: {
+      state: structuredClone(state), transcript: "", description: summary,
+      sources: structuredClone(draft.sources), draft: structuredClone(draft),
+      sourceBindings: structuredClone(sourceBindings), materials: []
+    }
+  };
+  return freezeMoneyAIValue(operation);
+}
+
+export async function isMoneyAIFixtureOperationCurrent(operation, state, draft, sourceBindings = [], projection = null) {
+  try {
+    const current = await createMoneyAIFixtureOperation(
+      state, draft, sourceBindings, projection, { operationId: operation?.moneyai?.operationId }
+    );
+    return current.origin.sessionId === operation?.origin?.sessionId &&
+      current.origin.roundId === operation.origin.roundId &&
+      current.origin.inputVersion === operation.origin.inputVersion &&
+      current.originalTextSha256 === operation.originalTextSha256 &&
+      current.textBytes === operation.textBytes &&
+      current.summary === operation.summary &&
+      current.moneyai.operationId === operation.moneyai.operationId &&
+      current.moneyai.inputFingerprint === operation.moneyai.inputFingerprint &&
+      JSON.stringify(current.materialRefs) === JSON.stringify(operation.materialRefs);
+  } catch { return false; }
+}
+
+export function classifyMoneyAIExtractionResult(result, current = true) {
+  if (!current) return "late";
+  if (result?.ok === true && result.mode === "moneyai" && result.sentToMoneyAI === true && result.editable === true) {
+    return "receipt";
+  }
+  if (result?.code === "invalid_response") return "invalid";
+  if (result?.code === "cancelled") return "cancelled";
+  if (result?.code === "timeout") return "timeout";
+  if (result?.sentToMoneyAI === true) return "failed_after_send";
+  if (result?.sentToMoneyAI !== false) return "uncertain";
+  return "not_sent";
+}
+
+export function buildMaterialCategoryPayload(snapshot, userCategory, categories) {
+  if (!snapshot) throw errorWithCode("材料已更新，请重新选择来源类别。", "stale_input");
+  if (!categories.includes(userCategory)) throw errorWithCode("来源类别无效，未更改原件。", "invalid_payload");
+  if ((snapshot.userCategory ?? "unknown") === userCategory) return null;
+  const { roundId, inputVersion, materialId, materialVersion } = snapshot;
+  return { roundId, inputVersion, materialId, materialVersion, userCategory };
+}
+
+export function matchesMaterialCategoryReceipt(current, committed, snapshot, userCategory) {
+  const matches = (value) => value?.sessionId === snapshot.sessionId && value.round?.id === snapshot.roundId &&
+    value.round.inputVersion === snapshot.inputVersion + 1 && value.input?.materials.some((material) =>
+      material.id === snapshot.materialId && material.version === snapshot.materialVersion &&
+      (material.userCategory ?? "unknown") === userCategory);
+  return !!(matches(current) && matches(committed));
+}
+
+export async function verifyMaterialBlobIdentity(blob, material) {
+  if (!blob || blob.size !== material.size || typeof material.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/i.test(material.sha256)) return false;
+  if (!globalThis.crypto?.subtle) throw errorWithCode("当前环境无法核对原件身份，未使用未经核对的内容。", "preview_unavailable");
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  const sha256 = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return sha256 === material.sha256.toLowerCase();
+}
+
+// Transient Blob URLs only: no business data, parsing or storage is duplicated here.
+export function createMaterialThumbnailCache({
+  getBlob, createUrl = (blob) => URL.createObjectURL(blob), revokeUrl = (url) => URL.revokeObjectURL(url)
+}) {
+  const entries = new Map();
+  let allowed = new Set();
+  const keyFor = (snapshot, material) => JSON.stringify([snapshot.sessionId, material.id, material.version]);
+  const discard = (key) => {
+    const entry = entries.get(key);
+    if (entry?.url) revokeUrl(entry.url);
+    entries.delete(key);
+  };
+  const sync = (snapshot) => {
+    allowed = new Set(snapshot.input.materials.filter(isImageMaterial).map((material) => keyFor(snapshot, material)));
+    for (const key of entries.keys()) if (!allowed.has(key)) discard(key);
+  };
+  const read = (snapshot, material) => {
+    const key = keyFor(snapshot, material);
+    if (!allowed.has(key)) return Promise.resolve({ status: "stale" });
+    if (entries.has(key)) return entries.get(key).promise;
+    const entry = { url: null, promise: null };
+    const identity = { size: material.size, sha256: material.sha256 };
+    entries.set(key, entry);
+    const current = () => entries.get(key) === entry && allowed.has(key);
+    entry.promise = (async () => {
+      try {
+        const blob = await getBlob(material.id);
+        if (!current()) return { status: "stale" };
+        if (!blob) return { status: "missing" };
+        const matches = await verifyMaterialBlobIdentity(blob, identity);
+        if (!current()) return { status: "stale" };
+        if (!matches) return { status: "mismatch" };
+        entry.url = createUrl(blob);
+        return { status: "ready", url: entry.url };
+      } catch {
+        return { status: current() ? "failed" : "stale" };
+      }
+    })();
+    return entry.promise;
+  };
+  const forget = (snapshot, material) => discard(keyFor(snapshot, material));
+  const clear = () => {
+    allowed.clear();
+    for (const key of entries.keys()) discard(key);
+  };
+  return { sync, read, forget, clear };
 }
 
 if (typeof document !== "undefined" && document.body?.dataset.page === "intake") {
@@ -904,10 +1121,12 @@ function startIntakePage() {
     form: byId("intake-form"), description: byId("description"), organize: byId("organize-button"),
     manual: byId("manual-entry"), upload: byId("upload-section"),
     imageDrop: byId("image-drop-zone"), imageMaterials: byId("image-materials-list"),
-    chooseImages: byId("choose-images"), imageFiles: byId("image-file-input"),
+    chooseImages: byId("choose-images"), imageFiles: byId("image-file-input"), imageCategory: byId("image-category"),
+    imageFormatNote: byId("image-format-note"), materialLimits: byId("material-limits"), tableCapabilityNote: byId("table-capability-note"),
     chooseLegacy: byId("choose-legacy"), legacyFiles: byId("legacy-file-input"),
     descriptionCount: byId("description-count"), descriptionLimitNote: byId("description-limit-note"),
     demoNotice: byId("demo-notice"), fullUnderstanding: byId("full-understanding-grid"),
+    demoLoad: byId("load-blender-demo"), demoLoadNote: byId("demo-load-note"),
     voiceStart: byId("voice-start"), voiceStartLabel: byId("voice-start-label"), voiceStop: byId("voice-stop"),
     voiceStage: byId("voice-stage"), voiceTimer: byId("voice-timer"), voiceLive: byId("voice-live"),
     voiceText: byId("voice-live-text"), voiceConsent: byId("voice-consent"),
@@ -937,17 +1156,20 @@ function startIntakePage() {
     questionBack: byId("clarification-back"), questionHistory: byId("question-history"),
     returnReview: byId("return-to-review"), reviewCautions: byId("review-cautions"),
     reviewCautionsList: byId("review-cautions-list"), reviewTranscript: byId("review-transcript"),
-    reviewDescription: byId("review-description"),
-    memoryFacts: byId("memory-facts"), memorySource: byId("memory-source")
+    reviewDescription: byId("review-description"), moneyAIPanel: byId("moneyai-extraction-panel"),
+    moneyAICapability: byId("moneyai-capability-status"), moneyAIScopeDetails: byId("moneyai-scope-details"),
+    moneyAIScopePreview: byId("moneyai-scope-preview"), moneyAIScopeMeta: byId("moneyai-scope-meta"),
+    moneyAIScopeSelect: byId("moneyai-scope-select"), moneyAIConsent: byId("moneyai-send-consent"),
+    moneyAICheck: byId("moneyai-check-capability"), moneyAISend: byId("moneyai-send"),
+    moneyAICancel: byId("moneyai-cancel"), moneyAISendState: byId("moneyai-send-state")
   };
   let api = null, state = null, busy = false, composing = false, lastCompositionAt = -Infinity;
   let descriptionDirty = false, focusDirty = false, organizedVersion = null, organizationVisible = false;
   let pending = null, uploadQueue = [], replaceTarget = null, correctionTarget = null;
-  const thumbnailUrls = new Map();
   let previewUrl = null, previewMaterialId = null, previewMaterialVersion = null, previewRequest = 0;
   let previewTrigger = null, correctionTrigger = null, correctionContext = null, correctionDirty = false;
   let allowNavigation = false, unsubscribe = null, unregisterGuard = null, connectInProgress = false;
-  let pendingRead = false, visibleFacts = 40;
+  let pendingRead = false, visibleFacts = 40, fixtureLoadInProgress = false;
   let draftContext = null;
   let voiceSession = null, voiceSnapshot = null, voiceBaseText = "", intakeStage = "idle";
   let voiceConsentGranted = false, voiceHold = null;
@@ -955,9 +1177,16 @@ function startIntakePage() {
   let contextBindings = [], contextOrigin = null, extractionController = null, reviewMessage = "";
   let readyToAnalyze = false, questionContext = null, renderedQuestionId = null;
   let lastIntakeAttempt = null;
+  let moneyAICapability = "unchecked", moneyAIPhase = "not_sent";
+  let moneyAIMessage = "未发送。能力查询不包含上述文字。", moneyAIScope = null, moneyAIAttempt = null;
+  let moneyAIStatusController = null, moneyAIStatusToken = 0, moneyAIAttemptToken = 0;
   let questionComposing = false, lastQuestionCompositionAt = -Infinity;
   const voiceOriginals = [], appliedVoiceRuns = new Set(), inputSources = new Set();
   const ownedUnknowns = new Map();
+  const materialCategorySnapshots = new WeakMap();
+  const materialPickerSnapshots = new WeakMap();
+  const thumbnailCache = createMaterialThumbnailCache({ getBlob: (id) => api.getMaterialBlob(id) });
+  let thumbnailRenderVersion = 0, pageActive = true;
   const retryable = new Set(["write_failed", "read_failed", "storage_unavailable", "conflict"]);
   const element = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -998,21 +1227,24 @@ function startIntakePage() {
     origin.sessionId === state.sessionId && origin.roundId === state.round.id;
 
   function updateControls() {
-    const blocked = busy || voiceEditingLocked() || connectInProgress || !state || !!pending || pendingRead;
+    const blocked = busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || !state || !!pending || pendingRead;
     const blockedForSubmission = blocked || !!voiceSnapshot?.active;
     ui.organize.disabled = blockedForSubmission || !inputReady();
+    ui.demoLoad.disabled = blockedForSubmission || typeof api?.resolveDrafts !== "function";
     ui.choose.disabled = blocked;
     ui.chooseLegacy.disabled = blocked;
     ui.chooseImages.disabled = blocked;
-    ui.imageDrop.setAttribute("aria-disabled", String(blocked));
-    ui.description.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
-    ui.focus.readOnly = busy || voiceEditingLocked() || connectInProgress || !!pending;
+    ui.imageCategory.disabled = blocked;
+    ui.description.readOnly = busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || !!pending;
+    ui.focus.readOnly = busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || !!pending;
     ui.confirm.disabled = blockedForSubmission || correctionDirty || contextEdit?.dirty || (questionDirty && !intakeApi) || uploadQueue.length > 0 ||
       (intakeApi ? !contextDraft || !sameContext(contextOrigin) || contextOrigin.inputVersion !== state?.round.inputVersion :
         descriptionDirty || contextDirty || hasUnsavedVoice() || organizedVersion !== state?.round.inputVersion);
     ui.form.setAttribute("aria-busy", String(busy));
     ui.drop.setAttribute("aria-busy", String(busy));
     ui.drop.setAttribute("aria-disabled", String(blocked));
+    ui.imageDrop.setAttribute("aria-busy", String(busy));
+    ui.imageDrop.setAttribute("aria-disabled", String(blocked));
     ui.retry.disabled = busy || connectInProgress;
     ui.stopRetry.disabled = busy || connectInProgress;
     ui.availability.disabled = blocked;
@@ -1020,7 +1252,7 @@ function startIntakePage() {
     ui.unit.readOnly = busy || !!pending;
     ui.reason.readOnly = busy || !!pending;
     ui.cancelCorrection.disabled = busy;
-    ui.voiceStart.disabled = busy || connectInProgress || !state || !!pending || pendingRead ||
+    ui.voiceStart.disabled = busy || fixtureLoadInProgress || connectInProgress || !state || !!pending || pendingRead ||
       (!voiceSnapshot?.active && !voiceSnapshot?.canStart);
     ui.voiceConsentStart.disabled = blocked || !voiceSnapshot?.canStart;
     ui.voiceStop.hidden = !voiceSnapshot?.active;
@@ -1040,13 +1272,97 @@ function startIntakePage() {
     ui.questionBack.disabled = busy || !!pending;
     ui.questionDiscard.disabled = blocked;
     ui.questionDiscard.hidden = !questionDirty || contextMatches(questionContext);
-    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" :
-      readyToAnalyze ? "确认，开始分析" : "确认理解，继续";
+    ui.confirm.textContent = state?.round.clarification.activeQuestionId ? "继续这次补问" : "确认，开始分析";
     for (const list of [ui.materials, ui.imageMaterials]) {
       for (const node of list.querySelectorAll("[data-mutates]")) node.disabled = blocked;
     }
     for (const node of ui.facts.querySelectorAll("button[data-mutates]")) node.disabled = blocked;
     for (const node of ui.correctionForm.querySelectorAll("button[type=submit]")) node.disabled = blocked;
+    updateMoneyAIControls(blockedForSubmission);
+  }
+
+
+  function resetMoneyAIConfirmations() {
+    ui.moneyAIScopeSelect.checked = false;
+    ui.moneyAIConsent.checked = false;
+  }
+
+  function renderMoneyAI() {
+    const capabilityLabels = {
+      unchecked: "尚未检查", checking: "正在检查", ready: "资料提取可用",
+      unavailable: "资料提取未开放", error: "状态未确认"
+    };
+    ui.moneyAIPanel.dataset.capability = moneyAICapability;
+    ui.moneyAICapability.textContent = capabilityLabels[moneyAICapability] || "状态未确认";
+    ui.moneyAISendState.dataset.phase = moneyAIPhase;
+    ui.moneyAISendState.textContent = moneyAIMessage;
+    if (moneyAIScope) {
+      ui.moneyAIScopePreview.textContent = moneyAIScope.summary;
+      ui.moneyAIScopeMeta.textContent = "UTF-8 " + moneyAIScope.textBytes + " 字节 · SHA256 " +
+        moneyAIScope.originalTextSha256 + " · 输入指纹 " + moneyAIScope.moneyai.inputFingerprint +
+        " · 原件正文0份 · 材料身份守卫" + moneyAIScope.materialRefs.length + "项";
+    } else {
+      ui.moneyAIScopePreview.textContent = state?.fixtureId === MONEYAI_FIXTURE_ID ?
+        "请先点“开始整理”，页面会从当前合成案例生成并冻结六组摘要。" :
+        "首轮只开放合成榨汁杯摘要。真实商家文字、图片、Excel、录音及个人历史均不进入请求。";
+      ui.moneyAIScopeMeta.textContent = "发送范围尚未冻结。";
+    }
+  }
+
+  function updateMoneyAIControls(blocked) {
+    const active = !!moneyAIAttempt;
+    ui.moneyAICheck.disabled = connectInProgress || !!moneyAIStatusController || active;
+    ui.moneyAIScopeSelect.disabled = blocked || active || !moneyAIScope;
+    ui.moneyAIConsent.disabled = blocked || active || !moneyAIScope ||
+      !ui.moneyAIScopeSelect.checked || moneyAICapability !== "ready";
+    ui.moneyAISend.disabled = blocked || active || !moneyAIScope ||
+      moneyAICapability !== "ready" || !ui.moneyAIScopeSelect.checked || !ui.moneyAIConsent.checked;
+    ui.moneyAICancel.hidden = !active;
+    ui.moneyAICancel.disabled = !active || !extractionController;
+  }
+
+  function invalidateMoneyAIScope(message = "资料或核对草稿已变化，旧摘要不会发送；请重新整理。") {
+    moneyAIScope = null;
+    resetMoneyAIConfirmations();
+    if (moneyAIAttempt) {
+      moneyAIAttempt.invalidated = true;
+      extractionController?.abort();
+      moneyAIPhase = "late";
+    } else moneyAIPhase = "not_sent";
+    moneyAIMessage = message;
+    renderMoneyAI();
+  }
+
+  async function refreshMoneyAICapability() {
+    if (!intakeApi?.getMoneyAIStatus || moneyAIAttempt) return;
+    moneyAIStatusController?.abort();
+    const token = ++moneyAIStatusToken;
+    const controller = new AbortController();
+    moneyAIStatusController = controller;
+    moneyAICapability = "checking";
+    moneyAIMessage = "正在查询本项目资料提取能力；状态查询不包含摘要或原件。";
+    renderMoneyAI(); updateControls();
+    let result;
+    try { result = await intakeApi.getMoneyAIStatus({ signal: controller.signal }); }
+    catch { result = { ok: false, code: "backend_unavailable", message: "状态查询未完成。" }; }
+    finally {
+      if (moneyAIStatusController === controller) moneyAIStatusController = null;
+    }
+    if (token !== moneyAIStatusToken || !pageActive) return;
+    if (result.ok && result.status.extractionReady === true) {
+      moneyAICapability = "ready";
+      moneyAIMessage = "资料提取通路已报告可用。仍须选择摘要并逐次同意，才会提交请求。";
+    } else if (result.ok) {
+      moneyAICapability = "unavailable";
+      moneyAIMessage = "本项目后端明确报告 extractionReady=false；没有发送摘要。 " +
+        (result.status.reason || "");
+      resetMoneyAIConfirmations();
+    } else {
+      moneyAICapability = "error";
+      moneyAIMessage = result.message || "未取得完整能力回执；没有发送摘要。";
+      resetMoneyAIConfirmations();
+    }
+    renderMoneyAI(); updateControls();
   }
 
   function applyState(next) {
@@ -1060,6 +1376,7 @@ function startIntakePage() {
     if (previous && (previous.sessionId !== state.sessionId || previous.round.id !== state.round.id ||
       previous.round.inputVersion !== state.round.inputVersion)) {
       extractionController?.abort();
+      invalidateMoneyAIScope("本轮或输入版本已变化，旧摘要与迟到回执不会采用；请重新整理。");
       readyToAnalyze = false;
     }
     if (previous && (previous.sessionId !== state.sessionId || previous.round.id !== state.round.id)) {
@@ -1121,12 +1438,7 @@ function startIntakePage() {
   function setIntakeStage(stage, message) {
     intakeStage = stage;
     document.body.dataset.intakeStage = stage;
-    const stageMessage = message || {
-      confirming: "当前为理解核对阶段；可以纠错或补充资料。",
-      questioning: "正在补充本轮信息；可以回答、跳过或保留未知。",
-      ready: "核对与补充已保留，确认后开始本轮分析。"
-    }[stage];
-    if (stageMessage && ui.voiceStage.textContent !== stageMessage) ui.voiceStage.textContent = stageMessage;
+    if (message && ui.voiceStage.textContent !== message) ui.voiceStage.textContent = message;
     ui.questionSection.hidden = stage !== "questioning";
   }
 
@@ -1150,19 +1462,17 @@ function startIntakePage() {
     }
   }
 
-  function voiceIssueMessage(issue, run = null) {
+  function voiceIssueMessage(issue) {
     const messages = {
       "not-allowed": "还没有拿到麦克风权限，可以改用文字。",
       "service-not-allowed": "浏览器未允许这项识别服务，可以改用文字。",
       "audio-capture": "无法使用麦克风，请检查设备或改用文字。",
       "no-speech": "识别服务没有取得可用语音，可以直接输入或粘贴文字。",
-      // Chrome sends recognition audio to its own online service; an unreachable
-      // network surfaces here as "network" even though the mic itself works.
-      "network": "语音识别服务连接中断：浏览器的语音识别依赖其在线服务，当前网络可能访问不到；已返回的文字仍保留。可换 Microsoft Edge 重试，或直接输入文字。",
+      "network": "语音服务连接中断，已返回的文字仍保留。",
       "language-not-supported": "当前服务不支持中文转写，请改用文字。",
       "no-match": "本次没有获得明确的识别结果，可以改用文字。",
       "no-result": "本次未获得转写文字，可以重新开始或直接输入。",
-      "start-timeout": "尚未开始采集音频，已请求取消；若浏览器弹出麦克风授权，请先允许再重新按住；也可以改用文字。",
+      "start-timeout": "尚未开始采集音频，已请求取消；可以改用文字。",
       "end-timeout": "尚未收到识别服务结束确认，已再次请求停止。文字可继续编辑，暂不启动第二个语音会话。",
       "scope-changed": "本轮资料已经变化，旧语音已请求停止，返回的文字保留待核对。",
       "page-hidden": "页面已离开前台，已请求停止语音，返回的文字仍保留。",
@@ -1170,38 +1480,7 @@ function startIntakePage() {
       "start-failed": "语音服务未能启动，可以改用文字。",
       "stop-failed": "未能确认识别停止，已请求取消；可以改用文字。"
     };
-    // A tap on a hold-to-talk button cancels before any audio was captured;
-    // say so explicitly instead of a generic "cancelled" line.
-    if (issue === "cancelled" && run && run.captureMs === 0 && !run.audioActive) {
-      return "这次按下后很快松开，录音尚未开始就已停止：请按住“按住说话”不放，开始后再说话，松开结束。";
-    }
     return messages[issue] || "语音识别未完成，已返回的文字仍保留，可以改用文字。";
-  }
-
-  const micProbeRuns = new Set();
-  async function probeMicrophoneAfterFailure(runId, issue) {
-    // One transient capture check per failed run, only after the recognition
-    // end: it distinguishes who blocked the microphone (system, browser, or
-    // nobody). This page records and keeps no audio from the probe.
-    if (micProbeRuns.has(runId) || voiceSnapshot?.active || !navigator.mediaDevices?.getUserMedia) return;
-    micProbeRuns.add(runId);
-    let outcome = "probe-failed";
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      outcome = "granted";
-    } catch (error) { outcome = error?.name || "probe-failed"; }
-    const hints = {
-      granted: issue === "service-not-allowed" ?
-        "麦克风权限正常，是浏览器未放行这项识别服务；请刷新页面重试，或换 Chrome／Edge。" :
-        "现在能访问麦克风了：权限可能刚刚生效，请再按住“按住说话”试一次；若仍失败，建议换 Chrome／Edge。",
-      NotAllowedError: "麦克风被系统或浏览器拦截：请检查 Windows 设置→隐私和安全性→麦克风（打开“麦克风访问”和“允许桌面应用访问麦克风”），并确认地址栏的网站麦克风权限为“允许”，然后刷新重试。",
-      NotFoundError: "没有检测到可用的麦克风设备，请接入或启用麦克风后重试。",
-      NotReadableError: "麦克风当前被其他应用占用，请关闭后重试。"
-    };
-    if (voiceSnapshot?.active) return;
-    const hint = hints[outcome];
-    if (hint) setIntakeStage("idle", hint);
   }
 
   function onVoiceChange(snapshot) {
@@ -1223,9 +1502,6 @@ function startIntakePage() {
     if (run.phase === "starting") setIntakeStage("listening", "正在等待浏览器开始采集，尚未开始听取。");
     if (run.phase === "listening") setIntakeStage("listening", "正在听取，松开结束，也可以点“停止语音”。");
     if (run.phase === "stopping") setIntakeStage("transcribing", "正在等待这段话的最终转写。");
-    if (run.endObserved && ["not-allowed", "service-not-allowed", "audio-capture"].includes(run.issue)) {
-      probeMicrophoneAfterFailure(run.id, run.issue);
-    }
     if ((run.endObserved || run.phase === "fallback") && !appliedVoiceRuns.has(run.id)) {
       appliedVoiceRuns.add(run.id);
       if (returnedText) {
@@ -1237,12 +1513,12 @@ function startIntakePage() {
         organizedVersion = null;
       }
       showManual(focusWasOnVoice);
-      setIntakeStage("idle", run.issue ? voiceIssueMessage(run.issue, run) :
+      setIntakeStage("idle", run.issue ? voiceIssueMessage(run.issue) :
         "识别文字已保留。你可以先修改，再整理核对。");
       if (run.interimText) status("有尚未定稿的识别文字，请核对后再使用。");
-    } else if (run.phase === "fallback") setIntakeStage("idle", voiceIssueMessage(run.issue, run));
+    } else if (run.phase === "fallback") setIntakeStage("idle", voiceIssueMessage(run.issue));
     if (snapshot.active && run.phase === "fallback") {
-      setIntakeStage("idle", voiceIssueMessage(run.issue, run) +
+      setIntakeStage("idle", voiceIssueMessage(run.issue) +
         " 仍在等待识别服务确认结束；可先编辑文字，结束确认前暂不能整理或提交。");
     }
     updateControls();
@@ -1264,6 +1540,9 @@ function startIntakePage() {
     if (correctionDirty || contextEdit?.dirty || questionDirty) {
       showError("请先保存或取消当前编辑，再开始一段新语音。");
       return { ok: false };
+    }
+    if (moneyAIScope || moneyAIAttempt) {
+      invalidateMoneyAIScope("开始新的语音输入后，旧合成摘要与本次同意已清除；录音不会发送给MoneyAI。");
     }
     voiceBaseText = ui.description.value;
     const result = voiceSession.start({ consented: true });
@@ -1315,11 +1594,18 @@ function startIntakePage() {
       const content = element("div", undefined, "summary-content");
       if (!group.items.length) content.append(element("p", group.empty, "muted"));
       let overflow = null;
+      const dataNotes = new Map();
       group.items.forEach((item, index) => {
         const row = element("p", item.text, item.conflicting ? "correction-conflict" : undefined);
-        if (item.note) row.append(element("span", item.note, "understanding-source"));
-        // Keep conflicts visible even when other rows are progressively disclosed.
-        if (index < 3 || item.conflicting) content.append(row);
+        const visible = index < (group.id === "data" ? 7 : 3) || item.conflicting;
+        if (item.note && group.id === "data" && visible) {
+          if (!dataNotes.has(item.note)) dataNotes.set(item.note, dataNotes.size + 1);
+          const marker = element("sup", "[" + dataNotes.get(item.note) + "]", "summary-source-marker");
+          marker.setAttribute("aria-label", "来源说明 " + dataNotes.get(item.note));
+          row.append(marker);
+        } else if (item.note) row.append(element("span", item.note, "understanding-source"));
+        // Keep all seven metric/date fields and every conflict visible; repeated sources are keyed below.
+        if (visible) content.append(row);
         else {
           if (!overflow) {
             overflow = element("details", undefined, "summary-overflow");
@@ -1328,6 +1614,12 @@ function startIntakePage() {
           overflow.append(row);
         }
       });
+      if (dataNotes.size) {
+        const notes = element("div", undefined, "summary-source-notes");
+        notes.setAttribute("aria-label", "指标来源与口径");
+        for (const [note, marker] of dataNotes) notes.append(element("p", "[" + marker + "] " + note));
+        content.append(notes);
+      }
       if (overflow) content.append(overflow);
       card.append(content);
       ui.understanding.append(card);
@@ -1396,6 +1688,168 @@ function startIntakePage() {
     ui.questionSection.hidden = intakeStage !== "questioning" || (!active && !questionDirty);
   }
 
+
+  function fixtureProjection(snapshot = state, draft = contextDraft, bindings = contextBindings) {
+    if (!intakeApi || !snapshot || !draft) return null;
+    const checked = intakeApi.mapConfirmedIntakeToAnalysisInput(draft, { state: snapshot, sourceBindings: bindings });
+    return checked.ok ? checked.projection : null;
+  }
+
+  async function prepareMoneyAIFixtureScope() {
+    const projection = fixtureProjection();
+    if (!projection) throw errorWithCode("合成摘要的来源校验未通过，未开放MoneyAI发送。", "invalid_scope");
+    moneyAIScope = await createMoneyAIFixtureOperation(state, contextDraft, contextBindings, projection);
+    resetMoneyAIConfirmations();
+    moneyAIPhase = "not_sent";
+    moneyAIMessage = "合成榨汁杯六组摘要已冻结并完整显示；尚未发送。请先选择范围，再确认本次同意。";
+    renderMoneyAI(); updateControls();
+  }
+
+  async function moneyAIScopeIsCurrent(operation, snapshot = state) {
+    const projection = fixtureProjection(snapshot);
+    return !!projection && await isMoneyAIFixtureOperationCurrent(
+      operation, snapshot, contextDraft, contextBindings, projection
+    );
+  }
+
+  function settleMoneyAIAttempt(attempt, phase, message) {
+    if (moneyAIAttempt !== attempt) return;
+    moneyAIAttempt = null;
+    moneyAIPhase = phase;
+    moneyAIMessage = message;
+    renderMoneyAI(); updateControls();
+    status(message);
+  }
+
+  async function startMoneyAIExtraction() {
+    if (busy || moneyAIAttempt || !moneyAIScope || moneyAICapability !== "ready" ||
+      !ui.moneyAIScopeSelect.checked || !ui.moneyAIConsent.checked) return;
+    const operation = moneyAIScope;
+    const attemptId = "p1_attempt_" + crypto.randomUUID();
+    const request = freezeMoneyAIValue({
+      ...operation.request,
+      moneyai: { ...operation.moneyai, attemptId }
+    });
+    const attempt = {
+      token: ++moneyAIAttemptToken, attemptId, operation, request,
+      postObserved: false, invalidated: false
+    };
+    const attemptIsLive = () => moneyAIAttempt === attempt && !attempt.invalidated && pageActive &&
+      attempt.token === moneyAIAttemptToken;
+    moneyAIAttempt = attempt;
+    resetMoneyAIConfirmations();
+    moneyAIPhase = "submitting";
+    moneyAIMessage = "已确认本次范围，正在重新核对能力；尚不能断言已发送给MoneyAI。";
+    renderMoneyAI(); updateControls();
+    await exclusive(async () => {
+      const currentBeforeRequest = await moneyAIScopeIsCurrent(operation);
+      if (!attemptIsLive() || !currentBeforeRequest) {
+        settleMoneyAIAttempt(attempt, "late", "摘要、轮次或核对内容已变化，本次未发送；请重新整理并逐次确认。");
+        return;
+      }
+      const controller = new AbortController();
+      extractionController = controller;
+      const trackedFetch = async (url, options) => {
+        if (url === "/api/intake/extract" && options?.method === "POST") {
+          if (!attemptIsLive()) {
+            controller.abort();
+            throw errorWithCode("发送前页面或输入已变化，摘要未提交。", "cancelled");
+          }
+          attempt.postObserved = true;
+          moneyAIPhase = "waiting";
+          moneyAIMessage = "资料提取请求已提交，正在等待真实回执；是否到达MoneyAI以回执为准。";
+          renderMoneyAI(); updateControls();
+        }
+        return globalThis.fetch(url, options);
+      };
+      let result;
+      try {
+        result = await intakeApi.requestIntakeExtraction(attempt.request, {
+          signal: controller.signal, consentToExternalProcessing: true, fetchImpl: trackedFetch
+        });
+      } catch {
+        result = { ok: false, code: "backend_unavailable", sentToMoneyAI: attempt.postObserved ? null : false,
+          message: "提取调用异常，未取得完整回执。" };
+      } finally {
+        if (extractionController === controller) extractionController = null;
+      }
+      if (moneyAIAttempt !== attempt) return;
+      if (!attemptIsLive()) {
+        settleMoneyAIAttempt(attempt, "late", "本轮已变化或页面已离开，迟到结果未采用；原草稿保持不变。");
+        return;
+      }
+      let latest;
+      try { latest = await api.loadSession(); }
+      catch { latest = { ok: false }; }
+      if (!attemptIsLive() || !latest?.ok) {
+        settleMoneyAIAttempt(attempt, "late", "回执到达前本轮、摘要或材料身份已变化，迟到结果未采用。");
+        return;
+      }
+      const currentAfterRead = await moneyAIScopeIsCurrent(operation, latest.state);
+      if (!attemptIsLive() || !currentAfterRead) {
+        settleMoneyAIAttempt(attempt, "late", "回执到达前本轮、摘要或材料身份已变化，迟到结果未采用。");
+        return;
+      }
+      applyState(latest.state);
+      const outcome = classifyMoneyAIExtractionResult(result, true);
+      if (outcome === "receipt") {
+        contextDraft = structuredClone(result.draft);
+        contextBindings = structuredClone(result.sourceBindings);
+        contextOrigin = { ...operation.origin };
+        contextDirty = true;
+        readyToAnalyze = false;
+        reviewMessage = "MoneyAI真实回执已通过结构校验，仅作为可编辑待核对草稿；没有升格为事实，也没有自动确认。";
+        organizationVisible = true;
+        setIntakeStage("confirming");
+        settleMoneyAIAttempt(attempt, "receipt", "已收到并校验MoneyAI真实回执；请逐项核对后再保存。");
+        render();
+        return;
+      }
+      if (outcome === "invalid") {
+        const sendStatus = result.sentToMoneyAI === true ? "服务回执标记已发送。" :
+          result.sentToMoneyAI === false ? "服务回执标记未发送。" : "发送结果仍未知。";
+        settleMoneyAIAttempt(attempt, "invalid",
+          "已收到回执，但字段或来源结构校验失败，未采用返回草稿。" + sendStatus);
+      } else if (outcome === "cancelled") {
+        const cancelStatus = result.sentToMoneyAI === true ?
+          "本次已取消等待；服务回执标记摘要已发送，迟到结果不会采用。" :
+          result.sentToMoneyAI === false ? "本次已取消，服务确认未发送摘要。" :
+            "本次已取消，但POST可能已提交，发送结果未知；迟到结果不会采用。";
+        settleMoneyAIAttempt(attempt, "cancelled", cancelStatus);
+      } else if (outcome === "timeout") {
+        if (result.sentToMoneyAI === false) moneyAICapability = "error";
+        const timeoutStatus = result.sentToMoneyAI === true ?
+          "等待真实回执超时；服务回执标记摘要已发送，但没有可采用结果。" :
+          result.sentToMoneyAI === false ? "能力查询阶段超时，摘要未发送；请重新检查能力。" :
+            "等待真实回执超时，发送结果未知；迟到结果不会采用。";
+        settleMoneyAIAttempt(attempt, "timeout", timeoutStatus);
+      } else if (outcome === "failed_after_send") {
+        if (result.code === "intake_unavailable") moneyAICapability = "unavailable";
+        settleMoneyAIAttempt(attempt, "failed_after_send",
+          "服务回执标记摘要已发送，但提取未取得可采用结果；原草稿保持不变。");
+      } else if (outcome === "uncertain") {
+        settleMoneyAIAttempt(attempt, "uncertain", "未获得完整回执，发送结果未知；原草稿保持不变。");
+      } else {
+        if (result.code === "intake_unavailable") moneyAICapability = "unavailable";
+        else if (result.code === "backend_unavailable") moneyAICapability = "error";
+        settleMoneyAIAttempt(attempt, "not_sent",
+          (result.message || "资料提取未完成。") + " 服务确认未发送摘要。");
+      }
+    }, "正在处理本次MoneyAI资料提取请求…");
+    if (moneyAIAttempt === attempt) {
+      extractionController?.abort();
+      settleMoneyAIAttempt(attempt, "uncertain", "请求未正常收尾，已停止等待；发送结果未知。");
+    }
+  }
+
+  function cancelMoneyAIExtraction() {
+    if (!moneyAIAttempt || !extractionController) return;
+    moneyAIPhase = "cancelled";
+    moneyAIMessage = "已请求取消，正在等待本次调用收尾；取消不等于撤回已提交内容。";
+    extractionController.abort();
+    renderMoneyAI(); updateControls();
+  }
+
   function makeLocalReviewDraft() {
     if (!intakeApi) throw new Error("经营上下文接口尚未就绪，原文仍保留在本页。");
     const previous = state.input.intake;
@@ -1428,12 +1882,25 @@ function startIntakePage() {
       if (contextDraft) contextOrigin = context();
     }
     const origin = context(), local = makeLocalReviewDraft();
+    if (canReviewSavedFixture(state, local.draft, ui.description.value, local.sourceBindings)) {
+      contextDraft = structuredClone(state.input.intake.draft);
+      contextBindings = structuredClone(state.input.intake.sourceBindings);
+      contextOrigin = origin;
+      contextDirty = false;
+      readyToAnalyze = false;
+      reviewMessage = "以下为共享案例中的合成首次资料；请核对数据、来源与待验证判断，不代表真实商家效果。";
+      showReview("confirming", false);
+      status("合成资料已展开核对，没有调用模型、补入经营结果或自动确认。");
+      return { fixture: true };
+    }
     const materials = [], skipped = [];
     for (const material of state.input.materials) {
       if (!["txt", "csv", "json"].includes(fileExtension(material.name))) continue;
-      const blob = await api.getMaterialBlob(material.id);
-      if (!blob) { skipped.push(material.name); continue; }
       try {
+        const blob = await api.getMaterialBlob(material.id);
+        if (!blob || !(await verifyMaterialBlobIdentity(blob, material))) {
+          skipped.push(material.name); continue;
+        }
         const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
         if (text.length > 50000 || !["text/plain", "text/csv", "application/json"].includes(material.mime)) {
           skipped.push(material.name); continue;
@@ -1463,10 +1930,10 @@ function startIntakePage() {
       "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
     if (skipped.length) reviewMessage += " 部分材料未进入提取请求，原件与已有解析仍保留。";
     organizationVisible = true; readyToAnalyze = false;
-    setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
-      "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");
+    setIntakeStage("confirming");
     render();
     status(result.ok ? "请先核对经营情况，再继续。" : result.message);
+    return { fixture: false };
   }
 
   function contextMatches(origin) {
@@ -1613,6 +2080,9 @@ function startIntakePage() {
       if (!checked.ok) { ui.contextError.textContent = checked.errors.map((entry) => entry.message).join(" "); return; }
       contextDraft = checked.draft; contextBindings = edited.sourceBindings; contextDirty ||= edited.changed;
       contextEdit.applied = edited.changed || contextEdit.applied;
+      if (edited.changed && (moneyAIScope || moneyAIAttempt)) {
+        invalidateMoneyAIScope("核对草稿已修改，旧合成摘要与本次同意已清除；请重新整理。");
+      }
       await exclusive(async () => {
         await saveIntake(async () => {
           contextEdit = null; ui.contextDialog.close(); readyToAnalyze = false;
@@ -1723,78 +2193,112 @@ function startIntakePage() {
     }, readyToAnalyze ? "正在确认本轮输入…" : "正在保存核对内容…");
   }
 
-  function purgeThumbnails() {
-    for (const [id, entry] of thumbnailUrls) {
-      if (!state.input.materials.some((item) => item.id === id && item.version === entry.version)) {
-        URL.revokeObjectURL(entry.url);
-        thumbnailUrls.delete(id);
+  function configureMaterialInputs() {
+    const capabilities = Object.values(api.MATERIAL_CAPABILITIES);
+    const accepted = (test) => [...new Set(capabilities.filter((item) => item.receive && test(item))
+      .flatMap((item) => ["." + item.extension, item.mime]))].join(",");
+    ui.imageFiles.accept = accepted((item) => item.preview === "image");
+    ui.files.accept = accepted((item) => item.parse === "metric_csv" || ["xlsx", "xls"].includes(item.extension));
+    ui.legacyFiles.accept = accepted((item) => ["text_only", "metric_json"].includes(item.parse));
+    ui.replacement.accept = accepted(() => true);
+    ui.imageFormatNote.textContent = capabilities.filter((item) => item.receive && item.preview === "image")
+      .map((item) => item.extension.toUpperCase()).join(" / ") + " · 可拖放或粘贴";
+    ui.tableCapabilityNote.textContent = "CSV 支持约定指标表；" + api.getMaterialCapability("table.xlsx").reason;
+    ui.imageCategory.replaceChildren(...api.MATERIAL_CATEGORIES.map((value) => {
+      const option = element("option", MATERIAL_CATEGORY_LABELS[value] || "未标注");
+      option.value = value;
+      return option;
+    }));
+    ui.imageCategory.value = "unknown";
+    const { maxFiles, maxFileBytes, maxTotalBytes } = api.MATERIAL_LIMITS;
+    ui.materialLimits.textContent = "截图与表格共用：最多 " + maxFiles + " 份，单份 ≤ " +
+      (maxFileBytes / 1_000_000) + " MB（" + maxFileBytes.toLocaleString("zh-CN") + " 字节），总计 ≤ " +
+      (maxTotalBytes / 1024 / 1024) + " MiB。";
+  }
+
+  function appendMaterialThumbnail(card, material) {
+    const slot = element("div", undefined, "material-thumbnail-slot");
+    slot.append(element("p", "正在读取原件缩略图…"));
+    slot.setAttribute("aria-busy", "true");
+    card.prepend(slot);
+    const origin = context(), renderVersion = thumbnailRenderVersion;
+    const current = () => pageActive && renderVersion === thumbnailRenderVersion && card.isConnected &&
+      sameContext(origin) && state.input.materials.some((item) => item.id === material.id && item.version === material.version);
+    const failed = (message) => {
+      if (!current()) return;
+      slot.setAttribute("aria-busy", "false");
+      slot.replaceChildren(element("p", message), button("重新读取缩略图", "thumbnail-retry"));
+    };
+    thumbnailCache.read(state, material).then((result) => {
+      if (!current() || result.status === "stale") return;
+      if (result.status !== "ready") {
+        failed(result.status === "mismatch" ? "原件与旧卡片身份不一致，请重新读取；未展示其他版本的图片。" :
+          "未能读取缩略图；材料记录仍保留，可重试或查看原件。");
+        return;
       }
-    }
+      const preview = button("", "preview", "material-thumbnail");
+      preview.setAttribute("aria-label", "查看截图原件：" + material.name);
+      const image = element("img");
+      image.alt = "原件缩略图：" + material.name;
+      image.addEventListener("error", () => failed("这份原件暂时无法显示，未用其他图片替代。"), { once: true });
+      image.addEventListener("load", () => { if (current()) slot.setAttribute("aria-busy", "false"); }, { once: true });
+      image.src = result.url;
+      preview.append(image);
+      slot.replaceChildren(preview);
+    });
   }
 
-  async function loadThumbnail(material) {
-    const cached = thumbnailUrls.get(material.id);
-    if (cached?.version === material.version) return;
-    try {
-      const blob = await api.getMaterialBlob(material.id);
-      if (!blob) return;
-      const current = state?.input.materials.find((item) => item.id === material.id);
-      if (!current || current.version !== material.version) return;
-      const url = URL.createObjectURL(blob);
-      const previous = thumbnailUrls.get(material.id);
-      if (previous) URL.revokeObjectURL(previous.url);
-      thumbnailUrls.set(material.id, { version: material.version, url });
-      const img = ui.imageMaterials.querySelector('img[data-thumb-for="' + material.id + '"]');
-      if (img) img.src = url;
-    } catch { /* 缩略图读取失败时卡片仍显示文件名与状态；不冒充原件已丢失或已解析。 */ }
-  }
-
-  function categorySelect(material) {
-    const labels = { unknown: "暂不确定", content: "内容", product: "商品", transactions: "成交", ads: "投流" };
-    const select = element("select", undefined, "material-category");
+  function materialCategoryField(material) {
+    const field = element("div", undefined, "material-category-field");
+    const label = element("label", "来源类别（用户标注）");
+    const select = element("select", undefined, "field");
+    select.dataset.materialCategory = "true";
     select.dataset.mutates = "true";
-    select.dataset.categoryFor = material.id;
-    select.setAttribute("aria-label", "材料来源类别：" + material.name);
-    for (const value of (api?.MATERIAL_CATEGORIES || ["unknown"])) {
-      const option = element("option", labels[value] || value);
+    const userCategory = material.userCategory ?? "unknown";
+    for (const value of api.MATERIAL_CATEGORIES) {
+      const option = element("option", MATERIAL_CATEGORY_LABELS[value] || "未标注");
       option.value = value;
       select.append(option);
     }
-    select.value = material.userCategory || "unknown";
-    return select;
+    select.value = userCategory;
+    materialCategorySnapshots.set(select, Object.freeze({
+      ...context(), expectedRevision: state.revision, materialId: material.id, materialVersion: material.version, userCategory
+    }));
+    label.append(select);
+    field.append(label);
+    const saved = pending?.command.type === "MATERIAL_CATEGORY_SET" ? pending : null;
+    if (saved && contextMatches(saved.origin) && saved.command.payload.materialId === material.id &&
+      saved.command.payload.materialVersion === material.version) {
+      field.append(element("p", "尚未确认保存：" + MATERIAL_CATEGORY_LABELS[saved.command.payload.userCategory] +
+        "；上方仍为已存类别。", "category-pending"));
+    }
+    return field;
   }
 
   function render() {
     if (!state) { updateControls(); return; }
-    renderBusinessMemory();
+    thumbnailRenderVersion += 1;
+    if (pageActive) thumbnailCache.sync(state);
     ui.materials.replaceChildren();
     ui.imageMaterials.replaceChildren();
-    purgeThumbnails();
-    ui.materials.hidden = !state.input.materials.some((material) => !material.mime.startsWith("image/"));
-    ui.imageMaterials.hidden = !state.input.materials.some((material) => material.mime.startsWith("image/"));
+    ui.materials.hidden = !state.input.materials.some((material) => !isImageMaterial(material));
+    ui.imageMaterials.hidden = !state.input.materials.some(isImageMaterial);
     ui.demoNotice.hidden = !state.fixtureId;
+    ui.demoLoadNote.textContent = state.fixtureId === BLENDER_FIXTURE_ID ?
+      "榨汁杯合成资料已载入；可开始整理并核对" : "合成演示资料；载入前会确认替换并处理未保存草稿";
     for (const material of state.input.materials) {
       const card = element("article", undefined, "material-card");
       card.dataset.materialId = material.id;
       card.tabIndex = -1;
-      const isImage = material.mime.startsWith("image/");
       const main = element("div");
-      if (isImage) {
-        const thumb = element("img", undefined, "material-thumb");
-        thumb.alt = "";
-        thumb.loading = "lazy";
-        thumb.decoding = "async";
-        thumb.dataset.thumbFor = material.id;
-        main.append(thumb);
-        loadThumbnail(material);
-      }
       main.append(element("h3", material.name, "material-name"));
       const names = { received: "已接收，待整理", parsed: "已读取结构化数据", needs_review: "内容待核对", failed: "读取未完成" };
       const size = material.size < 1024 * 1024 ? Math.ceil(material.size / 1024) + " KiB" :
         (material.size / 1024 / 1024).toFixed(2) + " MiB";
-      main.append(element("p", size + " · " + (names[material.status] || "内容待核对"), "material-meta"));
+      const readingStatus = isImageMaterial(material) ? "截图已接收 · 未做 OCR，内容待核对" :
+        (names[material.status] || "内容待核对");
+      main.append(element("p", size + " · " + readingStatus, "material-meta"));
       if (material.error) main.append(element("p", material.error, "material-meta"));
-      if (isImage) main.append(categorySelect(material));
       const actions = element("div", undefined, "material-actions");
       actions.append(button("查看原件", "preview"));
       for (const [label, action] of [["替换", "replace"], ["删除", "remove"]]) {
@@ -1802,8 +2306,9 @@ function startIntakePage() {
         item.dataset.mutates = "true";
         actions.append(item);
       }
-      card.append(main, actions);
-      (isImage ? ui.imageMaterials : ui.materials).append(card);
+      card.append(main, materialCategoryField(material), actions);
+      (isImageMaterial(material) ? ui.imageMaterials : ui.materials).append(card);
+      if (pageActive && isImageMaterial(material)) appendMaterialThumbnail(card, material);
     }
     ui.organization.hidden = !(organizationVisible || state.input.focus);
     ui.understandingNote.textContent = intakeApi ?
@@ -1831,84 +2336,8 @@ function startIntakePage() {
     ui.focus.closest(".focus-editor").hidden = !!intakeApi;
     ui.returnReview.hidden = !intakeApi || !contextDraft;
     renderQuestions();
+    renderMoneyAI();
     updateControls();
-  }
-
-  // A read-only view of the shared session, not another memory store or analysis.
-  // Unsaved text and local correction drafts must never appear as saved evidence.
-  function renderBusinessMemory() {
-    if (!ui.memoryFacts || !ui.memorySource) return;
-    ui.memoryFacts.replaceChildren();
-    const savedIntake = state.input.intake;
-    const addGroup = (label, items, empty, qualifier = "") => {
-      const row = element("div");
-      const value = element("dd");
-      row.append(element("dt", label), value);
-      if (!items.length) value.append(element("p", empty));
-      else for (const item of items.slice(0, 3)) value.append(element("p", item));
-      if (items.length > 3) {
-        const more = element("details", undefined, "summary-overflow");
-        more.append(element("summary", "查看其余 " + (items.length - 3) + " 项"));
-        for (const item of items.slice(3)) more.append(element("p", item));
-        value.append(more);
-      }
-      if (qualifier) value.append(element("p", qualifier, "memory-qualifier"));
-      ui.memoryFacts.append(row);
-    };
-    const background = [["merchantName", "商家"], ["productName", "商品"], ["platform", "平台"]]
-      .map(([field, label]) => {
-        const fact = findIntakeFieldFact(state, field, savedIntake?.sourceBindings || []);
-        if (!fact) return savedIntake?.draft?.[field] ? label + "：待核对（尚无唯一来源）" : null;
-        const prefix = label + "：";
-        if (fact.verification === "conflicting") return prefix + "未知（来源有冲突）";
-        if (fact.availability === "not_applicable") return prefix + "本轮不适用";
-        if (fact.availability !== "known" || fact.value === null) return prefix + "未知";
-        if (fact.evidenceStatus === "owner_hypothesis") return prefix + String(fact.value) + "（商家假设，待验证）";
-        return prefix + String(fact.value);
-      }).filter(Boolean);
-    addGroup("经营背景", background, "尚未提供经营背景",
-      background.length ? "按当前已保存信息展示；商家填写与材料提取不等于外部核验。" : "");
-    // Current constraints already reflect shared invalidation and corrections.
-    // An older intake draft is a source record, never a fallback that restores them.
-    const constraints = state.input.constraints.map((item) => item.description +
-      (item.value === null || item.value === undefined ? "" : "：" + item.value + (item.unit || "")));
-    addGroup("当前约束", [...new Set(constraints)], "尚未提供，不默认预算或时间");
-
-    const previousRound = state.history.filter((entry) => entry.type === "round").at(-1);
-    if (previousRound) {
-      const selectionMatches = previousRound.selection?.analysisId === previousRound.analysis?.id &&
-        previousRound.selection?.inputVersion === previousRound.round.inputVersion;
-      const selected = selectionMatches ? previousRound.analysis?.paths?.find((path) => path.id === previousRound.selection?.pathId) : null;
-      const matchesSavedChoice = (entry) => entry.roundId === previousRound.round.id &&
-        selectionMatches && entry.inputVersion === previousRound.selection.inputVersion &&
-        entry.pathId === previousRound.selection.pathId && entry.analysisId === previousRound.selection.analysisId;
-      const feedback = state.feedbackRecords.filter(matchesSavedChoice).at(-1);
-      const execution = feedback ? state.executionRecords.find((entry) =>
-        entry.id === feedback.executionRecordId && matchesSavedChoice(entry) &&
-        entry.artifactId === feedback.artifactId && entry.artifactVersion === feedback.artifactVersion) :
-        state.executionRecords.filter(matchesSavedChoice).at(-1);
-      const executionLabels = { unknown: "执行情况未知", not_started: "自述未执行", partial: "自述部分执行", done: "自述已执行" };
-      const observationLabels = { unknown: "观察结果未知", better: "自述有所改善", unchanged: "自述无明显变化", worse: "自述有所变差" };
-      addGroup("上一轮记录", ["第 " + previousRound.round.index + " 轮 · " + (selected?.title || "未保存有效选路"),
-        (executionLabels[execution?.execution] || "执行情况未知") + "；" +
-        (observationLabels[feedback?.observation] || "观察结果未知")], "", "来源：本机历史活动；自述观察不等于因果结论。");
-    } else {
-      const pending = state.input.unknowns.filter((item) => item.description).map((item) => item.description);
-      const summary = [];
-      if (state.input.materials.length) summary.push("已接收 " + state.input.materials.length + " 份资料；接收不等于已理解。");
-      if (pending.length) summary.push("待核对：" + pending[0]);
-      addGroup("已记录线索", summary, "还没有历史活动。整理资料后，已保存的线索会出现在这里。",
-        pending.length > 1 ? "另有 " + (pending.length - 1) + " 项未知，完整内容见理解核对。" : "");
-    }
-    const syntheticAnalysis = (analysis) => analysis?.mode === "demo_fixture" ||
-      !!analysis?.sourceFixtureId || !!analysis?.experimentReview?.sourceFixtureId;
-    const includesDemo = !!state.fixtureId || syntheticAnalysis(state.analysis) || syntheticAnalysis(previousRound?.analysis) ||
-      [...state.input.facts, ...(previousRound?.input?.facts || [])].some((fact) =>
-        /合成演示|虚构/.test([fact.source?.note, fact.source?.locator?.quote, fact.subject].filter(Boolean).join(" ")));
-    ui.memorySource.textContent = (includesDemo ? "来源含显式载入的合成演示资料。" :
-      state.savedAt ? "来源：当前本机项目已保存资料。" : "尚未保存经营资料。") +
-      (savedIntake?.status === "stale" ? "关联输入已变化，需要重新核对。" : "") +
-      "本机展示不代表 MoneyAI 已写入或读回。";
   }
 
   function renderFacts() {
@@ -2018,34 +2447,30 @@ function startIntakePage() {
     draftContext = context();
   }
 
-  async function processMaterial(material) {
+  async function processMaterial(material, afterRetry) {
     const snapshot = { roundId: state.round.id, inputVersion: state.round.inputVersion, materialVersion: material.version };
     const blob = await api.getMaterialBlob(material.id);
     if (!blob) throw new Error("未找到这份原件，请重新读取或替换材料。");
+    if (!(await verifyMaterialBlobIdentity(blob, material))) {
+      throw errorWithCode("原件与待解析材料的身份不一致，未使用其他版本生成事实；请重新读取本机记录。", "stale_input");
+    }
     const result = await readSupportedMaterial(blob, material);
     if (state.round.id !== snapshot.roundId || state.round.inputVersion !== snapshot.inputVersion ||
       !state.input.materials.some((item) => item.id === material.id && item.version === snapshot.materialVersion)) {
       throw errorWithCode("读取期间资料已更新，旧读取结果未保存；请重新整理。", "stale_input");
     }
-    await send("MATERIAL_RESULT_SET", { materialId: material.id, ...snapshot, ...result });
+    await send("MATERIAL_RESULT_SET", { materialId: material.id, ...snapshot, ...result }, afterRetry);
   }
 
-  async function processReceived() {
-    const attempted = new Set();
-    let targets = materialsNeedingRead(state);
-    while (targets.length) {
-      const next = targets.find((item) => !attempted.has(item.id));
-      if (!next) break;
-      attempted.add(next.id);
-      const material = state.input.materials.find((item) => item.id === next.id);
-      if (!material) { targets = materialsNeedingRead(state); continue; }
-      await processMaterial(material);
-      targets = materialsNeedingRead(state);
+  async function processReceived(afterRetry) {
+    const ids = state.input.materials.filter((item) => item.status === "received").map((item) => item.id);
+    for (const id of ids) {
+      const material = state.input.materials.find((item) => item.id === id);
+      if (material?.status === "received") await processMaterial(material, afterRetry);
     }
   }
 
-  async function drainUploads() {
-    const rejected = [];
+  async function drainUploads(rejected = []) {
     while (uploadQueue.length) {
       const entry = uploadQueue.shift();
       try {
@@ -2053,7 +2478,7 @@ function startIntakePage() {
           uploadQueue.unshift(entry);
           throw errorWithCode("已切换到另一轮，旧轮待接收文件未添加。请停止重试后重新选择文件。", "stale_round");
         }
-        await validateFile(entry.file, !!entry.target);
+        validateMaterialSelection(entry.file, api);
         if (!sameContext(entry.origin)) {
           uploadQueue.unshift(entry);
           throw errorWithCode("校验期间已切换到另一轮，未加入旧轮文件。请停止重试后重新选择。", "stale_round");
@@ -2063,36 +2488,108 @@ function startIntakePage() {
           throw errorWithCode("待替换材料已更新，请重新选择要替换的原件。", "stale_input");
         }
         const resume = async () => {
-          await processReceived();
-          await drainUploads();
+          await processReceived(resume);
+          await drainUploads(rejected);
           status("材料接收处理已结束；请核对文件列表中的读取状态和未接收提示，再继续整理。");
         };
         if (entry.target) {
           await send("MATERIAL_REPLACE", {
-            materialId: entry.target.id, file: entry.file, inputVersion: state.round.inputVersion
+            materialId: entry.target.id, file: entry.file, inputVersion: state.round.inputVersion,
+            ...(entry.userCategory === undefined ? {} : { userCategory: entry.userCategory })
           }, resume);
-        } else await send("MATERIAL_ADD", { file: entry.file }, resume);
-        await processReceived();
+        } else await send("MATERIAL_ADD", {
+          file: entry.file, ...(entry.userCategory === undefined ? {} : { userCategory: entry.userCategory })
+        }, resume);
+        await processReceived(resume);
       } catch (error) {
-        if (pending || error.code === "stale_round") throw error;
+        if (pending || error.code === "stale_round") {
+          if (rejected.length) {
+            throw errorWithCode(rejected.join("；") + "；" + (error.message || "本次材料处理尚未完成。"), error.code);
+          }
+          throw error;
+        }
         rejected.push(entry.file.name + "：" + (error.message || "未接收"));
       }
     }
     if (rejected.length) showError(rejected.join("；"));
   }
 
-  async function receiveFiles(files, target = null) {
+  function openMaterialPicker(input, target = null) {
+    if (!state || busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || pending || pendingRead) return;
+    materialPickerSnapshots.set(input, {
+      origin: Object.freeze(context()), target: target ? Object.freeze({ ...target }) : null,
+      userCategory: input === ui.imageFiles ? ui.imageCategory.value : undefined
+    });
+    input.click();
+  }
+
+  function acceptMaterialPicker(input) {
+    const selection = materialPickerSnapshots.get(input), files = Array.from(input.files);
+    materialPickerSnapshots.delete(input);
+    input.value = "";
+    if (input === ui.replacement) replaceTarget = null;
     if (!files.length) return;
-    if (busy || voiceEditingLocked() || connectInProgress || pending || pendingRead || !state) {
+    if (!selection || !contextMatches(selection.origin) || selection.target && !state.input.materials.some((material) =>
+      material.id === selection.target.id && material.version === selection.target.version)) {
+      showError("选择文件期间轮次或资料版本已变化，本次文件未加入；原有材料保留，请重新选择。");
+      return;
+    }
+    receiveFiles(files, selection.target, selection.userCategory);
+  }
+
+  async function receiveFiles(files, target = null, userCategory) {
+    if (!files.length) return;
+    if (busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || pending || pendingRead || !state) {
       showError("请先完成或重试当前操作，再添加材料。");
       return;
     }
-    uploadQueue.push(...Array.from(files, (file) => ({ file, target, origin: context() })));
+    uploadQueue.push(...Array.from(files, (file) => ({ file, target, origin: context(),
+      ...(api.MATERIAL_CATEGORIES.includes(userCategory) && api.getMaterialCapability(file.name)?.preview === "image"
+        ? { userCategory } : {})
+    })));
     await exclusive(async () => {
       if (!intakeApi) await saveDescription();
       await drainUploads();
       status(state.input.materials.length ? "材料接收处理已结束；请核对文件列表中的读取状态和未接收提示。" : "未接收材料，请核对提示。");
     }, "正在接收材料…");
+  }
+
+  async function changeMaterialCategory(select) {
+    const snapshot = materialCategorySnapshots.get(select), userCategory = select.value;
+    if (select.disabled || busy || fixtureLoadInProgress || voiceEditingLocked() || connectInProgress || pending || pendingRead || !state) {
+      render(); return;
+    }
+    let payload;
+    try {
+      payload = buildMaterialCategoryPayload(snapshot, userCategory, api.MATERIAL_CATEGORIES);
+      if (!payload) return;
+      if (!contextMatches(snapshot) || !state.input.materials.some((material) =>
+        material.id === snapshot.materialId && material.version === snapshot.materialVersion)) {
+        throw errorWithCode("材料或本轮输入已更新，未把旧选择写入新版本；请重新选择来源类别。", "stale_input");
+      }
+    } catch (error) {
+      render(); showError(error.message); return;
+    }
+    const finish = (committed) => {
+      render();
+      if (!matchesMaterialCategoryReceipt(state, committed, snapshot, userCategory)) {
+        throw errorWithCode("原来源操作已有回执，但当前资料又发生变化；未覆盖新版本，请核对列表。", "stale_input");
+      }
+      status("来源类别已保存在本机，仅为用户标注；旧确认已失效，请重新核对本轮内容。");
+    };
+    await exclusive(async () => {
+      const committed = await attempt({
+        type: "MATERIAL_CATEGORY_SET", payload, commandId: crypto.randomUUID(), expectedRevision: snapshot.expectedRevision
+      }, finish, snapshot);
+      finish(committed);
+    }, "正在保存来源类别…");
+    const restoreFocus = document.activeElement === select || document.activeElement === document.body;
+    render();
+    if (restoreFocus) {
+      const card = [...ui.materials.children, ...ui.imageMaterials.children]
+        .find((node) => node.dataset.materialId === snapshot.materialId);
+      card?.querySelector("select[data-material-category]")?.focus({ preventScroll: true });
+    }
   }
 
   async function saveOrganization(focusText) {
@@ -2121,7 +2618,7 @@ function startIntakePage() {
   }
 
   async function organize() {
-    if (busy || voiceSnapshot?.active || pending || pendingRead || !state) return;
+    if (busy || fixtureLoadInProgress || voiceSnapshot?.active || pending || pendingRead || !state) return;
     if (!inputReady()) { showError("先说一句，或交一份材料。"); return; }
     if (contextEdit?.dirty || correctionDirty || questionDirty) {
       showError("还有更正或补问文字未处理，请先保存或取消；整理不会覆盖这些草稿。");
@@ -2138,7 +2635,9 @@ function startIntakePage() {
       }
       if (intakeApi) {
         setIntakeStage("extracting", "正在核对可用的整理能力，原文仍保留。");
-        await prepareUnderstanding();
+        const prepared = await prepareUnderstanding();
+        if (prepared?.fixture) await prepareMoneyAIFixtureScope();
+        else invalidateMoneyAIScope("首轮MoneyAI真实验证只开放合成榨汁杯六组摘要；当前资料没有发送。");
       } else await saveOrganization(focus);
       ui.organization.focus({ preventScroll: true });
       ui.organization.scrollIntoView({ behavior: "instant", block: "start" });
@@ -2196,6 +2695,7 @@ function startIntakePage() {
     previewMaterialId = null;
     previewMaterialVersion = null;
     ui.previewBody.replaceChildren();
+    if (!pageActive) return;
     if (previewTrigger?.isConnected) previewTrigger.focus();
     else ui.choose.focus();
   }
@@ -2207,7 +2707,7 @@ function startIntakePage() {
     previewTrigger = document.activeElement;
     previewMaterialId = materialId;
     previewMaterialVersion = material.version;
-    const current = () => request === previewRequest && sameContext(origin) &&
+    const current = () => pageActive && request === previewRequest && sameContext(origin) &&
       state.input.materials.some((item) => item.id === materialId && item.version === material.version);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = null;
@@ -2218,24 +2718,27 @@ function startIntakePage() {
       const blob = await api.getMaterialBlob(materialId);
       if (!current()) return;
       if (!blob) throw new Error("原件已移除，不能用其他文件替代。");
+      const matches = await verifyMaterialBlobIdentity(blob, material);
+      if (!current()) return;
+      if (!matches) throw new Error("原件与这张卡片的身份不一致，未展示其他版本；请关闭后重新读取本机记录。");
       const fragment = document.createDocumentFragment();
       if (locator) {
         const location = locator.type === "csv" ? "原件第 " + locator.lineStart + "—" + locator.lineEnd + " 行，字段 " + locator.column :
           locator.type === "json" ? "原件字段 " + locator.pointer : "原文来源";
         fragment.append(element("p", location, "fact-meta"));
       }
-      if (Object.hasOwn(IMAGE_TYPES, fileExtension(material.name))) {
+      if (isImageMaterial(material)) {
         previewUrl = URL.createObjectURL(blob);
         const image = element("img");
         image.alt = "材料原件：" + material.name;
+        image.addEventListener("error", () => {
+          if (!current()) return;
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          previewUrl = null;
+          ui.previewBody.replaceChildren(element("p", "这份原件暂时无法显示，未用其他图片替代；可关闭后重试。"));
+        }, { once: true });
         image.src = previewUrl;
         fragment.append(image);
-      } else if (["xlsx", "xls"].includes(fileExtension(material.name))) {
-        fragment.append(element("p", "这是二进制表格原件，已按原始字节保存在本机。" +
-          (material.status === "parsed" ? "已知指标列已在本机读取，下方卡片和“已读取数据”可核对取值与单元格位置。"
-            : material.status === "needs_review" ? "已知指标列已在本机读取；仍有需要人工核对的地方，见材料卡片说明。原件可下载后用Excel/WPS打开核对。"
-              : material.status === "failed" ? "自动读取未完成：" + (material.error || "原因未知") + "原件已保留，可在原应用核对或另存为XLSX后重试。"
-                : "内容尚未读取；请在整理时重新读取，或导出UTF-8 CSV后重新上传。"), "material-meta"));
       } else {
         let text;
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer()); }
@@ -2388,10 +2891,100 @@ function startIntakePage() {
     }
   }
 
+  async function attemptFixtureLoad(operation) {
+    if (state.sessionId !== operation.origin.sessionId) {
+      throw errorWithCode("已切换会话，旧案例载入不会派发；请核对当前记录。", "stale_round");
+    }
+    if (pending?.command.commandId === operation.command.commandId) pending = null;
+    let result;
+    try { result = await api.dispatch(operation.command); }
+    catch {
+      pending = operation;
+      throw errorWithCode("案例载入回执未确认，请重试同一操作；不会据此认定未保存。", "write_failed");
+    }
+    if (!result.ok) {
+      if (retryable.has(result.code)) pending = operation;
+      if (result.state && canAdoptFixtureSnapshot(state, result.state, operation.origin, true)) applyState(result.state);
+      throw errorWithCode(result.message || "案例未确认载入，请核对当前记录。", result.code);
+    }
+    let loaded;
+    try { loaded = await api.loadSession(); }
+    catch {
+      pending = operation;
+      throw errorWithCode("载入后读回失败，请重试同一操作确认结果。", "read_failed");
+    }
+    if (!loaded.ok) {
+      pending = operation;
+      throw errorWithCode(loaded.message || "载入后读回失败，请重试同一操作。", loaded.code || "read_failed");
+    }
+    if (!canAdoptFixtureSnapshot(state, loaded.state, operation.origin, true)) {
+      throw errorWithCode("读回期间已观察到其他会话或更新，未采用迟到的案例快照；当前资料保留。", "stale_round");
+    }
+    applyState(loaded.state);
+    if (!isFreshBlenderFixtureReceipt(state, operation)) {
+      throw errorWithCode("载入回执已返回，但本机资料又发生变化；已保留当前记录，未覆盖或宣称新轮已就绪。", "stale_input");
+    }
+    contextDraft = structuredClone(state.input.intake.draft);
+    contextBindings = structuredClone(state.input.intake.sourceBindings);
+    contextOrigin = context();
+    contextEdit = null; draftContext = null; lastIntakeAttempt = null;
+    correctionTarget = null; correctionContext = null; replaceTarget = null;
+    questionContext = null; renderedQuestionId = null; ui.questionAnswer.value = "";
+    inputSources.clear();
+    readyToAnalyze = false; organizedVersion = null; organizationVisible = false;
+    for (const dialog of [ui.contextDialog, ui.correction, ui.voiceConsent]) if (dialog.open) dialog.close();
+    reviewMessage = "";
+    setIntakeStage("idle");
+    clearError();
+    render();
+    status("榨汁杯合成首次资料已在本机载入；请点“开始整理”核对，没有提前载入分析、执行或反馈。");
+  }
+
+  async function loadBlenderDemo() {
+    if (fixtureLoadInProgress || busy || connectInProgress || voiceSnapshot?.active || pending || pendingRead || !state) return;
+    fixtureLoadInProgress = true;
+    updateControls();
+    try {
+      const operation = await prepareBlenderFixtureLoad(api, {
+        origin: context(), commandId: crypto.randomUUID(), notify: showError,
+        confirmReplacement: () => window.confirm("用榨汁杯合成案例替换当前会话的资料与历史？这是虚构演示，不代表真实商家效果。未保存草稿会先请你处理。")
+      });
+      if (!operation) { status("未载入演示案例。"); return; }
+      if (!canAdoptFixtureSnapshot(state, operation.state, operation.origin)) {
+        throw errorWithCode("准备载入期间已切换会话或资料更新，未覆盖当前记录；请重新确认。", "stale_round");
+      }
+      if (dirty()) throw new Error("还有未保存草稿，未载入案例；请先处理当前编辑。");
+      applyState(operation.state);
+      await exclusive(() => attemptFixtureLoad(operation), "正在载入榨汁杯合成资料…");
+    } catch (error) {
+      showError(error.message || "案例尚未确认载入，请核对当前记录。");
+      status("案例载入尚未完成。");
+    } finally {
+      fixtureLoadInProgress = false;
+      updateControls();
+    }
+  }
+
   async function retryPending() {
     if (busy || connectInProgress) return;
     if (!api || !state || pendingRead) { await connect(); return; }
     if (!pending) return;
+    if (pending.command.type === "LOAD_FIXTURE") {
+      const operation = pending;
+      await exclusive(async () => {
+        const loaded = await api.loadSession();
+        if (!loaded.ok) throw new Error(loaded.message || "读回失败，未重放案例载入。");
+        if (!canAdoptFixtureSnapshot(state, loaded.state, operation.origin, true)) {
+          throw errorWithCode("已观察到其他会话或更新，未采用旧回执快照；请停止重试后核对当前资料。", "stale_round");
+        }
+        applyState(loaded.state);
+        if (state.sessionId !== operation.origin.sessionId) {
+          throw errorWithCode("已切换会话，旧案例操作不会重放；请停止重试并重新确认。", "stale_round");
+        }
+        await attemptFixtureLoad(operation);
+      }, "正在核对原案例载入回执…");
+      return;
+    }
     await exclusive(async () => {
       const saved = pending;
       const loaded = await api.loadSession();
@@ -2422,13 +3015,15 @@ function startIntakePage() {
   function stopRetry() {
     if (busy || (!pending && !uploadQueue.length)) return;
     if (!window.confirm("停止重试不会撤销已保存的内容。文字草稿会保留，未保存文件需重新选择。要停止吗？")) return;
+    const categoryRetry = pending?.command.type === "MATERIAL_CATEGORY_SET";
     pending = null;
     uploadQueue = [];
     descriptionDirty = ui.description.value !== state?.input.description;
     focusDirty = !intakeApi && ui.focus.value !== (state?.input.focus ?? "");
     clearError();
     status("已停止重试，请核对当前记录和保留的草稿后再操作。");
-    updateControls();
+    if (categoryRetry) render();
+    else updateControls();
     if (correctionDirty && !ui.correction.open) {
       ui.correctionError.textContent = "更正草稿仍保留，请核对最新信息后保存或取消。";
       ui.correction.showModal();
@@ -2455,12 +3050,13 @@ function startIntakePage() {
     status("正在读取本机记录…");
     try {
       if (!api) {
-        const [session, navigation, shell, draftModule, extraction] = await Promise.all([
+        const [session, navigation, shell, draftModule, extraction, moneyAIClient] = await Promise.all([
           import("../shared/state.js"), import("../shared/navigation.js"), import("../shared/shell.js"),
-          import("../shared/intake-draft.js"), import("../shared/intake-extraction.js")
+          import("../shared/intake-draft.js"), import("../shared/intake-extraction.js"), import("../shared/moneyai.js")
         ]);
         api = { ...session, ...navigation };
-        intakeApi = { ...draftModule, ...extraction };
+        configureMaterialInputs();
+        intakeApi = { ...draftModule, ...extraction, ...moneyAIClient };
         await shell.mountShell("intake");
         unregisterGuard = api.registerNavigationGuard({
           isDirty: () => !allowNavigation && (dirty() || busy),
@@ -2508,6 +3104,7 @@ function startIntakePage() {
             readyToAnalyze = false;
             voiceOriginals.length = 0; inputSources.clear();
             lastIntakeAttempt = null;
+            invalidateMoneyAIScope("已放弃当前未保存内容；MoneyAI本次选择与同意已清除。");
             pending = null; uploadQueue = []; draftContext = null;
             correctionTarget = null; correctionContext = null;
             if (ui.correction.open) ui.correction.close();
@@ -2547,6 +3144,7 @@ function startIntakePage() {
       if (!dirty()) clearError();
       render();
       status(state.savedAt ? "已读取本机记录。" : "");
+      if (moneyAICapability === "unchecked") void refreshMoneyAICapability();
       const sourceId = new URL(location.href).searchParams.get("sourceId");
       if (sourceId) {
         if (sourceId === "input:description") showManual();
@@ -2625,11 +3223,22 @@ function startIntakePage() {
   ui.returnReview.addEventListener("click", () => {
     if (!ui.returnReview.disabled) showReview(readyToAnalyze ? "ready" : "confirming");
   });
+  ui.moneyAICheck.addEventListener("click", refreshMoneyAICapability);
+  ui.moneyAIScopeSelect.addEventListener("change", () => {
+    if (!ui.moneyAIScopeSelect.checked) ui.moneyAIConsent.checked = false;
+    updateControls();
+  });
+  ui.moneyAIConsent.addEventListener("change", updateControls);
+  ui.moneyAISend.addEventListener("click", startMoneyAIExtraction);
+  ui.moneyAICancel.addEventListener("click", cancelMoneyAIExtraction);
   ui.form.addEventListener("submit", (event) => { event.preventDefault(); organize(); });
   ui.description.addEventListener("input", (event) => {
     if (!descriptionDirty && !focusDirty) draftContext = state ? context() : null;
     descriptionDirty = ui.description.value !== state?.input.description;
     inputSources.add(event.inputType === "insertFromPaste" ? "paste" : "manual");
+    if (moneyAIScope || moneyAIAttempt) {
+      invalidateMoneyAIScope("补充文字已变化，旧合成摘要与本次同意已清除；真实商家文字不会自动发送。");
+    }
     organizedVersion = null; readyToAnalyze = false;
     if (["confirming", "ready"].includes(intakeStage)) { setIntakeStage("idle"); render(); }
     status("描述尚未保存，确认核对内容时会一起保存。");
@@ -2649,29 +3258,17 @@ function startIntakePage() {
     status("本轮范围尚未保存，确认时会保存。");
     updateControls();
   });
-  ui.choose.addEventListener("click", () => { if (!ui.choose.disabled) ui.files.click(); });
-  ui.chooseLegacy.addEventListener("click", () => { if (!ui.chooseLegacy.disabled) ui.legacyFiles.click(); });
-  ui.chooseImages.addEventListener("click", () => { if (!ui.chooseImages.disabled) ui.imageFiles.click(); });
-  ui.imageFiles.addEventListener("change", () => {
-    const files = Array.from(ui.imageFiles.files);
-    ui.imageFiles.value = "";
-    receiveFiles(files);
-  });
-  ui.legacyFiles.addEventListener("change", () => {
-    const files = Array.from(ui.legacyFiles.files);
-    ui.legacyFiles.value = "";
-    receiveFiles(files);
-  });
-  ui.files.addEventListener("change", () => {
-    const files = Array.from(ui.files.files);
-    ui.files.value = "";
-    receiveFiles(files);
-  });
-  ui.replacement.addEventListener("change", () => {
-    const files = Array.from(ui.replacement.files), target = replaceTarget;
-    ui.replacement.value = ""; replaceTarget = null;
-    if (files.length && target) receiveFiles(files, target);
-  });
+  ui.demoLoad.addEventListener("click", loadBlenderDemo);
+  ui.chooseImages.addEventListener("click", () => { if (!ui.chooseImages.disabled) openMaterialPicker(ui.imageFiles); });
+  ui.choose.addEventListener("click", () => { if (!ui.choose.disabled) openMaterialPicker(ui.files); });
+  ui.chooseLegacy.addEventListener("click", () => { if (!ui.chooseLegacy.disabled) openMaterialPicker(ui.legacyFiles); });
+  for (const input of [ui.imageFiles, ui.files, ui.legacyFiles, ui.replacement]) {
+    input.addEventListener("change", () => acceptMaterialPicker(input));
+    input.addEventListener("cancel", () => {
+      materialPickerSnapshots.delete(input);
+      if (input === ui.replacement) replaceTarget = null;
+    });
+  }
   for (const type of ["dragenter", "dragover"]) {
     ui.drop.addEventListener(type, (event) => {
       if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
@@ -2690,7 +3287,7 @@ function startIntakePage() {
   });
   ui.drop.addEventListener("keydown", (event) => {
     if (event.target === ui.drop && ["Enter", " "].includes(event.key) && !ui.choose.disabled) {
-      event.preventDefault(); ui.files.click();
+      event.preventDefault(); openMaterialPicker(ui.files);
     }
   });
 
@@ -2698,7 +3295,8 @@ function startIntakePage() {
     ui.imageDrop.addEventListener(type, (event) => {
       if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
       event.preventDefault();
-      if (!ui.chooseImages.disabled) { event.dataTransfer.dropEffect = "copy"; ui.imageDrop.classList.add("is-dragging"); }
+      event.dataTransfer.dropEffect = ui.chooseImages.disabled ? "none" : "copy";
+      ui.imageDrop.classList.toggle("is-dragging", !ui.chooseImages.disabled);
     });
   }
   ui.imageDrop.addEventListener("dragleave", (event) => {
@@ -2708,32 +3306,37 @@ function startIntakePage() {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
     ui.imageDrop.classList.remove("is-dragging");
-    receiveFiles(Array.from(event.dataTransfer.files));
+    receiveFiles(Array.from(event.dataTransfer.files), null, ui.imageCategory.value);
+  });
+  ui.imageDrop.addEventListener("keydown", (event) => {
+    if (event.target === ui.imageDrop && ["Enter", " "].includes(event.key) && !event.isComposing &&
+      event.keyCode !== 229 && !event.repeat && !ui.chooseImages.disabled) {
+      event.preventDefault(); openMaterialPicker(ui.imageFiles);
+    }
   });
 
   ui.form.addEventListener("paste", (event) => {
     const images = Array.from(event.clipboardData?.items || [])
       .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
       .map((item) => item.getAsFile()).filter(Boolean);
-    if (event.target === ui.description && event.clipboardData?.getData("text/plain")) inputSources.add("paste");
+    const hasText = !!event.clipboardData?.getData("text/plain");
+    if (event.target === ui.description && hasText) inputSources.add("paste");
     if (!images.length) return;
-    if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
-    receiveFiles(images);
+    const origin = state ? context() : null, userCategory = ui.imageCategory.value;
+    const receive = () => {
+      if (!sameContext(origin)) {
+        showError("粘贴期间本轮已变化，图片未添加；请在当前轮重新粘贴。");
+        return;
+      }
+      receiveFiles(images, null, userCategory);
+    };
+    // Let the native text paste/input event finish before uploads make fields read-only.
+    if (hasText) setTimeout(receive, 0);
+    else { event.preventDefault(); receive(); }
   });
-  for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("change", async (event) => {
-    const select = event.target.closest("select[data-category-for]");
-    if (!select || !state) return;
-    const material = state.input.materials.find((item) => item.id === select.dataset.categoryFor);
-    if (!material || material.userCategory === select.value) return;
-    if (busy || voiceEditingLocked() || pending || pendingRead) { render(); return; }
-    await exclusive(async () => {
-      await send("MATERIAL_CATEGORY_SET", {
-        materialId: material.id, materialVersion: material.version,
-        roundId: state.round.id, inputVersion: state.round.inputVersion,
-        userCategory: select.value
-      });
-      status("来源类别已标注；这是你的标注，不代表来源已核验。");
-    }, "正在保存来源类别…");
+  for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("change", (event) => {
+    const select = event.target.closest("select[data-material-category]");
+    if (select && list.contains(select)) changeMaterialCategory(select);
   });
   for (const list of [ui.materials, ui.imageMaterials]) list.addEventListener("click", async (event) => {
     const action = event.target.closest("button[data-action]");
@@ -2742,15 +3345,26 @@ function startIntakePage() {
     const material = state.input.materials.find((item) => item.id === card.dataset.materialId);
     if (!material) return;
     if (action.dataset.action === "preview") { await previewMaterial(material.id); return; }
-    if (busy || voiceEditingLocked() || pending || pendingRead) return;
+    if (action.dataset.action === "thumbnail-retry") {
+      if (busy || connectInProgress) { showError("请等待当前操作结束后再重新读取原件。"); return; }
+      thumbnailCache.forget(state, material);
+      await connect();
+      return;
+    }
+    if (busy || voiceEditingLocked() || connectInProgress || pending || pendingRead) return;
     if (action.dataset.action === "replace") {
       replaceTarget = { id: material.id, version: material.version };
-      ui.replacement.click();
-    } else if (action.dataset.action === "remove" &&
-      window.confirm("删除这份材料及本机原件？依赖它的结果将需要重新整理。")) {
+      openMaterialPicker(ui.replacement, replaceTarget);
+    } else if (action.dataset.action === "remove") {
+      const origin = { ...context(), materialId: material.id, materialVersion: material.version };
+      if (!window.confirm("删除这份材料及本机原件？依赖它的结果将需要重新整理。")) return;
       await exclusive(async () => {
         await saveDescription();
-        await send("MATERIAL_REMOVE", { materialId: material.id });
+        if (!sameContext(origin) || !state.input.materials.some((item) =>
+          item.id === origin.materialId && item.version === origin.materialVersion)) {
+          throw errorWithCode("删除前材料或轮次已变化，未移除当前原件；请重新查看后再确认。", "stale_input");
+        }
+        await send("MATERIAL_REMOVE", { materialId: origin.materialId });
         status("材料已移除；请重新整理本轮内容。");
       }, "正在移除材料…");
     }
@@ -2837,14 +3451,24 @@ function startIntakePage() {
     if (!allowNavigation && (dirty() || busy)) { event.preventDefault(); event.returnValue = ""; }
   });
   window.addEventListener("pagehide", (event) => {
+    pageActive = false;
+    thumbnailRenderVersion += 1;
+    thumbnailCache.clear();
+    if (moneyAIAttempt) moneyAIAttempt.invalidated = true;
     extractionController?.abort();
+    moneyAIStatusController?.abort();
+    moneyAIStatusController = null;
+    moneyAIStatusToken += 1;
+    moneyAIAttemptToken += 1;
+    moneyAICapability = "unchecked";
+    resetMoneyAIConfirmations();
     voiceHold?.release(voiceHold.current(), true);
-    previewRequest += 1;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
+    if (ui.preview.open) ui.preview.close();
+    closePreview();
     if (!event.persisted) { voiceSession?.destroy(); titleMotionController?.destroy(); unsubscribe?.(); unregisterGuard?.(); }
   });
   window.addEventListener("pageshow", (event) => {
+    pageActive = true;
     allowNavigation = false;
     if (event.persisted) connect();
   });

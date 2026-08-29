@@ -19,14 +19,9 @@
       <nav class="action-local-nav" aria-label="当前项目与复盘">
         <button id="open-project" class="button button--quiet" type="button" aria-haspopup="dialog">当前项目</button>
         <button id="open-review" class="button button--quiet" type="button" disabled>反馈后改判</button>
+        <button id="archive-preview-open" class="button button--quiet archive-preview-open" type="button"
+          aria-haspopup="dialog" aria-controls="archive-preview-dialog">归档本轮（布局预览）</button>
       </nav>
-
-      <div data-workflow-steps></div>
-      <div id="action-view-tabs" class="action-view-tabs" role="tablist" aria-label="执行与复盘" hidden>
-        <button id="action-work-tab" type="button" role="tab" aria-controls="work-panel" aria-selected="true">操作与成品</button>
-        <button id="action-feedback-tab" type="button" role="tab" aria-controls="feedback-panel" aria-selected="false" tabindex="-1">反馈与复盘</button>
-        <span>本机记录 · 实际执行由你确认</span>
-      </div>
 
       <section id="load-state" class="action-state" aria-labelledby="load-title">
         <h1 id="load-title">读取当前行动</h1>
@@ -41,7 +36,6 @@
       </section>
 
       <div id="action-content" hidden>
-        <section id="work-panel" role="tabpanel" aria-labelledby="action-work-tab" tabindex="0">
         <header class="action-heading">
           <p id="selected-plan-label" class="selected-plan-label">已选方案</p>
           <div class="action-heading-copy">
@@ -159,14 +153,11 @@
           </aside>
         </div>
 
-        <button id="go-feedback" class="button" type="button">记录实际执行与反馈 →</button>
-        </section>
-
-        <section id="feedback-panel" class="action-feedback" role="tabpanel" aria-labelledby="action-feedback-tab" tabindex="0" hidden>
-          <header class="action-feedback-heading">
-            <h2 class="action-feedback-title">准备好以后，记录采用与执行</h2>
-            <p class="action-feedback-hint">选填，不影响取用；未填写保持未知</p>
-          </header>
+        <details id="feedback-panel" class="action-feedback action-disclosure" open>
+          <summary>
+            <span class="action-feedback-title">准备好以后，记录采用与执行</span>
+            <span class="action-feedback-hint">选填，不影响取用</span>
+          </summary>
 
           <div class="action-feedback-body">
             <form id="feedback-form">
@@ -329,7 +320,68 @@
               <p id="round-status" class="status" role="status" aria-live="polite"></p>
             </div>
           </div>
+        </details>
+
+        <!-- A3_MONEYAI_HISTORY_UI_START -->
+        <section id="moneyai-history-panel" class="moneyai-history-panel" aria-labelledby="moneyai-history-title">
+          <header class="moneyai-history-heading">
+            <div>
+              <p class="moneyai-history-kicker">显式同步 · 默认关闭</p>
+              <h2 id="moneyai-history-title">MoneyAI 决策历史</h2>
+            </div>
+            <span class="tag">4188 同源接线</span>
+          </header>
+          <p id="moneyai-history-description" class="moneyai-history-description">
+            本机反馈保存完成后，仍需你逐次决定是否写入 MoneyAI。页面只调用 4188 同源的 luya.moneyai.v1；本机 Agent 可能使用它已配置的模型服务。
+          </p>
+
+          <div class="moneyai-history-consent">
+            <label class="action-checkbox-label" for="moneyai-history-consent">
+              <input id="moneyai-history-consent" type="checkbox" aria-describedby="moneyai-history-send-scope">
+              <span>我已核对发送范围，并同意仅执行下一次 MoneyAI 写入或读回请求</span>
+            </label>
+            <p id="moneyai-history-send-scope" class="moneyai-history-send-scope muted">
+              写入仅发送已保存身份、所选合成榨汁杯行动／稿件摘要及本条自愿反馈；读回仅发送精确记录、操作和轮次标识。真实商家原件、图片、Excel、录音、个人历史和凭据不会发送。每次请求后同意自动清空。
+            </p>
+          </div>
+
+          <div class="moneyai-history-status-grid" aria-describedby="moneyai-history-description">
+            <article class="moneyai-history-status-card">
+              <p class="moneyai-history-step">1 · 本机记录</p>
+              <h3>反馈保存与本机读回</h3>
+              <p id="moneyai-history-local-status" class="status" role="status" aria-live="polite">尚未选择一条已保存反馈。</p>
+              <p id="moneyai-history-local-reference" class="moneyai-history-reference muted">取用内容不要求反馈；未保存也不会自动同步。</p>
+            </article>
+
+            <article class="moneyai-history-status-card">
+              <p class="moneyai-history-step">2 · MoneyAI 写入</p>
+              <h3>逐次显式写入</h3>
+              <p id="moneyai-history-write-status" class="status" role="status" aria-live="polite">等待本机反馈读回与本次明确同意；不会自动同步。</p>
+              <button id="moneyai-history-write" class="button" type="button" aria-describedby="moneyai-history-write-status" disabled>
+                写入 MoneyAI 决策历史
+              </button>
+            </article>
+
+            <article class="moneyai-history-status-card">
+              <p class="moneyai-history-step">3 · MoneyAI 读回</p>
+              <h3>新请求核对历史</h3>
+              <p id="moneyai-history-read-status" class="status" role="status" aria-live="polite">尚未发起新请求；本机记录和反馈后改判不是 MoneyAI 历史。</p>
+              <button id="moneyai-history-read" class="button button--secondary" type="button" aria-describedby="moneyai-history-read-status" disabled>
+                新请求核对 MoneyAI 历史
+              </button>
+            </article>
+          </div>
+
+          <section id="moneyai-history-results" class="moneyai-history-results" aria-labelledby="moneyai-history-results-title" hidden>
+            <h3 id="moneyai-history-results-title">本次 MoneyAI 历史读回</h3>
+            <div id="moneyai-history-results-content"></div>
+          </section>
+
+          <p class="moneyai-history-boundary muted">
+            本机保存不等于 MoneyAI 写入；服务健康、反馈后改判和“这个商家的实验记忆”也不等于 MoneyAI 历史已读回。
+          </p>
         </section>
+        <!-- A3_MONEYAI_HISTORY_UI_END -->
       </div>
 
       <section id="review-content" class="action-review" aria-labelledby="review-title" hidden>
@@ -469,6 +521,110 @@
           <button class="button button--quiet" type="button" data-close-dialog="project-dialog">关闭并返回</button>
         </header>
         <div id="project-content" class="action-dialog-body"></div>
+      </dialog>
+
+      <dialog id="archive-preview-dialog" class="action-dialog archive-preview-dialog"
+        aria-labelledby="archive-preview-title" aria-describedby="archive-preview-description">
+        <header class="action-dialog-heading archive-preview-heading">
+          <div class="archive-preview-heading-copy">
+            <p class="archive-preview-kicker">归档功能 · 布局预览</p>
+            <h2 id="archive-preview-title" tabindex="-1">项目档案</h2>
+          </div>
+          <button id="archive-preview-close-top" class="button button--quiet archive-preview-close" type="button"
+            data-archive-preview-close>关闭</button>
+        </header>
+
+        <div class="action-dialog-body archive-preview-body">
+          <section class="archive-preview-intro" aria-labelledby="archive-preview-intro-title">
+            <div class="archive-preview-tag-row" aria-label="当前能力状态">
+              <span class="archive-preview-tag">布局预览</span>
+              <span class="archive-preview-tag">需求澄清中</span>
+              <span class="archive-preview-tag">尚未接档案存储</span>
+            </div>
+            <h3 id="archive-preview-intro-title">先看清将会留存什么</h3>
+            <p id="archive-preview-description">布局预览，不会保存任何内容。</p>
+            <p>归档仅表示留存，不代表完成、成功、已执行或 MoneyAI 记忆。</p>
+          </section>
+
+          <section class="archive-preview-summary" aria-labelledby="archive-preview-summary-title">
+            <div class="archive-preview-section-heading">
+              <div>
+                <p class="archive-preview-kicker">归档本轮</p>
+                <h3 id="archive-preview-summary-title">归档摘要</h3>
+              </div>
+              <span class="archive-preview-tag">尚未接档案存储</span>
+            </div>
+            <dl class="archive-preview-summary-grid">
+              <div><dt>档案标题</dt><dd>接通并真实读回后显示</dd></div>
+              <div><dt>当前问题</dt><dd>接通并真实读回后显示</dd></div>
+              <div><dt>所选路径</dt><dd>接通并真实读回后显示</dd></div>
+              <div><dt>采用、执行与结果</dt><dd>分别读取；未知保持未知</dd></div>
+              <div><dt>附件范围</dt><dd>所有权与原件边界仍在澄清</dd></div>
+              <div><dt>保存位置</dt><dd>尚未接档案存储</dd></div>
+            </dl>
+            <div class="archive-preview-confirm">
+              <button id="archive-preview-confirm" class="button button--secondary" type="button"
+                aria-describedby="archive-preview-confirm-note" disabled>归档本轮</button>
+              <p id="archive-preview-confirm-note">需求澄清中；这里只确认按钮位置，不发送命令，也不生成回执。</p>
+            </div>
+          </section>
+
+          <div class="archive-preview-workspace">
+            <section class="archive-preview-list" aria-labelledby="archive-preview-list-title">
+              <div class="archive-preview-section-heading">
+                <div>
+                  <p class="archive-preview-kicker">项目视图</p>
+                  <h3 id="archive-preview-list-title">档案列表</h3>
+                </div>
+                <span class="archive-preview-tag">空态</span>
+              </div>
+              <div id="archive-preview-empty" class="archive-preview-empty" role="note">
+                <p>暂无可读取的项目档案。</p>
+                <p>当前只展示列表层级，不读取、迁移或伪造旧记录。</p>
+              </div>
+              <div class="archive-preview-card-blueprint" aria-labelledby="archive-preview-card-blueprint-title">
+                <h4 id="archive-preview-card-blueprint-title">档案卡字段（结构预览）</h4>
+                <dl>
+                  <dt>标题与问题</dt><dd>来自真实档案快照</dd>
+                  <dt>轮次与关系</dt><dd>来自真实关联记录</dd>
+                  <dt>路径与业务状态</dt><dd>采用、执行、结果分别展示</dd>
+                  <dt>来源完整性</dt><dd>实际读回后标明</dd>
+                </dl>
+              </div>
+            </section>
+
+            <section class="archive-preview-detail" aria-labelledby="archive-preview-detail-title">
+              <div class="archive-preview-section-heading">
+                <div>
+                  <p class="archive-preview-kicker">渐进查看</p>
+                  <h3 id="archive-preview-detail-title">档案详情层级</h3>
+                </div>
+              </div>
+              <p class="archive-preview-detail-empty">尚未选择档案；以下只说明真实记录接通后的信息层级。</p>
+              <div class="archive-preview-tag-row" aria-label="详情来源与状态">
+                <span class="archive-preview-tag">来源：未读取</span>
+                <span class="archive-preview-tag">状态：需求澄清中</span>
+                <span class="archive-preview-tag">存储：尚未接通</span>
+              </div>
+              <ol class="archive-preview-hierarchy">
+                <li><strong>摘要</strong><span>问题、选路与业务状态默认可见。</span></li>
+                <li><strong>来源与版本</strong><span>定位、更正和材料完整性按需展开。</span></li>
+                <li><strong>稿件与实验</strong><span>对应行动版本、限制和实验卡按需展开。</span></li>
+                <li><strong>反馈与结果</strong><span>采用、执行、观察和新限制保持原语义。</span></li>
+              </ol>
+              <details class="archive-preview-disclosure">
+                <summary>来源与状态展开层（结构预览）</summary>
+                <p>来源定位、材料版本、稿件版本和反馈范围将在真实档案读回后显示；当前不补齐缺失项。</p>
+              </details>
+            </section>
+          </div>
+        </div>
+
+        <footer class="action-dialog-footer archive-preview-footer">
+          <p id="archive-preview-footer-note">后续业务动作仍待 v0.2 需求闭合和共享契约，本样板只提供关闭与返回。</p>
+          <button id="archive-preview-return" class="button button--secondary archive-preview-return" type="button"
+            data-archive-preview-close>关闭并返回当前第三页</button>
+        </footer>
       </dialog>
 
       <noscript>

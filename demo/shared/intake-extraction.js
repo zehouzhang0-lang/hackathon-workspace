@@ -1,6 +1,7 @@
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput } from './intake-draft.js';
+import { MONEYAI_OPERATIONS, freezeMoneyAIRequest, validateMoneyAIResponse } from './moneyai-contract.js';
 
-const VERSION = 'v0.5-intake-1';
+const VERSION = 'intake.extract.v1';
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
 const MIMES = new Set(['text/plain', 'text/csv', 'application/json']);
 const clone = (value) => structuredClone(value);
@@ -17,7 +18,7 @@ export async function requestIntakeExtraction(request, {
     draft: fallbackDraft ? clone(fallbackDraft) : null, sourceBindings: clone(sourceBindings),
     requestContext, sentToMoneyAI
   });
-  let body, snapshot;
+  let envelope, body, snapshot;
   try {
     if (!request || !request.state?.round || !request.state?.input) throw new Error('context');
     snapshot = clone(request.state);
@@ -42,9 +43,18 @@ export async function requestIntakeExtraction(request, {
         || Object.keys(material).some((key) => !['materialId', 'materialVersion', 'mime', 'text'].includes(key))) throw new Error('materials');
       seen.add(material.materialId);
     }
-    body = { version: VERSION, roundId: snapshot.round.id, inputVersion: snapshot.round.inputVersion,
-      transcript, description, sources: clone(sources), materials: clone(materials) };
-    if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 256 * 1024) throw new Error('size');
+    const transport = request.moneyai;
+    if (transport) {
+      const frozen = freezeMoneyAIRequest({ operation: MONEYAI_OPERATIONS.intake,
+        operationId: transport.operationId, attemptId: transport.attemptId,
+        scope: { sessionId: snapshot.sessionId, roundId: snapshot.round.id,
+          inputVersion: snapshot.round.inputVersion, analysisId: null, pathId: null,
+          artifact: null, feedback: null, inputFingerprint: transport.inputFingerprint },
+        consent: { granted: true, sendScope: transport.sendScope, dataClasses: transport.dataClasses },
+        payload: { version: VERSION, transcript, description, sources: clone(sources), materials: clone(materials) } });
+      envelope = frozen.envelope;
+      body = frozen.body;
+    }
   } catch {
     return fallback('invalid_intake', '原文、草稿、材料版本或来源不一致；保留当前编辑，请核对后重试。');
   }
@@ -69,34 +79,36 @@ export async function requestIntakeExtraction(request, {
       return fallback('intake_unavailable', '结构化提取尚未接通；当前是手动核对草稿，没有把原文发送给MoneyAI。');
     }
     if (consentToExternalProcessing !== true) {
-      return fallback('external_consent_required', '发送转写或材料前，需要明确项目模型、费用和发送范围；可以先手动核对。');
+      return fallback('external_consent_required', '发送到本机MoneyAI项目Agent前，需要明确范围及其配置模型与费用；可以先手动核对。');
     }
+    if (!body) return fallback('invalid_intake', '本次发送缺少稳定操作号、范围或输入指纹；原文未发送。');
     posted = true;
     const response = await fetchImpl('/api/intake/extract', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), redirect: 'error', signal: controller.signal
+      body, redirect: 'error', signal: controller.signal
     });
     const result = await response.json();
     if (controller.signal.aborted) throw new Error('aborted');
-    const sent = typeof result?.sentToMoneyAI === 'boolean' ? result.sentToMoneyAI : null;
-    if (!response.ok || result?.ok !== true) {
-      return fallback(result?.code === 'intake_unavailable' ? 'intake_unavailable' : 'extraction_failed',
+    const checked = validateMoneyAIResponse(result, envelope);
+    const sent = checked.sentToMoneyAI;
+    if (!response.ok || !checked.ok) {
+      return fallback(checked.code === 'intake_unavailable' ? 'intake_unavailable' : 'extraction_failed',
         sent === false ? '提取未完成，服务确认未发送给MoneyAI；原文和编辑草稿已保留。'
           : '提取没有得到可用结果，不能据此断言未发送；原文和编辑草稿已保留。', sent);
     }
-    const validated = validateMerchantIntakeDraft(result.draft);
-    const bindings = result.sourceBindings;
+    const output = checked.result;
+    const validated = validateMerchantIntakeDraft(output.draft);
+    const bindings = output.sourceBindings;
     // A session material may have been omitted from this request. Returned file
     // evidence must refer only to the IDs and versions actually sent here.
-    const sentMaterialVersions = new Map(body.materials.map((material) => [material.materialId, material.materialVersion]));
-    if (!validated.ok || result.mode !== 'moneyai' || sent !== true
-      || result.roundId !== body.roundId || result.inputVersion !== body.inputVersion
-      || result.draft.transcript !== body.transcript || !Array.isArray(bindings)
-      || result.draft.sources.some((source) => !body.sources.includes(source))
+    const sentMaterialVersions = new Map(envelope.payload.materials.map((material) => [material.materialId, material.materialVersion]));
+    if (!validated.ok || sent !== true
+      || output.draft.transcript !== envelope.payload.transcript || !Array.isArray(bindings)
+      || output.draft.sources.some((source) => !envelope.payload.sources.includes(source))
       || bindings.some((binding) => ['txt', 'csv', 'json'].includes(binding?.source)
         && (!sentMaterialVersions.has(binding.materialId)
           || sentMaterialVersions.get(binding.materialId) !== binding.materialVersion))
-      || !mapConfirmedIntakeToAnalysisInput(result.draft, { state: snapshot, sourceBindings: bindings }).ok) {
+      || !mapConfirmedIntakeToAnalysisInput(output.draft, { state: snapshot, sourceBindings: bindings }).ok) {
       return fallback('invalid_response', '提取返回的字段、来源或版本不合约定，未替换当前编辑。', sent);
     }
     return { ok: true, mode: 'moneyai', draft: validated.draft, sourceBindings: clone(bindings),

@@ -8,7 +8,7 @@ import { registerGuard, resolveDrafts } from '../shared/draft-guards.js';
 import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
   getIntakeCorrectionConflicts, editIntakeField, isIntakeCorrectionSnapshotCurrent } from '../pages/intake.js';
 import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource, buildMoneyAIDecisionRecord } from '../pages/action.js';
-import { buildMoneyAIAnalysisSummary, currentRoadshowShoeAnswer } from '../pages/decisions.js';
+import { buildMoneyAIAnalysisSummary, currentRoadshowShoeAnswer, upgradeLegacyRoadshowShoe } from '../pages/decisions.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
 import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput,
@@ -131,6 +131,33 @@ test('legacy shoe fixture state is eligible for one safe upgrade but ordinary in
   wrongDigest.input.facts.find((fact) => fact.key === 'roadshow_source_sha256').value = 'WRONG';
   assert.equal(canUpgradeRoadshowShoeFixture(wrongDigest), false);
   assert.equal(canUpgradeRoadshowShoeFixture(harness().state), false);
+});
+
+test('P2 legacy shoe recovery dispatches load, exact intake and confirmation before returning', async () => {
+  const legacy = structuredClone(harness(ROADSHOW_SHOE_FIXTURE_ID).state);
+  legacy.fixtureId = null;
+  legacy.input.facts = legacy.input.facts.filter((fact) =>
+    !Object.hasOwn(ROADSHOW_ACCOUNT_DIAGNOSIS_FACTS, fact.key));
+  legacy.input.intake.draft.productName = '鞋店60个商品（旧版标识）';
+  let stored = legacy;
+  let id = 0;
+  const commands = [];
+  const context = { newId: () => 'recovery_' + (++id), now: '2026-08-29T10:00:00.000Z' };
+  const runtime = {
+    hasRoadshowShoeFixtureCore,
+    dispatch: async (command) => {
+      commands.push(command.type);
+      const result = reduceCommand(stored, command, context);
+      stored = result.state;
+      return { ok: true, state: stored };
+    }
+  };
+  const recovered = await upgradeLegacyRoadshowShoe(legacy, runtime);
+  assert.deepEqual(commands, ['LOAD_FIXTURE', 'INTAKE_SET', 'FOCUS_CONFIRM']);
+  assert.equal(recovered.fixtureId, ROADSHOW_SHOE_FIXTURE_ID);
+  assert.equal(recovered.input.description, ROADSHOW_SHOE_QUESTION);
+  assert.equal(recovered.input.confirmedVersion, recovered.round.inputVersion);
+  assert.equal(hasRoadshowShoeFixtureCore(recovered), true);
 });
 
 test('roadshow question guard is exact apart from trim and one terminal punctuation mark', () => {

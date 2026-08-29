@@ -1339,6 +1339,45 @@ async function dispatchIntent(key, type, payload, snapshot, options = {}) {
   return state;
 }
 
+export async function upgradeLegacyRoadshowShoe(snapshot, runtimeApi = api) {
+  if (!runtimeApi || typeof runtimeApi.dispatch !== 'function'
+    || typeof runtimeApi.hasRoadshowShoeFixtureCore !== 'function') {
+    throw reviewError('固定鞋店恢复接口未就绪，未修改当前资料。', 'shared_unavailable');
+  }
+  const send = async (type, payload, current, step) => {
+    const result = await runtimeApi.dispatch({ type, payload, commandId: crypto.randomUUID(),
+      expectedRevision: current.revision });
+    if (!result?.ok || !result.state) {
+      throw reviewError(step + '未取得可核对的保存回执，已停止恢复。', result?.code || 'read_failed');
+    }
+    return result.state;
+  };
+  let next = await send('LOAD_FIXTURE', { fixtureId: 'shoe_store_report_fixed_v1' }, snapshot, '载入鞋店演示资料');
+  if (next.fixtureId !== 'shoe_store_report_fixed_v1'
+    || !runtimeApi.hasRoadshowShoeFixtureCore(next)) {
+    throw reviewError('载入后的鞋店报告身份或固定字段不完整，未继续。', 'read_failed');
+  }
+  next = await send('INTAKE_SET', {
+    roundId: next.round.id,
+    inputVersion: next.round.inputVersion,
+    draft: structuredClone(next.input.intake.draft),
+    description: '帮我分析一下这些商品的数据',
+    sourceBindings: []
+  }, next, '确认鞋店演示问题');
+  if (next.fixtureId !== 'shoe_store_report_fixed_v1'
+    || !runtimeApi.hasRoadshowShoeFixtureCore(next)
+    || next.input.description !== '帮我分析一下这些商品的数据') {
+    throw reviewError('鞋店演示问题与报告身份未能一致读回，未继续。', 'read_failed');
+  }
+  next = await send('FOCUS_CONFIRM', { inputVersion: next.round.inputVersion }, next, '确认鞋店演示范围');
+  if (next.fixtureId !== 'shoe_store_report_fixed_v1'
+    || !runtimeApi.hasRoadshowShoeFixtureCore(next)
+    || next.input.confirmedVersion !== next.round.inputVersion) {
+    throw reviewError('鞋店演示资料尚未完成确认读回，未生成固定方案。', 'read_failed');
+  }
+  return next;
+}
+
 
 // Called only by the explicit recheck/resubmit control, never by ordinary retry.
 function renewRejectedDecisionIntent(key, snapshot) {
@@ -1430,6 +1469,7 @@ async function refreshSession(autoAnalyze = true) {
     if (!api.hasRoadshowShoeFixtureCore(snapshot)
       && api.canUpgradeRoadshowShoeFixture(snapshot)) {
       snapshot = await upgradeLegacyRoadshowShoe(snapshot);
+      if (!applyState(snapshot)) throw reviewError('恢复后的鞋店会话结构不兼容。', 'incompatible_version');
       message('已把浏览器中保存的旧鞋店实例升级为当前三账号诊断版本。');
     }
     recordEvent('page_viewed', { pageId: 'decisions', inputVersion: snapshot.round.inputVersion }, snapshot, `page:${snapshot.sessionId}`);

@@ -283,7 +283,7 @@ export function mountShell(pageId) {
   const aiHeader = el('div', undefined, 'workspace-dialog-header');
   const aiHeading = el('div');
   const aiTitle = el('h2', 'AI 设置'); aiTitle.id = 'ai-settings-title';
-  const aiSubtitle = el('p', '配置你自己的 OpenAI 兼容 API 后，「整理」会把原文发送到你设置的地址，由 AI 辅助提取结构化内容；未配置时不外发任何内容。');
+  const aiSubtitle = el('p', '配置你自己的 OpenAI 兼容 API 后，「整理」会把当前结构化草稿、描述与转写原文发送到你设置的地址，由 AI 辅助补全仍为空的字段；未配置时不外发任何内容。');
   aiHeading.append(aiTitle, aiSubtitle);
   const aiClose = button('', 'button button--quiet workspace-dialog-close', () => aiDialog.close(), 'close');
   aiClose.setAttribute('aria-label', '关闭窗口');
@@ -351,7 +351,7 @@ export function mountShell(pageId) {
     aiBody.append(aiField('API 地址（OpenAI 兼容，/chat/completions）', baseUrl),
       aiField('API Key（只保存在本机后端，不会进入浏览器）', apiKey),
       aiField('模型名', model), actions,
-      el('p', '发送范围：第一页「整理」时的描述与转写原文；每条提取值都必须带原文引文，你可以逐项核对。', 'workspace-dialog-note'));
+      el('p', '发送范围：第一页「整理」时的当前结构化草稿、描述与转写原文；AI 不覆盖已有字段，每条新增值都必须带描述或原文引文，你可以逐项核对。', 'workspace-dialog-note'));
     if (!(settings.ok && settings.configured)) aiStatus('尚未配置；当前为纯本地演示，不会外发任何内容。');
     aiDialog.showModal();
   }

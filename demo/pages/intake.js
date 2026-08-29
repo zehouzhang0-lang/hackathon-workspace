@@ -1445,8 +1445,10 @@ function startIntakePage() {
     if (result.draft) { contextDraft = result.draft; contextBindings = result.sourceBindings; }
     reviewMessage = result.ok
       ? result.mode === "api"
-        ? "已用你配置的 AI 整理出结构化内容（描述与原文已发送到你设置的地址），请逐项核对；确认不等于外部核验。"
-        : "已在本机根据材料整理出结构化内容，未发送到外部服务；请逐项核对，确认不等于外部核验。"
+        ? "AI 已读取当前结构化草稿、描述与原文，并返回可核对的整理结果；没有覆盖你已填写的内容。"
+        : result.mode === "api_failed"
+          ? "AI 整理请求未完成；本机提取结果仍可核对，无法确认外部服务是否完整收到本次内容。"
+          : "已在本机根据材料整理出结构化内容，未发送到外部服务；请逐项核对，确认不等于外部核验。"
       : "自动整理尚不可用，原文已保留。可以修改卡片，未提供的内容继续保持未知。";
     if (result.notes?.length) reviewMessage += " " + result.notes.join(" ");
     organizationVisible = true; readyToAnalyze = false;

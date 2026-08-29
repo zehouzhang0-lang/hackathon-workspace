@@ -10,7 +10,8 @@ import { parseMetricText, readSupportedMaterial, buildOrganization, isSubmitKey,
 import { activeSelection, currentArtifacts, selectPreviewArtifact, artifactPreviewText, makeFeedbackPayload, buildActionPack, describeActionSource } from '../pages/action.js';
 import { buildPathReport } from '../pages/report.js';
 import { getFoldTitlePlan, enhanceFoldTitle } from '../shared/title-motion.js';
-import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput, findIntakeFieldFact } from '../shared/intake-draft.js';
+import { createMerchantIntakeDraft, validateMerchantIntakeDraft, mapConfirmedIntakeToAnalysisInput,
+  findIntakeFieldFact, TEXT_FIELDS } from '../shared/intake-draft.js';
 import { requestIntakeExtraction } from '../shared/intake-extraction.js';
 import { getAiSettings } from '../shared/ai.js';
 import { getMoneyAIStatus, requestMoneyAIAnalysis, requestMoneyAIDecisionWrite, requestMoneyAIHistoryRead } from '../shared/moneyai.js';
@@ -1584,9 +1585,10 @@ test('local extraction keeps conflicting values empty and reports them instead o
   assert(result.notes.some((note) => note.includes('多个不同取值')));
 });
 
-test('configured API fills empty text fields with verified quotes and reports the external send', async () => {
+test('configured API reads the structured P1 data, fills verified quotes, and reports the external send', async () => {
   const h = harness('one_sentence_v1');
-  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '我家卖便携榨汁杯，最近视频有播放但不出单。' });
+  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '我家卖便携榨汁杯，最近视频有播放但不出单。',
+    metrics: { productClicks: 1450, paidOrders: 42 }, confirmedProductFacts: ['容量为350ml'] });
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
@@ -1605,9 +1607,38 @@ test('configured API fills empty text fields with verified quotes and reports th
   assert(chat, 'expected a chat call');
   const body = JSON.parse(chat.options.body);
   assert(body.messages.some((message) => message.content.includes('便携榨汁杯')));
+  const prompt = body.messages.find((message) => message.role === 'user').content;
+  assert.match(prompt, /当前结构化草稿/);
+  assert.match(prompt, /"productClicks": 1450/);
+  assert.match(prompt, /"paidOrders": 42/);
+  assert.match(prompt, /容量为350ml/);
   const binding = result.sourceBindings.find((entry) => entry.field === 'productName');
   assert.equal(binding.source, 'manual');
   assert.equal(binding.locator.quote, '便携榨汁杯');
+});
+
+test('configured API still reads a fully filled draft and does not misreport a zero-change reply as local-only', async () => {
+  const h = harness('one_sentence_v1');
+  const values = Object.fromEntries(TEXT_FIELDS.map((field) => [field, '已填写-' + field]));
+  const draft = createMerchantIntakeDraft({ sources: ['manual'], transcript: '完整资料原文', ...values,
+    metrics: { videoViews: 58000, productClicks: 1450, addToCarts: 96, createdOrders: 54, paidOrders: 42 },
+    evidenceLedger: TEXT_FIELDS.map((field) => ({ field, value: values[field], status: 'confirmed_fact', source: 'manual' })) });
+  let chatBody = null;
+  const result = await requestIntakeExtraction(extractionRequest(h, draft, '字段已经填写完整'), {
+    fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') {
+        return jsonResponse({ configured: true, baseUrl: 'https://api.example.com', model: 'test-model', hasKey: true });
+      }
+      chatBody = JSON.parse(options.body);
+      return jsonResponse({ ok: true, content: '{"fields":{}}' });
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'api');
+  assert.equal(result.sentToExternal, true);
+  assert.match(chatBody.messages.find((message) => message.role === 'user').content, /"videoViews": 58000/);
+  assert(result.notes.some((note) => note.includes('已读取当前结构化草稿')));
+  assert.equal(result.draft.productName, values.productName);
 });
 
 test('a failed AI reply never replaces the local extraction result', async () => {
@@ -1620,8 +1651,8 @@ test('a failed AI reply never replaces the local extraction result', async () =>
     : { ok: false, status: 409, json: async () => ({ ok: false, code: 'ai_not_configured', message: '尚未配置 AI。' }) };
   const result = await requestIntakeExtraction(extractionRequest(h, draft), { fetchImpl });
   assert.equal(result.ok, true);
-  assert.equal(result.mode, 'local');
-  assert.equal(result.sentToExternal, false);
+  assert.equal(result.mode, 'api_failed');
+  assert.equal(result.sentToExternal, null);
   assert.equal(result.draft.metrics.paidOrders, 2);
   assert(result.notes.some((note) => note.includes('AI')));
 });

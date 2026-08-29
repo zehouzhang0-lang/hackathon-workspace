@@ -33,6 +33,8 @@ const COUNT_FIELDS = new Set(['metrics.videoViews', 'metrics.productClicks', 'me
   'metrics.createdOrders', 'metrics.paidOrders']);
 const LOCATOR_SOURCES = { csv: 'csv', json: 'json', xlsx: 'xlsx' };
 const AI_TEXT_LIMIT = 6000;
+const AI_STRUCTURED_LIMIT = 12000;
+const AI_CONTEXT_ARRAY_LIMIT = 20;
 
 const leafValue = (draft, field) => field.startsWith('metrics.')
   ? draft?.metrics?.[field.slice(8)] ?? null : draft?.[field] ?? null;
@@ -47,6 +49,27 @@ const validDate = (value) => {
     31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
 };
+
+function buildAiStructuredContext(draft) {
+  const shortText = (value) => typeof value === 'string' && value.length > 500
+    ? value.slice(0, 500) + '…' : value;
+  const list = (field) => (draft[field] || []).slice(0, AI_CONTEXT_ARRAY_LIMIT).map(shortText);
+  const context = {
+    fields: Object.fromEntries(TEXT_FIELDS.filter((field) => leafValue(draft, field) !== null)
+      .map((field) => [field, shortText(leafValue(draft, field))])),
+    metrics: draft.metrics,
+    confirmedProductFacts: list('confirmedProductFacts'),
+    proofMaterials: list('proofMaterials'),
+    previousAttempts: list('previousAttempts'),
+    constraints: list('constraints'),
+    customerQuestions: list('customerQuestions'),
+    unknowns: list('unknowns')
+  };
+  const serialized = JSON.stringify(context, null, 2);
+  return serialized.length > AI_STRUCTURED_LIMIT
+    ? serialized.slice(0, AI_STRUCTURED_LIMIT) + '\n…（结构化草稿后略，已有值仍不得改写）'
+    : serialized;
+}
 
 function ensureSource(draft, source) {
   if (!draft.sources.includes(source)) draft.sources.push(source);
@@ -119,23 +142,29 @@ function applyLocalFacts(draft, bindings, state, notes) {
 async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, notes) {
   const emptyFields = TEXT_FIELDS.filter((field) => leafValue(draft, field) === null &&
     !bindings.some((binding) => binding.field === field));
-  if (!emptyFields.length) return { added: 0, configured: false };
   const settings = await getAiSettings({ fetchImpl, signal, timeoutMs: 8000 });
-  if (!settings.ok || !settings.configured) return { added: 0, configured: false };
+  if (!settings.ok || !settings.configured) {
+    return { added: 0, configured: false, attempted: false, completed: false };
+  }
   const clip = (value) => value.length > AI_TEXT_LIMIT ? value.slice(0, AI_TEXT_LIMIT) + '\n…（后略，仅根据以上文字整理）' : value;
+  const structuredContext = buildAiStructuredContext(draft);
   const factLines = (request.state?.input?.facts || [])
     .filter((fact) => fact && fact.availability === 'known' && fact.value !== null)
     .slice(0, 40)
     .map((fact) => '- ' + fact.key + '=' + String(fact.value) + (fact.unit ? ' ' + fact.unit : '') +
       (fact.subject ? '（对象：' + fact.subject + '）' : ''));
-  const fieldLines = emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）');
+  const fieldLines = emptyFields.length
+    ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
+    : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
   const reply = await requestAiChat({
     temperature: 0, maxTokens: 4096,
     messages: [
-      { role: 'system', content: '你是经营资料整理助手。只根据用户给出的文字提取信息。每个字段必须给出 value 与 quote，' +
-        'quote 必须是所给文字中连续出现的原文片段；找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
+      { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述和原文，但不得改写已有字段。' +
+        '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述或原文中连续出现的原文片段；' +
+        '找不到依据的字段不要输出；不要编造；只输出JSON，不要输出其他文字。' },
       { role: 'user', content: '【商家描述】\n' + clip(request.description) +
         '\n\n【语音或粘贴原文】\n' + clip(request.transcript) +
+        '\n\n【当前结构化草稿（已填字段与指标，只读）】\n' + structuredContext +
         (factLines.length ? '\n\n【本机已从上传材料解析的指标（仅供参考，不要改动）】\n' + factLines.join('\n') : '') +
         '\n\n请整理以下仍未填写的字段，逐项给出 value（不超过200字）与 quote：\n' + fieldLines.join('\n') +
         '\n\n只输出JSON，格式：{"fields":{"<字段名>":{"value":"...","quote":"..."}}}' }
@@ -143,7 +172,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
   }, { fetchImpl, signal, timeoutMs: 45000 });
   if (!reply.ok) {
     notes.push('已配置 AI 但整理请求未完成（' + reply.message + '）；已保留本机提取结果，未替换任何内容。');
-    return { added: 0, configured: true };
+    return { added: 0, configured: true, attempted: true, completed: false };
   }
   let payload;
   try {
@@ -153,12 +182,12 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     payload = JSON.parse(body.slice(start, end + 1));
   } catch {
     notes.push('AI 返回不是可用 JSON；已保留本机提取结果，未替换任何内容。');
-    return { added: 0, configured: true };
+    return { added: 0, configured: true, attempted: true, completed: false };
   }
   const fields = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.fields : null;
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
     notes.push('AI 返回缺少 fields 对象；已保留本机提取结果。');
-    return { added: 0, configured: true };
+    return { added: 0, configured: true, attempted: true, completed: false };
   }
   let added = 0;
   for (const field of emptyFields) {
@@ -181,7 +210,12 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     ensureSource(draft, source);
     added += 1;
   }
-  return { added, configured: true };
+  if (added === 0) {
+    notes.push(emptyFields.length
+      ? 'AI 已读取当前结构化草稿，但没有返回可由原文核验的新字段。'
+      : 'AI 已读取当前结构化草稿；现有文字字段已完整，未覆盖用户填写内容。');
+  }
+  return { added, configured: true, attempted: true, completed: true };
 }
 
 /**
@@ -223,9 +257,9 @@ export async function requestIntakeExtraction(request, { signal, fetchImpl = glo
     if (!preflight.ok) {
       return fallback(preflight.code || 'invalid_response', preflight.message || '整理结果与当前输入不一致，未替换当前编辑。');
     }
-    return { ok: true, mode: ai.added > 0 ? 'api' : 'local', draft: clone(draft),
+    return { ok: true, mode: ai.completed ? 'api' : ai.attempted ? 'api_failed' : 'local', draft: clone(draft),
       sourceBindings: clone(sourceBindings), requestContext,
-      editable: true, sentToExternal: ai.added > 0, notes: [...notes] };
+      editable: true, sentToExternal: ai.completed ? true : ai.attempted ? null : false, notes: [...notes] };
   } catch (error) {
     if (error?.message === 'draft' || error?.message === 'bindings' || error?.message === 'context') {
       return fallback('invalid_intake', '原文、草稿、材料版本或来源不一致；保留当前编辑，请核对后重试。');

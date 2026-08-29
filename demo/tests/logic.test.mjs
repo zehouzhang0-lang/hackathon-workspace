@@ -1606,6 +1606,7 @@ test('configured API reads the structured P1 data, fills verified quotes, and re
   const chat = calls.find((call) => call.url === '/api/ai/chat');
   assert(chat, 'expected a chat call');
   const body = JSON.parse(chat.options.body);
+  assert(!('temperature' in body), 'extraction must not send a fixed temperature');
   assert(body.messages.some((message) => message.content.includes('便携榨汁杯')));
   const prompt = body.messages.find((message) => message.role === 'user').content;
   assert.match(prompt, /当前结构化草稿/);

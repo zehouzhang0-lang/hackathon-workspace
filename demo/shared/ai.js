@@ -83,9 +83,13 @@ export async function saveAiSettings(settings, options = {}) {
   return getAiSettings(options);
 }
 
-/** messages: [{role:'system'|'user'|'assistant', content:string}]; returns {ok:true, content}. */
-export async function requestAiChat({ messages, temperature = 0, maxTokens = 2048 }, options = {}) {
-  const result = await postJson('/api/ai/chat', { messages, temperature, maxTokens }, options);
+/** messages: [{role:'system'|'user'|'assistant', content:string}]; returns {ok:true, content}.
+ * temperature 可选：省略时不发送，服务端也不向模型转发（部分模型只允许固定采样参数）。 */
+export async function requestAiChat({ messages, temperature, maxTokens = 2048 }, options = {}) {
+  const result = await postJson('/api/ai/chat', {
+    messages, maxTokens,
+    ...(temperature === undefined ? {} : { temperature }),
+  }, options);
   if (!result.ok) return result;
   if (result.status !== 200 || result.payload?.ok !== true || typeof result.payload?.content !== 'string') {
     return failed(result.payload?.code || 'ai_request_failed',

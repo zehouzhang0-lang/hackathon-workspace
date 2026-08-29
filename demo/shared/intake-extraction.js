@@ -157,7 +157,7 @@ async function applyAiExtraction(draft, bindings, request, fetchImpl, signal, no
     ? emptyFields.map((field) => '- ' + field + '（' + (FIELD_LABELS[field] || field) + '）')
     : ['- 无空字段：只读取并核对上下文，fields 必须返回空对象，不得改写已有值'];
   const reply = await requestAiChat({
-    temperature: 0, maxTokens: 4096,
+    maxTokens: 4096,
     messages: [
       { role: 'system', content: '你是经营资料整理助手。读取当前结构化草稿、商家描述和原文，但不得改写已有字段。' +
         '只为仍为空的字段提取信息；每个字段必须给出 value 与 quote，quote 必须是商家描述或原文中连续出现的原文片段；' +

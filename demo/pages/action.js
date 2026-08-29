@@ -331,6 +331,63 @@ function analysisSourceFacts(snapshot, reference = null) {
   return analysis?.id === snapshot.analysis?.id && snapshot.round?.inputVersion === reference.inputVersion ? snapshot.input?.facts ?? [] : [];
 }
 
+const SHOE_DEMO_FIXTURE_ID = 'shoe_store_report_fixed_v1';
+const SHOE_DIAGNOSIS_FIELDS = Object.freeze([
+  'female_factory_diagnosis',
+  'sneaker_lab_diagnosis',
+  'outdoor_flagship_diagnosis',
+]);
+
+function selectedShoeActionSteps(path) {
+  if (path?.optionLabel === 'A') {
+    return path.action.split(/；(?=(?:女鞋工厂直营店|国潮球鞋实验室)：)/).map((item) => item.trim()).filter(Boolean);
+  }
+  if (path?.optionLabel === 'B') {
+    return path.action.split(/；(?=(?:导出全部评论|女鞋工厂直营店拍))/).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+// P3 only projects the selected, saved shoe-demo path. It does not choose a path,
+// invoke a Skill, or upgrade an ordinary session into the fixed demo.
+export function buildSelectedShoeActionCopy(snapshot, context, skillChain, existingDrafts = []) {
+  const analysis = referenceAnalysis(snapshot, context);
+  const path = skillChain?.path;
+  if (snapshot?.fixtureId !== SHOE_DEMO_FIXTURE_ID || !analysis || analysis.mode !== 'demo_fixture' ||
+      analysis.analysisSource !== 'local_fallback' || !skillChain?.ok || skillChain.code !== 'local_fallback_chain' ||
+      skillChain.skillId !== null || !['A', 'B'].includes(path?.optionLabel) || typeof path.action !== 'string') return null;
+  const steps = selectedShoeActionSteps(path);
+  if (steps.length !== 3) return null;
+  const facts = analysisSourceFacts(snapshot, context);
+  const diagnoses = SHOE_DIAGNOSIS_FIELDS.map((field) => facts.find((fact) => fact?.intakeField === field));
+  if (diagnoses.some((fact) => !fact?.id || typeof fact.value !== 'string' || !fact.value.trim() ||
+      fact.evidenceStatus !== 'confirmed_fact' || fact.source?.kind !== 'merchant_statement' ||
+      fact.source?.locator?.type !== 'fixed_demo_prompt' || fact.source.locator.field !== fact.intakeField)) return null;
+  const evidenceIds = new Set(path.evidenceRefs?.flatMap((entry) => entry.factIds ?? []) ?? []);
+  if (diagnoses.some((fact) => !evidenceIds.has(fact.id))) return null;
+  const base = existingDrafts.find((draft) => sameReference(draft, context) && draft.mode === analysis.mode && draft.skillId === null);
+  if (!base) return null;
+  const diagnosisLines = diagnoses.map((fact) => '- ' + fact.value);
+  return {
+    ...base,
+    id: null,
+    version: 0,
+    savedAt: null,
+    kind: 'copy',
+    title: `方案 ${path.optionLabel} · 三账号行动清单`,
+    body: [`方案 ${path.optionLabel}｜${path.title}`, '', ...steps.map((step, index) => `${index + 1}. ${step}`), '',
+      '诊断依据（用户指定的演示答案；未调用真实 AI 或专家 Skill）：', ...diagnosisLines].join('\n'),
+    usage: {
+      placement: '按账号逐项核对后执行；采用与实际执行分别记录',
+      steps,
+      risks: path.risk?.map((risk) => risk.description).filter(Boolean) ?? [],
+    },
+    sourceFactIds: diagnoses.map((fact) => fact.id),
+    skillId: null,
+    editedByUser: false,
+  };
+}
+
 function packSignature(state) {
   const context = activeSelection(state);
   const chain = resolveActionSkillChain(state, context);
@@ -1438,6 +1495,8 @@ async function ensureArtifacts() {
     const result = shared.buildDemoArtifact(state);
     if (!result.ok) { status('artifact-status', errorText(result), true); $('artifact-retry').hidden = false; return; }
     drafts = result.artifacts;
+    const selectedShoeCopy = buildSelectedShoeActionCopy(state, context, skillChain, drafts);
+    if (selectedShoeCopy && !drafts.some((draft) => draft.kind === 'copy')) drafts = [selectedShoeCopy, ...drafts];
     if (!Array.isArray(drafts) || !drafts.length || drafts.some((draft) =>
       !sameReference(draft, context) || draft.mode !== context.mode || draft.skillId !== skillIdentity.skillId)) {
       throw new Error('生成结果没有继承所选路径的 Skill 与版本身份；没有保存任何稿件。');

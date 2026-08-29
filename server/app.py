@@ -35,7 +35,7 @@ CHAT_TIMEOUT_SECONDS = 45
 MAX_KEY_CHARS = 200
 MAX_MODEL_CHARS = 100
 MAX_MESSAGES = 20
-MAX_MESSAGE_CHARS = 8000
+MAX_MESSAGE_CHARS = 20000
 MAX_COMPLETION_CHARS = 64 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PRINTABLE = re.compile(r"[\x21-\x7e]+")
@@ -154,7 +154,7 @@ def validate_chat_payload(payload):
             raise ValueError("消息角色不合法。")
         if not isinstance(message["content"], str) or not 1 <= len(message["content"]) <= MAX_MESSAGE_CHARS \
                 or "\0" in message["content"]:
-            raise ValueError("消息内容须为 1-8000 字符的文本。")
+            raise ValueError(f"消息内容须为 1-{MAX_MESSAGE_CHARS} 字符的文本。")
     # temperature 是可选透传：省略时请求体不携带该字段，由模型使用自身默认
     # 采样（部分思考型模型只接受固定值，例如 Kimi k3 仅允许 temperature=1）。
     temperature = payload.get("temperature")

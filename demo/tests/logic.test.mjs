@@ -2898,3 +2898,28 @@ test('requestAiInsight 未配置不发送；已配置时解析提议且聊天不
   assert(!('temperature' in chat.body));
   assert(chat.body.messages.some((message) => message.content.includes('"focus":"f"')));
 });
+
+test('compactSummaryForModel aggregates repeated metric facts within the budget', async () => {
+  const { compactSummaryForModel } = await import('../shared/ai.js');
+  const small = { focus: 'f', facts: [{ id: 'f1', key: '销量', value: 6, availability: 'known' }], constraints: [], unknowns: [] };
+  const untouched = compactSummaryForModel(small, 3000);
+  assert.equal(untouched.note, null);
+  assert.equal(untouched.summary, small);
+  const facts = [];
+  for (let index = 0; index < 120; index += 1) {
+    facts.push({ id: 'f' + index, key: '播放量', value: 1000 + index, availability: 'known',
+      evidenceStatus: 'provided', unit: '次', subject: '视频' + index, window: { start: null, end: null },
+      channel: null, cohort: null, sourceKind: 'file_extract', verification: 'unreviewed' });
+  }
+  facts.push({ id: 'fans', key: '粉丝数', value: 126000, availability: 'known', evidenceStatus: 'provided',
+    unit: '人', subject: '【店】', window: { start: null, end: null }, channel: null, cohort: null,
+    sourceKind: 'file_extract', verification: 'unreviewed' });
+  const compacted = compactSummaryForModel({ focus: 'f', facts, constraints: [], unknowns: [] }, 3000);
+  assert(typeof compacted.note === 'string' && compacted.note.includes('120'));
+  assert(JSON.stringify(compacted.summary).length <= 3000);
+  const aggregated = compacted.summary.facts.find((fact) => fact.id === 'agg:f0');
+  assert(aggregated);
+  assert(aggregated.subject.includes('120条'));
+  assert.equal(compacted.summary.facts.some((fact) => fact.key === '粉丝数'), true);
+  assert.equal(compacted.summary.facts.some((fact) => fact.id === 'f0'), false);
+});

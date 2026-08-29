@@ -107,6 +107,53 @@ const INSIGHT_INSTRUCTION = '只输出一个JSON对象，不要输出其他文�
 
 const clampText = (value, limit) => typeof value === 'string' && value.trim() ? value.trim().slice(0, limit) : null;
 
+/** 超长摘要压缩：把高频重复的同指标事实聚合为一条（条数/最小/最大/均值），
+ * 保留低频事实原文。返回{summary, note}；note非空时说明发生过聚合或截断。
+ * 只改变发送体积，不改变已确认事实的口径；聚合值由原始记录算出，不引入新数据。 */
+export function compactSummaryForModel(summary, budgetChars = 18000) {
+  if (!record(summary) || JSON.stringify(summary).length <= budgetChars) {
+    return { summary, note: null };
+  }
+  const facts = Array.isArray(summary.facts) ? summary.facts : [];
+  const groups = new Map();
+  const singles = [];
+  for (const fact of facts) {
+    if (!record(fact)) { singles.push(fact); continue; }
+    const groupKey = [fact.key, fact.availability, fact.unit || ''].join('\u0001');
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(fact);
+  }
+  const compacted = [...singles];
+  let aggregated = 0;
+  for (const group of groups.values()) {
+    if (group.length <= 3) { compacted.push(...group); continue; }
+    const first = group[0];
+    const values = group.map((fact) => fact.value)
+      .filter((value) => typeof value === 'number' && Number.isFinite(value));
+    const range = values.length
+      ? '（共' + group.length + '条：最小 ' + Math.min(...values) + '，最大 ' + Math.max(...values)
+        + '，均值 ' + Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 1000) / 1000 + '）'
+      : '（共' + group.length + '条：无数值）';
+    compacted.push({
+      id: 'agg:' + (first.id || first.key), key: first.key,
+      availability: group.some((fact) => fact.availability === 'known') ? 'known' : 'unknown',
+      evidenceStatus: first.evidenceStatus ?? null, unit: first.unit ?? null,
+      subject: '聚合' + range + '，主体见各条原始记录', value: null,
+      window: { start: null, end: null }, channel: first.channel ?? null, cohort: first.cohort ?? null,
+      sourceKind: first.sourceKind ?? null, verification: first.verification ?? null,
+    });
+    aggregated += group.length;
+  }
+  const compactSummary = { ...summary, facts: compacted };
+  let note = '原摘要含' + facts.length + '条事实；其中' + aggregated + '条同指标明细已按指标聚合为'
+    + (compacted.length - singles.length) + '条（保留条数/最小/最大/均值），其余' + singles.length + '条原样保留。';
+  if (JSON.stringify(compactSummary).length > budgetChars && compacted.length > 12) {
+    compactSummary.facts = compacted.slice(0, Math.max(12, Math.floor(compacted.length / 2)));
+    note += ' 仍超预算，已进一步截断到' + compactSummary.facts.length + '条。';
+  }
+  return { summary: compactSummary, note };
+}
+
 /** 解析模型返回的小型提议JSON；不符合结构时返回null，由调用方降级为原文展示。 */
 function parseProposalText(content) {
   const text = String(content ?? '').trim();
@@ -139,12 +186,14 @@ export async function requestAiInsight(summary, options = {}) {
   if (!settings.configured) {
     return failed('ai_not_configured', '尚未在「AI 设置」配置 API；未发送任何内容。');
   }
+  const compacted = compactSummaryForModel(summary);
   const result = await requestAiChat({
     maxTokens: 2048,
     messages: [
       { role: 'system', content: '你是路芽项目的受限分析助手。禁止调用工具、文件、网络或个人历史；只使用用户提供的已确认摘要。'
         + '不得把未知补成0或事实；不得声称根因已确认；不得编造缺失数据、概率、收入或效果。' + INSIGHT_INSTRUCTION },
-      { role: 'user', content: '已确认摘要（JSON）：' + JSON.stringify(summary) },
+      { role: 'user', content: '已确认摘要（JSON）：' + JSON.stringify(compacted.summary)
+        + (compacted.note ? '\n摘要说明：' + compacted.note : '') },
     ],
   }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
   if (!result.ok) return result;
@@ -161,6 +210,7 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
   if (!settings.configured) {
     return { ...failed('ai_not_configured', '尚未在「AI 设置」配置 API；未发送任何内容。'), sentToProvider: false };
   }
+  const compacted = compactSummaryForModel(envelope.payload);
   const result = await requestAiChat({
     maxTokens: 2048,
     messages: [
@@ -168,8 +218,8 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
         + '必须原样回显身份；不得把未知补成0或事实。' + INSIGHT_INSTRUCTION },
       { role: 'user', content: '请求：' + JSON.stringify({
         contractVersion: envelope.contractVersion, operation: envelope.operation,
-        operationId: envelope.operationId, scope: envelope.scope, payload: envelope.payload,
-      }) },
+        operationId: envelope.operationId, scope: envelope.scope, payload: compacted.summary,
+      }) + (compacted.note ? '\n摘要说明：' + compacted.note : '') },
     ],
   }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
   if (!result.ok) return { ...result, sentToProvider: true, model: settings.model };

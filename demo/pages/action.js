@@ -587,18 +587,6 @@ export function buildActionPack(state, { exportId, generatedAt, allowSummaries =
 
 let shared;
 const MONEYAI_LOCAL_FEEDBACK_RECORD_VERSION = 1;
-let moneyAIHistoryBridge = null;
-let moneyAIHistoryCapability = Object.freeze({ checked: false, moduleLoaded: false, writeExport: false,
-  readExport: false, fingerprintExport: false, envelopeExport: false });
-let moneyAIHistoryCapabilityLoad = null;
-let moneyAIHistoryRenderedIdentityKey = null;
-let moneyAIHistoryPendingWrite = null;
-let moneyAIHistoryWriteReceipt = null;
-let moneyAIHistoryReadReceipt = null;
-let moneyAIHistoryWriteNotice = null;
-let moneyAIHistoryReadNotice = null;
-let moneyAIHistoryRequestOwner = null;
-let moneyAIHistoryRequestToken = 0;
 let state;
 let pageMode = 'action';
 let activeWorkspaceTab = typeof window !== 'undefined' && /^#(?:feedback|review=)/.test(window.location.hash || '') ? 'feedback' : 'work';
@@ -682,7 +670,6 @@ function acceptState(next) {
   if (!next || next.contractVersion !== CONTRACT_VERSION) throw new Error('共享状态版本不兼容，本页没有改写记录。');
   if (state && state.sessionId !== next.sessionId) {
     readFeedbackIds.clear();
-    resetMoneyAIHistoryInteraction();
     acceptanceToken += 1;
     invalidateViewRead();
     reviewFeedbackId = null;
@@ -1031,7 +1018,6 @@ function renderSavedFeedback(context) {
     radio.addEventListener('change', () => {
       selectedFeedbackId = record.id;
       $('next-round').disabled = dirty || saving || readingReview;
-      renderMoneyAIHistoryGate(context);
     });
     label.append(radio, document.createTextNode(` ${EXECUTION_LABELS[execution?.execution ?? 'unknown']} · ${OBSERVATION_LABELS[record.observation] ?? '观察结果未知'}`));
     article.append(label, node('p', ADOPTION_LABELS[execution?.adoption ?? 'unknown'] + '（商家自述）', 'muted'));
@@ -1238,274 +1224,6 @@ export function verifyMoneyAIHistoryRead(result, prepared, writeReceipt = null) 
   return { entry, readReceipt: { ...result.readReceipt }, receipt: { ...result.receipt } };
 }
 
-function currentMoneyAIHistoryBundle(context) {
-  const records = state && context ? feedbackRecordsFor(context) : [];
-  const selected = records.find((record) => record.id === selectedFeedbackId) ?? null;
-  return { records, selected, bundle: selected ? resolveFeedbackRecord(state, selected.id) : null };
-}
-
-function moneyAIHistoryReady() {
-  return Boolean(moneyAIHistoryBridge && moneyAIHistoryCapability.writeExport && moneyAIHistoryCapability.readExport
-    && moneyAIHistoryCapability.fingerprintExport && moneyAIHistoryCapability.envelopeExport);
-}
-
-function renderMoneyAIHistoryResult(identityKey) {
-  const panel = $('moneyai-history-results');
-  const container = $('moneyai-history-results-content');
-  const read = moneyAIHistoryReadReceipt?.identityKey === identityKey ? moneyAIHistoryReadReceipt : null;
-  panel.hidden = !read;
-  container.replaceChildren();
-  if (!read) return;
-  const record = read.prepared.record;
-  const entry = read.verified.entry;
-  const rows = [
-    ['项目读回', 'MoneyAI 项目空间 · 新请求精确核验'],
-    ['记录 ID', entry.providerRecordId],
-    ['原写入操作', entry.operationId],
-    ['原轮次', record.identity.roundId],
-    ['所选行动', [record.decision.optionLabel, record.decision.title].filter(Boolean).join(' · ') || '未提供'],
-    ['执行 Skill', record.decision.skillId && record.artifact.skillId === record.decision.skillId
-      ? `${EXECUTION_SKILL_LABELS[record.decision.skillId] ?? '未知'}（${record.decision.skillId}）` : '未知／读回字段不一致'],
-    ['稿件', `${record.artifact.title || '未提供'} · v${record.identity.artifactVersion}`],
-    ['采用／执行', `${ADOPTION_LABELS[record.execution.adoption] || '采用未知'} · ${EXECUTION_LABELS[record.execution.execution] || '执行未知'}`],
-    ['观察', OBSERVATION_LABELS[record.feedback.observation] || '观察结果未知'],
-    ['写入时间', readableTime(entry.writtenAt)],
-    ['内容哈希', entry.contentHash],
-  ];
-  const list = document.createElement('dl');
-  list.className = 'moneyai-history-result-grid';
-  for (const [term, value] of rows) list.append(node('dt', term), node('dd', value));
-  container.append(list, node('p', '以上内容来自本次 MoneyAI 项目空间读回，只读展示；未合并或改写本机反馈、C7判断和当前轮次。', 'muted'));
-}
-
-function renderMoneyAIHistoryGate(context) {
-  const writeButton = $('moneyai-history-write');
-  const readButton = $('moneyai-history-read');
-  if (!writeButton || !readButton) return;
-  const { records, selected, bundle } = currentMoneyAIHistoryBundle(context);
-  const localReadConfirmed = Boolean(bundle && readFeedbackIds.has(selected.id));
-  const record = selected ? buildMoneyAIDecisionRecord(state, selected.id) : null;
-  const identityKey = record ? moneyAIHistoryIdentityKey(state, bundle) : null;
-  if (moneyAIHistoryRenderedIdentityKey !== identityKey) {
-    moneyAIHistoryRenderedIdentityKey = identityKey;
-    if ($('moneyai-history-consent')) $('moneyai-history-consent').checked = false;
-  }
-  const consent = Boolean($('moneyai-history-consent')?.checked);
-  const busy = Boolean(moneyAIHistoryRequestOwner);
-  const ready = moneyAIHistoryReady();
-  const writeReceipt = moneyAIHistoryWriteReceipt?.identityKey === identityKey ? moneyAIHistoryWriteReceipt : null;
-  const pendingWrite = moneyAIHistoryPendingWrite?.identityKey === identityKey ? moneyAIHistoryPendingWrite : null;
-  writeButton.disabled = !ready || !localReadConfirmed || !record || !consent || busy || Boolean(writeReceipt);
-  readButton.disabled = !ready || !localReadConfirmed || !record || !consent || busy;
-  writeButton.setAttribute('aria-busy', String(moneyAIHistoryRequestOwner?.kind === 'write'));
-  readButton.setAttribute('aria-busy', String(moneyAIHistoryRequestOwner?.kind === 'read'));
-  writeButton.textContent = writeReceipt ? '已取得 MoneyAI 写入回执'
-    : pendingWrite ? '用同一 operationId 重试写入' : '写入 MoneyAI 决策历史';
-
-  if (!records.length) {
-    status('moneyai-history-local-status', '尚未保存本轮反馈；没有自动同步。');
-    $('moneyai-history-local-reference').textContent = '取用内容不要求反馈；未保存也不会自动写入 MoneyAI。';
-  } else if (!selected) {
-    status('moneyai-history-local-status', '本机已有反馈记录，请先明确选择一条。');
-    $('moneyai-history-local-reference').textContent = '选择只用于核对记录，不会触发 MoneyAI 请求。';
-  } else if (!bundle) {
-    status('moneyai-history-local-status', '本机记录的原轮次或稿件引用不完整，不能用于 MoneyAI。', true);
-    $('moneyai-history-local-reference').textContent = '没有使用当前路径或其他版本补齐旧记录。';
-  } else if (!record) {
-    status('moneyai-history-local-status', '原分析、选择、稿件或 Skill/provider 回执链不完整，不能发送到 MoneyAI。', true);
-    $('moneyai-history-local-reference').textContent = '不会用当前资料、页面标签、其他轮次或原件补齐旧记录。';
-  } else {
-    status('moneyai-history-local-status', localReadConfirmed
-      ? '本机反馈保存与重新读回已确认。'
-      : '本机反馈已保存；对应记录重新读回尚未确认。', !localReadConfirmed);
-    $('moneyai-history-local-reference').textContent =
-      `第 ${bundle.roundIndex || '原'} 轮 · 稿件 v${bundle.artifact.version} · 保存于 ${readableTime(bundle.feedback.savedAt)}`;
-  }
-
-  const writeNotice = moneyAIHistoryWriteNotice?.identityKey === identityKey ? moneyAIHistoryWriteNotice : null;
-  const writeMessage = writeNotice?.message || (!localReadConfirmed
-    ? '等待一条已重新读回的本机反馈；没有自动同步。'
-    : !moneyAIHistoryCapability.checked
-      ? '正在核对共享写入出口；没有发送。'
-      : !moneyAIHistoryCapability.moduleLoaded
-        ? '共享 MoneyAI 模块未能加载；没有发送。'
-        : !ready
-          ? '共享 MoneyAI 写入契约不完整；没有发送。'
-          : writeReceipt
-            ? `写入回执已核验 · 记录 ${writeReceipt.writeReceipt.recordId}。`
-              : pendingWrite
-                ? '上次未取得成功回执；重新勾选后只会重试同一 operationId。'
-                : '等待你勾选本次同意并手动写入；不会自动同步。');
-  status('moneyai-history-write-status', writeMessage, Boolean(writeNotice?.isError));
-
-  const readNotice = moneyAIHistoryReadNotice?.identityKey === identityKey ? moneyAIHistoryReadNotice : null;
-  const readMessage = readNotice?.message || (!moneyAIHistoryCapability.checked
-    ? '正在核对共享新请求读回出口；没有发起读回。'
-    : !moneyAIHistoryCapability.moduleLoaded
-      ? '共享 MoneyAI 模块未能加载；没有发起读回。'
-      : !ready
-        ? '共享 MoneyAI 读回契约不完整；没有发起读回。'
-        : '勾选本次同意后，可显式发起新请求核对这条记录；不会读取个人历史。');
-  status('moneyai-history-read-status', readMessage, Boolean(readNotice?.isError));
-  renderMoneyAIHistoryResult(identityKey);
-}
-
-function loadMoneyAIHistoryCapability() {
-  if (moneyAIHistoryCapabilityLoad) return moneyAIHistoryCapabilityLoad;
-  moneyAIHistoryCapabilityLoad = Promise.all([
-    import('../shared/moneyai.js'), import('../shared/moneyai-contract.js')
-  ]).then(([client, contract]) => {
-    const capability = {
-      checked: true,
-      moduleLoaded: true,
-      writeExport: typeof client.requestMoneyAIDecisionWrite === 'function',
-      readExport: typeof client.requestMoneyAIHistoryRead === 'function',
-      fingerprintExport: typeof contract.computeMoneyAIInputFingerprint === 'function',
-      envelopeExport: typeof contract.createMoneyAIEnvelope === 'function',
-    };
-    moneyAIHistoryBridge = Object.values(capability).every(Boolean) ? Object.freeze({
-      requestMoneyAIDecisionWrite: client.requestMoneyAIDecisionWrite,
-      requestMoneyAIHistoryRead: client.requestMoneyAIHistoryRead,
-      computeMoneyAIInputFingerprint: contract.computeMoneyAIInputFingerprint,
-      createMoneyAIEnvelope: contract.createMoneyAIEnvelope,
-    }) : null;
-    moneyAIHistoryCapability = Object.freeze({
-      ...capability,
-    });
-  }).catch(() => {
-    moneyAIHistoryBridge = null;
-    moneyAIHistoryCapability = Object.freeze({ checked: true, moduleLoaded: false, writeExport: false,
-      readExport: false, fingerprintExport: false, envelopeExport: false });
-  }).finally(() => {
-    renderMoneyAIHistoryGate(activeSelection(state));
-  });
-  return moneyAIHistoryCapabilityLoad;
-}
-
-function resetMoneyAIHistoryInteraction() {
-  moneyAIHistoryRequestToken += 1;
-  moneyAIHistoryRequestOwner = null;
-  moneyAIHistoryRenderedIdentityKey = null;
-  moneyAIHistoryPendingWrite = null;
-  moneyAIHistoryWriteReceipt = null;
-  moneyAIHistoryReadReceipt = null;
-  moneyAIHistoryWriteNotice = null;
-  moneyAIHistoryReadNotice = null;
-  if ($('moneyai-history-consent')) $('moneyai-history-consent').checked = false;
-  if ($('moneyai-history-results')) $('moneyai-history-results').hidden = true;
-}
-
-function consumeMoneyAIHistoryConsent() {
-  const checkbox = $('moneyai-history-consent');
-  if (!checkbox?.checked) return false;
-  checkbox.checked = false;
-  return true;
-}
-
-function moneyAIHistoryFailure(result, action) {
-  if (result?.sentToMoneyAI === false) return `${action}未发送：${result.message || 'MoneyAI项目通路尚未就绪。'}`;
-  if (result?.sentToMoneyAI === null) return `${action}回执不确定；没有标为成功。重新同意后可精确重试。`;
-  return `${action}已到达 MoneyAI，但未取得可核验成功回执；没有标为成功。`;
-}
-
-function currentMoneyAIHistoryIdentityMatches(prepared) {
-  const bundle = resolveFeedbackRecord(state, selectedFeedbackId);
-  return Boolean(bundle && readFeedbackIds.has(selectedFeedbackId)
-    && moneyAIHistoryIdentityKey(state, bundle) === prepared.identityKey);
-}
-
-async function writeMoneyAIHistory() {
-  if (moneyAIHistoryRequestOwner || !moneyAIHistoryReady() || !consumeMoneyAIHistoryConsent()) return false;
-  const owner = { token: ++moneyAIHistoryRequestToken, kind: 'write' };
-  moneyAIHistoryRequestOwner = owner;
-  renderMoneyAIHistoryGate(activeSelection(state));
-  try {
-    const loaded = await readState();
-    if (!loaded.ok) throw new Error(errorText(loaded));
-    const bundle = resolveFeedbackRecord(state, selectedFeedbackId);
-    if (!bundle) throw new Error('本机反馈或原稿引用已变化，未发送。');
-    readFeedbackIds.add(selectedFeedbackId);
-    const identityKey = moneyAIHistoryIdentityKey(state, bundle);
-    let prepared = moneyAIHistoryPendingWrite?.identityKey === identityKey ? moneyAIHistoryPendingWrite : null;
-    if (!prepared) prepared = await makeMoneyAIDecisionWriteRequest(state, selectedFeedbackId, moneyAIHistoryBridge, `p3.write.attempt.${id()}`);
-    if (owner.token !== moneyAIHistoryRequestToken || !currentMoneyAIHistoryIdentityMatches(prepared)) return false;
-    moneyAIHistoryPendingWrite = prepared;
-    moneyAIHistoryWriteNotice = { identityKey, message: '正在等待 MoneyAI 写入与唯一读回回执…', isError: false };
-    renderMoneyAIHistoryGate(activeSelection(state));
-    const result = await moneyAIHistoryBridge.requestMoneyAIDecisionWrite(prepared.request,
-      { consentToExternalProcessing: true });
-    if (owner.token !== moneyAIHistoryRequestToken || !currentMoneyAIHistoryIdentityMatches(prepared)) return false;
-    const receipt = result?.writeReceipt;
-    const exact = result?.ok && receipt?.readBackVerified === true
-      && receipt.operationId === prepared.operationId && receipt.providerRecordId === receipt.recordId;
-    if (!exact) {
-      moneyAIHistoryWriteNotice = { identityKey, message: moneyAIHistoryFailure(result, 'MoneyAI写入'), isError: true };
-      return false;
-    }
-    moneyAIHistoryWriteReceipt = { identityKey, prepared, writeReceipt: { ...receipt }, receipt: { ...result.receipt } };
-    moneyAIHistoryPendingWrite = null;
-    moneyAIHistoryWriteNotice = { identityKey,
-      message: `MoneyAI写入回执已核验 · 记录 ${receipt.recordId} · 同一操作不会重复新增。`, isError: false };
-    return true;
-  } catch (error) {
-    const bundle = resolveFeedbackRecord(state, selectedFeedbackId);
-    const identityKey = moneyAIHistoryIdentityKey(state, bundle);
-    if (identityKey) moneyAIHistoryWriteNotice = { identityKey, message: error.message || 'MoneyAI写入未完成。', isError: true };
-    return false;
-  } finally {
-    if (moneyAIHistoryRequestOwner === owner) moneyAIHistoryRequestOwner = null;
-    renderMoneyAIHistoryGate(activeSelection(state));
-  }
-}
-
-async function readMoneyAIHistory() {
-  if (moneyAIHistoryRequestOwner || !moneyAIHistoryReady() || !consumeMoneyAIHistoryConsent()) return false;
-  const owner = { token: ++moneyAIHistoryRequestToken, kind: 'read' };
-  moneyAIHistoryRequestOwner = owner;
-  renderMoneyAIHistoryGate(activeSelection(state));
-  try {
-    const loaded = await readState();
-    if (!loaded.ok) throw new Error(errorText(loaded));
-    const bundle = resolveFeedbackRecord(state, selectedFeedbackId);
-    if (!bundle) throw new Error('本机反馈或原稿引用已变化，未读取 MoneyAI。');
-    readFeedbackIds.add(selectedFeedbackId);
-    const prepared = await makeMoneyAIDecisionWriteRequest(state, selectedFeedbackId, moneyAIHistoryBridge,
-      `p3.read.prepare.${id()}`);
-    if (owner.token !== moneyAIHistoryRequestToken || !currentMoneyAIHistoryIdentityMatches(prepared)) return false;
-    const writeReceipt = moneyAIHistoryWriteReceipt?.identityKey === prepared.identityKey
-      ? moneyAIHistoryWriteReceipt.writeReceipt : null;
-    const readRequest = await makeMoneyAIHistoryReadRequest(prepared, moneyAIHistoryBridge, {
-      attemptId: `p3.read.attempt.${id()}`,
-      operationId: `p3.history.${id()}`,
-      recordId: writeReceipt?.recordId ?? null,
-    });
-    moneyAIHistoryReadNotice = { identityKey: prepared.identityKey,
-      message: '正在发起新的 MoneyAI 项目历史请求…', isError: false };
-    renderMoneyAIHistoryGate(activeSelection(state));
-    const result = await moneyAIHistoryBridge.requestMoneyAIHistoryRead(readRequest.request,
-      { consentToExternalProcessing: true });
-    if (owner.token !== moneyAIHistoryRequestToken || !currentMoneyAIHistoryIdentityMatches(prepared)) return false;
-    const verified = verifyMoneyAIHistoryRead(result, prepared, writeReceipt);
-    if (!verified) {
-      moneyAIHistoryReadNotice = { identityKey: prepared.identityKey,
-        message: moneyAIHistoryFailure(result, 'MoneyAI历史读回'), isError: true };
-      return false;
-    }
-    moneyAIHistoryReadReceipt = { identityKey: prepared.identityKey, prepared, verified };
-    moneyAIHistoryReadNotice = { identityKey: prepared.identityKey,
-      message: '已用新请求从 MoneyAI 项目空间精确读回 1 条记录；只读展示，未改本机状态。', isError: false };
-    return true;
-  } catch (error) {
-    const bundle = resolveFeedbackRecord(state, selectedFeedbackId);
-    const identityKey = moneyAIHistoryIdentityKey(state, bundle);
-    if (identityKey) moneyAIHistoryReadNotice = { identityKey,
-      message: error.message || 'MoneyAI历史读回未完成。', isError: true };
-    return false;
-  } finally {
-    if (moneyAIHistoryRequestOwner === owner) moneyAIHistoryRequestOwner = null;
-    renderMoneyAIHistoryGate(activeSelection(state));
-  }
-}
 // A3_MONEYAI_HISTORY_GATE_END
 
 function renderHistory() {
@@ -1606,7 +1324,6 @@ function render() {
     previewFingerprint = '';
     artifactFingerprint = '';
     renderedPackSignature = null;
-    renderMoneyAIHistoryGate(null);
     $('all-copy-fallback').value = '';
     $('all-copy-fallback').hidden = true;
     renderReview();
@@ -1662,7 +1379,6 @@ function render() {
   }
   $('feedback-artifact-field').hidden = artifacts.length <= 1;
   renderSavedFeedback(context);
-  renderMoneyAIHistoryGate(context);
   syncFeedbackControls();
   renderCopyAllControls();
   renderReview();
@@ -2598,7 +2314,6 @@ async function boot() {
         }
       });
     }
-    void loadMoneyAIHistoryCapability();
     await refresh();
   } catch (error) {
     status('load-message', `暂时无法接入共享模块或读取记录。${error.message || ''} 本页没有另建状态库，也没有自动载入案例。`, true);
@@ -2655,9 +2370,6 @@ function connectPage() {
   $('feedback-artifact').addEventListener('change', () => { feedbackBinding = currentSkillArtifacts(state).find((artifact) => artifact.id === $('feedback-artifact').value); });
   $('discard-feedback').addEventListener('click', () => { if (!dirty || window.confirm('放弃这份尚未保存的反馈草稿？已保存的记录不会删除。')) discardFeedback(); });
   $('next-round').addEventListener('click', () => { void openReview(selectedFeedbackId); });
-  $('moneyai-history-consent').addEventListener('change', () => renderMoneyAIHistoryGate(activeSelection(state)));
-  $('moneyai-history-write').addEventListener('click', () => { void writeMoneyAIHistory(); });
-  $('moneyai-history-read').addEventListener('click', () => { void readMoneyAIHistory(); });
   $('copy-all').addEventListener('click', () => { void copyAllAction(false); });
   $('select-all').addEventListener('click', () => { void copyAllAction(true); });
   $('open-experiment-evidence').addEventListener('click', () => { showDialog('evidence-dialog'); sourceViewEvents(); });
@@ -2715,7 +2427,6 @@ function connectPage() {
   window.addEventListener('pageshow', (event) => { if (event.persisted && shared) void refresh(); });
   window.addEventListener('hashchange', () => { void applyActionHash(); });
   window.addEventListener('pagehide', (event) => {
-    moneyAIHistoryRequestToken += 1;
     acceptanceToken += 1;
     invalidateViewRead();
     titleMotion?.destroy();

@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$MoneyAIHome = $env:MONEYAI_HOME,
     [string]$ProjectDir,
@@ -107,7 +107,7 @@ if (Test-TcpListener -Port $DemoPort) {
 foreach ($value in @($serverDist, $resolvedProjectDir)) {
     if ($value.Contains('"')) { throw "路径不能包含双引号：$value" }
 }
-$sidecarArguments = '"{0}" --port {1} --agent-dir "{2}" --no-pre-warm' -f $serverDist, $MoneyAIPort, $resolvedProjectDir
+$sidecarArguments = '"{0}" --port {1} --agent-dir "{2}"' -f $serverDist, $MoneyAIPort, $resolvedProjectDir
 $sidecar = Start-Process -FilePath $nodeExe -ArgumentList $sidecarArguments -WorkingDirectory $resolvedMoneyAIHome -WindowStyle Hidden -PassThru
 
 try {

@@ -213,7 +213,7 @@ export function validateMerchantIntakeDraft(draft) {
   if (array(draft.evidenceLedger, 'evidenceLedger', errors, LIMITS.records)) {
     draft.evidenceLedger.forEach((entry, index) => {
       const field = `evidenceLedger.${index}`;
-      if (!keys(entry, ['field', 'value', 'status', 'source', 'quote'],
+      if (!keys(entry, ['field', 'value', 'status', 'source', 'quote', 'quoteVerified'],
         ['field', 'value', 'status', 'source'], field, errors)) return;
       const target = leaf(draft, entry.field);
       if (!target) issue(errors, `${field}.field`, '须指向当前草稿的业务叶字段或实际数组索引。');
@@ -224,6 +224,9 @@ export function validateMerchantIntakeDraft(draft) {
         issue(errors, `${field}.source`, '证据来源必须已登记在sources中。');
       }
       if (own(entry, 'quote')) text(entry.quote, `${field}.quote`, errors, false);
+      if (own(entry, 'quoteVerified') && typeof entry.quoteVerified !== 'boolean') {
+        issue(errors, `${field}.quoteVerified`, 'quoteVerified须为布尔值。');
+      }
     });
   }
   if (array(draft.userCorrections, 'userCorrections', errors, LIMITS.records)) {
@@ -476,13 +479,17 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
   // Prior records retain manual provenance; only the validated new tail authorizes replacement.
   const corrections = new Map(draft.userCorrections.map((entry) => [entry.field, entry]));
   const replacesCorrection = (fact) => changedFields.has(fact.intakeField);
+  // 只保护"有值"的用户更正；未知占位（value为null）不保护——否则一次保存成
+  // 未知的更正会把字段永久卡在未知，AI重新提取的值也无法流入。
   const protectedFacts = new Map([...previous].filter(([field, fact]) =>
-    fact.verification === 'user_corrected' && !changedFields.has(field)));
+    fact.verification === 'user_corrected' && fact.value !== null && !changedFields.has(field)));
   for (const [field, fact] of protectedFacts) {
     if (!owned(fact, draft) && !Object.is(leaf(draft, field, true)?.value ?? null, fact.value)) {
       issue(errors, field, '关联材料事实已有新的用户更正；请先核对当前值，不恢复旧确认卡。');
     }
   }
+  // 收敛语义：第一页的最新填写值优先。曾经的用户更正保留在事实历史里，
+  // 不再因草稿当前值与旧更正不一致而拒绝整次确认。
   if (errors.length) return invalid(errors);
   const ledger = new Map();
   for (const entry of draft.evidenceLedger) {
@@ -511,8 +518,12 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
       // An empty, unbound field has no file evidence; do not fabricate a locator.
       source = null;
     }
-    let quote = entries.find((entry) => entry.source === source)?.quote ?? null;
-    if (!corrected && ['voice', 'paste'].includes(source) && quote && !draft.transcript.includes(quote)) {
+    const quotedEntry = entries.find((entry) => entry.source === source);
+    let quote = quotedEntry?.quote ?? null;
+    // 收敛语义：提取时已对照"实际发送文本"（含用户同意的材料文本）核验过的quote
+    // （quoteVerified），映射时直接信任，不再因不在转写里而判冲突。
+    if (!corrected && ['voice', 'paste'].includes(source) && quote
+      && quotedEntry?.quoteVerified !== true && !draft.transcript.includes(quote)) {
       conflicting = true;
     }
     if (corrected) {
@@ -521,7 +532,9 @@ export function mapConfirmedIntakeToAnalysisInput(rawDraft, options = {}) {
       quote = null;
     }
     const hypothesis = field.endsWith('Hypothesis') || entries.some((entry) => entry.status === 'owner_hypothesis');
-    const value = conflicting ? null : rawValue;
+    // 收敛语义：冲突不再吞值——值照常进入确认结果，fact.verification 保留
+    // "conflicting"供展示层标注"待核对"，由用户在核对中裁决，而不是静默置为未知。
+    const value = rawValue;
     const evidenceStatus = value === null ? 'unknown' : hypothesis ? 'owner_hypothesis' : 'confirmed_fact';
     const locator = binding?.locator ? clone(binding.locator) : { type: 'intake', field, source, quote };
     const sourceInfo = {

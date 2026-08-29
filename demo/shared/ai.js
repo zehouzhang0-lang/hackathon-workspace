@@ -230,3 +230,59 @@ export async function requestProviderAnalysisProposal(envelope, options = {}) {
   }
   return { ok: true, proposal, sentToProvider: true, model: settings.model };
 }
+
+/** 直连AI材料解析（直连数据提取）：把解析失败的材料文本交给「AI 设置」配置的模型，
+ * 转换成约定指标长表。模型只负责"表结构翻译"；本机在此函数内逐条核对——
+ * source_line必须逐字存在于对应材料文本、数值必须出现在该行中——未通过的一律剔除。
+ * 返回{ok:true, entries, dropped, model}；未配置API时failed('ai_not_configured')且不发送。 */
+export async function requestMaterialFacts(materials, options = {}) {
+  const settings = await getAiSettings(options);
+  if (!settings.ok) return settings;
+  if (!settings.configured) {
+    return failed('ai_not_configured', '尚未在「AI 设置」配置 API；未发送任何内容。');
+  }
+  const result = await requestAiChat({
+    maxTokens: 4096,
+    messages: [
+      { role: 'system', content: '你是数据提取器。把用户提供的表格/文本材料整理成指标长表。'
+        + '只输出一个JSON数组，不要输出其他文字。每个元素精确字段为：'
+        + 'metric（指标名，非空字符串）、value（材料中逐字出现的有限十进制数字，禁止换算）、'
+        + 'unit（单位字符串或null，万/亿等单位写在这里）、subject（主体字符串或null）、'
+        + 'window_start/window_end（YYYY-MM-DD或null）、source_line（该数值所在的原文行片段，20-200字，逐字来自材料文本）。'
+        + '只使用材料文本中真实出现的数字；禁止编造、推断、补0或求和；一行只提取一次；缺失字段用null。' },
+      { role: 'user', content: materials.map((entry) => '《' + entry.name + '》\n' + entry.text).join('\n\n') },
+    ],
+  }, { ...options, timeoutMs: options.timeoutMs ?? 120000 });
+  if (!result.ok) return result;
+  const text = result.content.trim();
+  const start = text.indexOf('['), end = text.lastIndexOf(']');
+  let parsed = null;
+  if (start >= 0 && end > start) {
+    try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { parsed = null; }
+  }
+  if (!Array.isArray(parsed)) {
+    return failed('provider_response_invalid', '直连AI返回不是JSON数组；未提取任何内容。');
+  }
+  const entries = [];
+  let dropped = 0;
+  for (const raw of parsed.slice(0, 400)) {
+    if (!record(raw)) { dropped += 1; continue; }
+    const metric = clampText(raw.metric, 120);
+    const sourceLine = clampText(raw.source_line, 400);
+    const value = raw.value;
+    if (!metric || typeof value !== 'number' || !Number.isFinite(value) || !sourceLine) { dropped += 1; continue; }
+    const host = materials.find((entry) => entry.text.includes(sourceLine));
+    if (!host) { dropped += 1; continue; }
+    if (!sourceLine.replace(/,/g, '').includes(String(value))) { dropped += 1; continue; }
+    entries.push({
+      metric,
+      value,
+      unit: clampText(raw.unit, 40),
+      subject: clampText(raw.subject, 300),
+      window_start: clampText(raw.window_start, 10),
+      window_end: clampText(raw.window_end, 10),
+      source_line: sourceLine, material: host.name,
+    });
+  }
+  return { ok: true, entries, dropped, model: settings.model };
+}

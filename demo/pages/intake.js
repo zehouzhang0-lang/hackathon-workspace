@@ -1474,11 +1474,64 @@ function startIntakePage() {
     const consentNode = byId("material-text-consent");
     const includeMaterialText = consentNode?.checked === true;
     let materialTexts = null;
+    let aiParseNote = null;
     let result;
     try {
       if (includeMaterialText) {
         status("已同意发送材料文本；正在本机读取材料内容，尚未发送…");
         materialTexts = await collectMaterialTexts(extractionController.signal);
+        // 直连数据提取：本机白名单解析颗粒无收的材料，交给 AI 转换成约定长表；
+        // 每条 source_line 回查原文逐字核验后才经 MATERIAL_RESULT_SET 入库。
+        const candidates = materialTexts.filter((entry) => {
+          const material = state.input.materials.find((item) => item.name === entry.name);
+          if (!material) return false;
+          const hasFacts = state.input.facts.some((fact) =>
+            fact.source?.materialId === material.id && fact.source?.materialVersion === material.version);
+          return !hasFacts;
+        });
+        if (candidates.length && typeof intakeApi.requestMaterialFacts === "function") {
+          status("已同意直连数据提取；正在把 " + candidates.length + " 份材料交给 AI 解析…");
+          const parsed = await intakeApi.requestMaterialFacts(candidates,
+            { signal: extractionController.signal, timeoutMs: 120000 });
+          if (parsed.ok && parsed.entries.length) {
+            const entriesByMaterial = new Map();
+            for (const entry of parsed.entries) {
+              if (!entriesByMaterial.has(entry.material)) entriesByMaterial.set(entry.material, []);
+              entriesByMaterial.get(entry.material).push(entry);
+            }
+            for (const [materialName, entries] of entriesByMaterial) {
+              const material = state.input.materials.find((item) => item.name === materialName);
+              if (!material) continue;
+              const hostText = candidates.find((candidate) => candidate.name === materialName)?.text || "";
+              const facts = entries.map((entry, index) => {
+                const at = hostText.indexOf(entry.source_line);
+                const lineStart = at < 0 ? 1 : hostText.slice(0, at).split("\n").length;
+                const lineEnd = lineStart + entry.source_line.split("\n").length - 1;
+                return {
+                  id: "draft_ai_f" + (index + 1), key: entry.metric, value: entry.value,
+                  availability: "known", unit: entry.unit, subject: entry.subject,
+                  window: { start: entry.window_start, end: entry.window_end },
+                  channel: null, cohort: null,
+                  source: { kind: "file_extract", materialId: material.id, materialVersion: material.version,
+                    locator: { type: "text", lineStart, lineEnd },
+                    note: "AI 从材料文本转换提取；已按原文行核验数值与片段，尚未核验业务真实性。" },
+                  verification: "unreviewed",
+                };
+              });
+              await send("MATERIAL_RESULT_SET", {
+                materialId: material.id, roundId: state.round.id,
+                inputVersion: state.round.inputVersion, materialVersion: material.version,
+                status: "parsed", facts, error: null,
+              });
+            }
+            aiParseNote = "直连AI解析：提取 " + parsed.entries.length + " 条指标"
+              + (parsed.dropped ? "，剔除 " + parsed.dropped + " 条无法在原文核验的记录" : "") + "。";
+          } else if (parsed.ok) {
+            aiParseNote = "直连AI解析：没有提取到可核验的指标（剔除 " + parsed.dropped + " 条）。";
+          } else {
+            aiParseNote = "直连AI解析未完成：" + parsed.message;
+          }
+        }
       }
       result = await intakeApi.requestIntakeExtraction({
         state, transcript: local.draft.transcript, description: ui.description.value,
@@ -1512,6 +1565,7 @@ function startIntakePage() {
         ? " 已随本次请求发送材料文本：" + materialTexts.map((m) => "《" + m.name + "》").join("、") + "（每份仅截取前4000字）。"
         : " 没有可发送文本的材料（直连提取仅支持TXT/CSV/JSON/XLSX的文本内容，图片不发送）。";
     }
+    if (aiParseNote) reviewMessage += " " + aiParseNote;
     organizationVisible = true; readyToAnalyze = false;
     setIntakeStage("confirming", result.ok ? "整理内容已返回，等待你逐项核对；尚未开始分析。" :
       "自动整理尚不可用，请手动核对卡片；原文仍在本页，缺失信息保持未知。");
@@ -2505,12 +2559,12 @@ function startIntakePage() {
     status("正在读取本机记录…");
     try {
       if (!api) {
-        const [session, navigation, shell, draftModule, extraction] = await Promise.all([
+        const [session, navigation, shell, draftModule, extraction, ai] = await Promise.all([
           import("../shared/state.js"), import("../shared/navigation.js"), import("../shared/shell.js"),
-          import("../shared/intake-draft.js"), import("../shared/intake-extraction.js")
+          import("../shared/intake-draft.js"), import("../shared/intake-extraction.js"), import("../shared/ai.js")
         ]);
         api = { ...session, ...navigation };
-        intakeApi = { ...draftModule, ...extraction };
+        intakeApi = { ...draftModule, ...extraction, ...ai };
         await shell.mountShell("intake");
         unregisterGuard = api.registerNavigationGuard({
           isDirty: () => !allowNavigation && (dirty() || busy),

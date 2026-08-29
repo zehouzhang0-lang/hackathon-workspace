@@ -2990,3 +2990,30 @@ test('compactSummaryForModel aggregates repeated metric facts within the budget'
   assert.equal(compacted.summary.facts.some((fact) => fact.key === '粉丝数'), true);
   assert.equal(compacted.summary.facts.some((fact) => fact.id === 'f0'), false);
 });
+
+test('requestMaterialFacts 未配置不发送；已配置时逐条回查原文并剔除编造', async () => {
+  const { requestMaterialFacts } = await import('../shared/ai.js');
+  const materialTexts = [{ name: '店.csv', text: '商品名称,成交订单数\n轻量透气跑步鞋,124\n复古老爹鞋,616' }];
+  let chatCalls = 0;
+  const notConfigured = await requestMaterialFacts(materialTexts, {
+    fetchImpl: async (url) => { if (String(url).includes('/api/ai/chat')) chatCalls += 1; return jsonResponse({ configured: false, baseUrl: null, model: null, hasKey: false }); },
+  });
+  assert.equal(notConfigured.ok, false);
+  assert.equal(notConfigured.code, 'ai_not_configured');
+  assert.equal(chatCalls, 0);
+  const reply = JSON.stringify([
+    { metric: '成交订单数', value: 124, unit: '单', subject: '轻量透气跑步鞋', window_start: null, window_end: null, source_line: '轻量透气跑步鞋,124' },
+    { metric: '编造指标', value: 999, unit: null, subject: null, window_start: null, window_end: null, source_line: '这个片段不在原文里' },
+  ]);
+  const result = await requestMaterialFacts(materialTexts, {
+    fetchImpl: async (url, options) => {
+      if (url === '/api/ai/settings') return jsonResponse({ configured: true, baseUrl: 'https://api.example.com/v1', model: 'test-model', hasKey: true });
+      return jsonResponse({ ok: true, content: reply });
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.dropped, 1);
+  assert.equal(result.entries[0].value, 124);
+  assert.equal(result.entries[0].material, '店.csv');
+});

@@ -80,6 +80,38 @@
           </aside>
         </section>
 
+        <section id="moneyai-analysis" class="moneyai-analysis" aria-labelledby="moneyai-title">
+          <div class="moneyai-heading">
+            <div>
+              <p class="moneyai-eyebrow">真实分析通路</p>
+              <h2 id="moneyai-title">让 MoneyAI 重新分析当前确认摘要</h2>
+            </div>
+            <span id="moneyai-capability-tag" class="tag" data-state="checking">能力待核对</span>
+          </div>
+          <p id="moneyai-analysis-source" class="moneyai-source"></p>
+          <dl class="moneyai-status-grid">
+            <div><dt>项目能力</dt><dd id="moneyai-capability-status">尚未查询</dd></div>
+            <div><dt>本次发送</dt><dd id="moneyai-send-status">未请求，不表示已发送</dd></div>
+            <div><dt>保存边界</dt><dd>只有严格校验且身份一致的分析草稿才可保存；HTTP 200 或自然语言文本不会直接入库。</dd></div>
+          </dl>
+          <details id="moneyai-summary-details" class="moneyai-summary-details">
+            <summary>预览本次允许发送的摘要</summary>
+            <p class="muted">只发送当前已确认的焦点、事实、限制与未知；不含附件原件、图片、Excel、录音、完整转写、个人历史或凭据。</p>
+            <pre id="moneyai-summary-preview" tabindex="0">正在准备安全摘要……</pre>
+            <p id="moneyai-summary-fingerprint" class="muted"></p>
+          </details>
+          <label class="moneyai-consent" for="moneyai-consent">
+            <input type="checkbox" id="moneyai-consent">
+            <span>我已核对上方摘要，并仅同意这一次发送到本机 MoneyAI 所配置的模型；可能产生 API 调用。此同意不包含材料原件、凭据或个人历史。</span>
+          </label>
+          <div class="decisions-actions moneyai-actions">
+            <button type="button" class="button button--secondary" id="moneyai-check-status">检查分析能力</button>
+            <button type="button" class="button" id="moneyai-request-analysis" disabled>发送摘要并请求真实分析</button>
+            <button type="button" class="button button--quiet" id="moneyai-cancel-analysis" hidden>取消本次请求</button>
+          </div>
+          <p id="moneyai-request-status" class="moneyai-request-status" role="status" aria-live="polite">尚未发起真实分析；当前已保存的本机判断不会被改变。</p>
+        </section>
+
         <section id="no-paths" class="decisions-empty" aria-labelledby="no-paths-title" hidden>
           <h2 id="no-paths-title">暂时没有足够依据给出可选行动</h2>
           <p>先保留能确认的内容和缺口。可以返回补充，也可以暂不继续。</p>

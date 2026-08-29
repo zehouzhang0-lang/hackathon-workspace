@@ -1,0 +1,3 @@
+interface:
+  display_name: "抖音账号诊断"
+  short_description: "基于可比历史与证据状态诊断账号，并设计可复查的行动实验"
